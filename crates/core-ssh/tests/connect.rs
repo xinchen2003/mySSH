@@ -92,6 +92,7 @@ async fn connect_and_echo() {
         max_packet_size: 32768,
         keepalive: KeepaliveConfig::default(),
         host_key_check: HostKeyCheck::AcceptAll,
+        ki_prompter: None,
     })
     .await
     .expect("connect");
@@ -114,6 +115,7 @@ async fn auth_failure_is_coded() {
         max_packet_size: 32768,
         keepalive: KeepaliveConfig::default(),
         host_key_check: HostKeyCheck::AcceptAll,
+        ki_prompter: None,
     };
     let err = match SshConnection::connect(opts).await {
         Ok(_) => panic!("password auth must fail against none-only server"),

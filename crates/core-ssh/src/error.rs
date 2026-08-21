@@ -17,6 +17,8 @@ pub enum SshError {
     HostKeyRejected { host: String, detail: String },
     #[error("E1005 主机密钥变更 {host}（需用户确认）")]
     HostKeyChanged { host: String },
+    #[error("E1006 known_hosts 读写失败 {host}: {detail}")]
+    HostKeyStore { host: String, detail: String },
 
     // E2xxx 认证
     #[error("E2001 认证失败 {user}@{host}（方法 {method}）")]

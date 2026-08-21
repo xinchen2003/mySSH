@@ -10,6 +10,7 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
+parking_lot = "0.12"
 russh = { version = "0.62", default-features = false, features = ["ring"] }
 
 [profile.release]

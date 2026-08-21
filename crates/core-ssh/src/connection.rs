@@ -1,16 +1,23 @@
-//! 连接建立与生命周期。M0 范围：connect + none/password 认证 + 原始 exec 通道；
-//! PTY/known_hosts 弹窗/ProxyJump 在 M1/M2 补齐。
+//! 连接建立与生命周期。
+//!
+//! M1 范围：认证族（password / publickey 含 .ppk / keyboard-interactive / agent）、
+//! known_hosts 校验（首连与变更交互决策）、PTY 通道打开。
+//! ProxyJump 在 M2 补齐。
 
 use std::borrow::Cow;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use russh::client;
+use russh::client::{self, KeyboardInteractiveAuthResponse};
 use russh::keys::ssh_key;
+use russh::keys::{decode_secret_key, PrivateKeyWithHashAlg};
 use russh::{cipher, Preferred};
 
-use crate::auth::AuthMethod;
+use crate::auth::{AuthMethod, KeyboardInteractivePrompt, KiChallenge, SharedKiPrompter};
 use crate::error::SshError;
+use crate::hostkey::{self, HostKeyCheck, HostKeyDecision, HostKeyPrompt, HostKeyStatus};
+use crate::pty::PtyChannel;
 
 /// 连接用途分类——决定 runtime 归属与是否允许共享（规格书第 6 条）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +43,7 @@ impl Default for KeepaliveConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ConnectOptions {
     pub host: String,
     pub port: u16,
@@ -47,16 +54,27 @@ pub struct ConnectOptions {
     pub window_size: u32,
     pub max_packet_size: u32,
     pub keepalive: KeepaliveConfig,
-    /// 生产实现由 app 层注入：known_hosts 校验 + 首连/变更弹窗确认。
-    /// M0 冒烟测试用 AcceptAll（仅此场景）。
+    /// known_hosts 校验 + 首连/变更决策回调（AcceptAll 仅限测试）
     pub host_key_check: HostKeyCheck,
+    /// AuthMethod::KeyboardInteractive 时必需：逐轮应答回调
+    pub ki_prompter: Option<SharedKiPrompter>,
 }
 
-#[derive(Debug, Clone)]
-pub enum HostKeyCheck {
-    /// 仅测试：接受一切主机密钥
-    AcceptAll,
-    // M1: KnownHosts { path, confirm_callback }
+impl fmt::Debug for ConnectOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConnectOptions")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("auth", &self.auth)
+            .field("class", &self.class)
+            .field("window_size", &self.window_size)
+            .field("max_packet_size", &self.max_packet_size)
+            .field("keepalive", &self.keepalive)
+            .field("host_key_check", &self.host_key_check)
+            .field("ki_prompter", &self.ki_prompter.as_ref().map(|_| "<set>"))
+            .finish()
+    }
 }
 
 pub struct SshConnection {
@@ -69,6 +87,8 @@ impl SshConnection {
         let config = client_config(&opts);
         let handler = ClientHandler {
             check: opts.host_key_check.clone(),
+            host: opts.host.clone(),
+            port: opts.port,
         };
         let target = (opts.host.as_str(), opts.port);
         let mut handle = client::connect(Arc::new(config), target, handler)
@@ -87,6 +107,49 @@ impl SshConnection {
 
     pub fn class(&self) -> ConnClass {
         self.class
+    }
+
+    /// 打开交互式 PTY 通道并启动 shell 或指定命令。
+    /// `term` 通常为 "xterm-256color"；像素维度传 0。
+    pub async fn open_pty(
+        &self,
+        term: &str,
+        cols: u32,
+        rows: u32,
+        command: Option<&str>,
+    ) -> Result<PtyChannel, SshError> {
+        let ch = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::ChannelOpen {
+                kind: "session",
+                reason: e.to_string(),
+            })?;
+        ch.request_pty(true, term, cols, rows, 0, 0, &[])
+            .await
+            .map_err(|e| SshError::ChannelOpen {
+                kind: "pty",
+                reason: e.to_string(),
+            })?;
+        match command {
+            Some(cmd) => ch
+                .exec(true, cmd)
+                .await
+                .map_err(|e| SshError::ChannelOpen {
+                    kind: "exec",
+                    reason: e.to_string(),
+                })?,
+            None => ch
+                .request_shell(true)
+                .await
+                .map_err(|e| SshError::ChannelOpen {
+                    kind: "shell",
+                    reason: e.to_string(),
+                })?,
+        }
+        let (read, write) = ch.split();
+        Ok(PtyChannel::new(read, write))
     }
 
     /// M0 测试辅助：打开会话通道执行命令，收集 stdout 到 EOF。
@@ -137,7 +200,35 @@ async fn authenticate(
             .await
             .map_err(|_| auth_failed("password"))?
             .success(),
-        other => return Err(SshError::UnsupportedAuth(other.name())),
+        AuthMethod::PublicKey {
+            key_pem,
+            passphrase,
+        } => {
+            // OpenSSH / PKCS8 / PKCS5 / PuTTY .ppk 统一由 decode_secret_key 解析
+            let key = decode_secret_key(key_pem.as_str(), passphrase.as_ref().map(|p| p.as_str()))
+                .map_err(|e| SshError::CredentialUnavailable(format!("私钥解析失败: {e}")))?;
+            let hash_alg = if key.algorithm().is_rsa() {
+                handle
+                    .best_supported_rsa_hash()
+                    .await
+                    .ok()
+                    .flatten()
+                    .flatten()
+            } else {
+                None
+            };
+            let key = PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg);
+            handle
+                .authenticate_publickey(&opts.user, key)
+                .await
+                .map_err(|e| SshError::CredentialUnavailable(format!("公钥认证失败: {e}")))?
+                .success()
+        }
+        AuthMethod::KeyboardInteractive => {
+            auth_keyboard_interactive(handle, opts).await?;
+            true
+        }
+        AuthMethod::Agent => auth_agent(handle, opts).await?,
     };
     if ok {
         Ok(())
@@ -146,17 +237,188 @@ async fn authenticate(
     }
 }
 
+async fn auth_keyboard_interactive(
+    handle: &mut client::Handle<ClientHandler>,
+    opts: &ConnectOptions,
+) -> Result<(), SshError> {
+    let prompter = opts.ki_prompter.as_ref().ok_or_else(|| {
+        SshError::CredentialUnavailable("keyboard-interactive 缺少应答回调".into())
+    })?;
+    let auth_failed = || SshError::AuthFailed {
+        user: opts.user.clone(),
+        host: format!("{}:{}", opts.host, opts.port),
+        method: "keyboard-interactive".to_string(),
+    };
+    let mut response = handle
+        .authenticate_keyboard_interactive_start(&opts.user, None)
+        .await
+        .map_err(|_| auth_failed())?;
+    loop {
+        response = match response {
+            KeyboardInteractiveAuthResponse::Success => return Ok(()),
+            KeyboardInteractiveAuthResponse::Failure { .. } => return Err(auth_failed()),
+            KeyboardInteractiveAuthResponse::InfoRequest {
+                name,
+                instructions,
+                prompts,
+            } => {
+                let challenge = KiChallenge {
+                    name,
+                    instruction: instructions,
+                    prompts: prompts
+                        .into_iter()
+                        .map(|p| KeyboardInteractivePrompt {
+                            prompt: p.prompt,
+                            echo: p.echo,
+                        })
+                        .collect(),
+                };
+                let answers = prompter.respond(challenge).await.ok_or_else(|| {
+                    SshError::CredentialUnavailable("keyboard-interactive 应答被取消".into())
+                })?;
+                handle
+                    .authenticate_keyboard_interactive_respond(answers)
+                    .await
+                    .map_err(|_| auth_failed())?
+            }
+        };
+    }
+}
+
+/// agent 认证：Windows 依次尝试 OpenSSH 命名管道与 Pageant；Unix 走 $SSH_AUTH_SOCK。
+/// 逐个尝试 agent 中的身份，任一成功即返回 true；agent 不可达返回 false（不视为致命）。
+#[cfg(windows)]
+async fn auth_agent(
+    handle: &mut client::Handle<ClientHandler>,
+    opts: &ConnectOptions,
+) -> Result<bool, SshError> {
+    use russh::keys::agent::client::AgentClient;
+
+    // OpenSSH agent（命名管道）→ Pageant
+    let mut agent = match AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
+        Ok(a) => a.dynamic(),
+        Err(_) => match AgentClient::connect_pageant().await {
+            Ok(a) => a.dynamic(),
+            Err(e) => {
+                return Err(SshError::CredentialUnavailable(format!(
+                    "未找到可用的 ssh-agent（命名管道/Pageant）: {e}"
+                )));
+            }
+        },
+    };
+    agent_auth_loop(handle, opts, &mut agent).await
+}
+
+#[cfg(unix)]
+async fn auth_agent(
+    handle: &mut client::Handle<ClientHandler>,
+    opts: &ConnectOptions,
+) -> Result<bool, SshError> {
+    use russh::keys::agent::client::AgentClient;
+
+    let sock = std::env::var_os("SSH_AUTH_SOCK")
+        .ok_or_else(|| SshError::CredentialUnavailable("SSH_AUTH_SOCK 未设置".into()))?;
+    let mut agent = AgentClient::connect_uds(sock)
+        .await
+        .map_err(|e| SshError::CredentialUnavailable(format!("ssh-agent 连接失败: {e}")))?
+        .dynamic();
+    agent_auth_loop(handle, opts, &mut agent).await
+}
+
+async fn agent_auth_loop<S>(
+    handle: &mut client::Handle<ClientHandler>,
+    opts: &ConnectOptions,
+    agent: &mut russh::keys::agent::client::AgentClient<S>,
+) -> Result<bool, SshError>
+where
+    S: russh::keys::agent::client::AgentStream + Send + Unpin,
+{
+    use russh::keys::agent::AgentIdentity;
+
+    let identities = agent
+        .request_identities()
+        .await
+        .map_err(|e| SshError::CredentialUnavailable(format!("agent 身份列表获取失败: {e}")))?;
+    for identity in identities {
+        // M1 只尝试纯公钥身份；证书身份在 M5 视需求补
+        let AgentIdentity::PublicKey { key, .. } = identity else {
+            continue;
+        };
+        let hash_alg = if key.algorithm().is_rsa() {
+            handle
+                .best_supported_rsa_hash()
+                .await
+                .ok()
+                .flatten()
+                .flatten()
+        } else {
+            None
+        };
+        match handle
+            .authenticate_publickey_with(&opts.user, key, hash_alg, agent)
+            .await
+        {
+            Ok(result) if result.success() => return Ok(true),
+            // 该身份被拒或签名失败：尝试下一个
+            _ => continue,
+        }
+    }
+    Ok(false)
+}
+
 struct ClientHandler {
     check: HostKeyCheck,
+    host: String,
+    port: u16,
 }
 
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, _key: &ssh_key::PublicKey) -> Result<bool, Self::Error> {
+    async fn check_server_key(&mut self, key: &ssh_key::PublicKey) -> Result<bool, Self::Error> {
         match &self.check {
             HostKeyCheck::AcceptAll => Ok(true),
-            // M1 起由 app 层注入 known_hosts 校验；此处默认拒绝，fail-closed
+            HostKeyCheck::KnownHosts(policy) => {
+                // 评估 IO 失败：fail-closed 拒绝（视为环境异常，不重试弹窗）
+                let status = match hostkey::evaluate(&policy.path, &self.host, self.port, key) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "known_hosts 评估失败，拒绝连接");
+                        return Ok(false);
+                    }
+                };
+                let prompt = match status {
+                    HostKeyStatus::Trusted => return Ok(true),
+                    HostKeyStatus::Unknown => HostKeyPrompt::Unknown {
+                        host: self.host.clone(),
+                        port: self.port,
+                        key_type: key.algorithm().to_string(),
+                        fingerprint: hostkey::fingerprint(key),
+                    },
+                    HostKeyStatus::Changed { old_fingerprint } => HostKeyPrompt::Changed {
+                        host: self.host.clone(),
+                        port: self.port,
+                        key_type: key.algorithm().to_string(),
+                        old_fingerprint,
+                        new_fingerprint: hostkey::fingerprint(key),
+                    },
+                };
+                match policy.prompter.prompt(prompt).await {
+                    HostKeyDecision::Learn => {
+                        // 变更情形先清旧记录再写入，避免旧条目持续触发 KeyChanged。
+                        // 落盘失败不否决用户已批准的本次连接（下次连接会重新弹窗）。
+                        if let Err(e) =
+                            hostkey::remove_host_keys(&policy.path, &self.host, self.port).and_then(
+                                |_| hostkey::learn(&policy.path, &self.host, self.port, key),
+                            )
+                        {
+                            tracing::error!(error = %e, "known_hosts 写入失败");
+                        }
+                        Ok(true)
+                    }
+                    HostKeyDecision::Reject => Ok(false),
+                }
+            }
         }
     }
 }
