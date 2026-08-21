@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["server", "loadgen", "app/src-tauri"]
+
+[profile.release]
+# Spike 测量用 release；保留调试符号便于火焰图分析
+debug = true

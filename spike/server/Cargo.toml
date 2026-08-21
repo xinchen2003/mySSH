@@ -1,0 +1,14 @@
+[package]
+name = "spike-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# aws-lc-rs 需 cmake/nasm（本机没有），spike 用 ring 后端；M0 需对两者做加密吞吐基准对比
+russh = { version = "0.62", default-features = false, features = ["ring"] }
+bytes = "1"
+rand = "0.10"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
