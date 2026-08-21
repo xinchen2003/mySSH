@@ -3,3 +3,6 @@ node_modules/
 dist/
 results/
 *.log
+
+# 本仓库以 docs/ 为规格与设计的事实来源，覆盖全局忽略规则
+!docs/
