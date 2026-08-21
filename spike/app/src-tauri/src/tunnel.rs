@@ -62,6 +62,18 @@ pub fn spawn_tunnel_thread() -> TunnelHandle {
     TunnelHandle { tx }
 }
 
+/// 大 backlog 监听：默认 SOMAXCONN 在 500 并发 SYN 突发下溢出 → SYN 重传 1s，
+/// 建连 P99 被拉高（实测踩中）。隧道入口必须显式放大 backlog。
+fn bind_listener(port: u16) -> std::io::Result<TcpListener> {
+    use socket2::{Domain, SockAddr, Socket, Type};
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None)?;
+    socket.set_nonblocking(true)?;
+    socket.set_reuse_address(true)?;
+    socket.bind(&SockAddr::from(std::net::SocketAddr::from(([127, 0, 0, 1], port))))?;
+    socket.listen(4096)?;
+    TcpListener::from_std(socket.into())
+}
+
 async fn run(mut rx: mpsc::UnboundedReceiver<TunnelCmd>) {
     let mut client: Option<ClientHandle> = None;
     let mut listeners: Vec<tokio::task::AbortHandle> = Vec::new();
@@ -75,9 +87,7 @@ async fn run(mut rx: mpsc::UnboundedReceiver<TunnelCmd>) {
                         client = Some(ssh::connect().await.map_err(|e| e.to_string())?);
                         info!("tunnel ssh connection established");
                     }
-                    let listener = TcpListener::bind(("127.0.0.1", listen_port))
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let listener = bind_listener(listen_port).map_err(|e| e.to_string())?;
                     let handle = client.clone().expect("client just connected");
                     let task = tokio::spawn(accept_loop(listener, handle, target_port));
                     listeners.push(task.abort_handle());

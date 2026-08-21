@@ -209,9 +209,11 @@ async fn flush(
         return;
     }
     let buf = std::mem::replace(agg, Vec::with_capacity(AGG_CAP));
-    // 等待前端信用 —— 背压点；等待期间读取循环挂起
-    if credits.acquire_many(buf.len() as u32).await.is_err() {
-        return;
+    // 等待前端信用 —— 背压点；等待期间读取循环挂起。
+    // 注意：permit 必须 forget，否则 drop 即归还，闸门形同虚设（实测踩中）。
+    match credits.acquire_many(buf.len() as u32).await {
+        Ok(permit) => permit.forget(),
+        Err(_) => return,
     }
     outstanding.fetch_add(buf.len() as i64, Ordering::Relaxed);
     let _ = data_ch.send(Response::new(buf));
@@ -299,6 +301,12 @@ async fn run_load_sequence(stats: Channel<Value>) -> Result<(), String> {
         run_loadgen_phase(&stats, "churn", "127.0.0.1:13389", "churn", 10, 500).await;
         let _ = stats.send(json!({ "type": "all_done" }));
     });
+    Ok(())
+}
+
+#[tauri::command]
+async fn log_frontend(msg: String) -> Result<(), String> {
+    info!(target: "frontend", "{msg}");
     Ok(())
 }
 
@@ -554,12 +562,21 @@ async fn finalize_report(frontend: Value) -> Result<Value, String> {
 // ---------- 入口 ----------
 
 pub fn run() {
+    let log_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("results");
+    std::fs::create_dir_all(&log_dir).ok();
+    let log_file = std::fs::File::create(log_dir.join("app.log")).expect("create app.log");
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,russh=warn".into()),
         )
+        .with_writer(move || log_file.try_clone().expect("clone log file"))
+        .with_ansi(false)
         .init();
+    info!("spike app starting");
 
     let state = AppState {
         client: tokio::sync::Mutex::new(None),
@@ -585,6 +602,7 @@ pub fn run() {
             stop_tunnels,
             run_load_sequence,
             finalize_report,
+            log_frontend,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

@@ -45,7 +45,14 @@ const live = document.getElementById('live')!;
 const log = (m: string) => {
   hud.textContent += `[${((performance.now() - t0Perf) / 1000).toFixed(1)}s] ${m}\n`;
   hud.scrollTop = hud.scrollHeight;
+  try {
+    invoke('log_frontend', { msg: m }).catch(() => {});
+  } catch {
+    // 非 Tauri 环境（浏览器诊断）：invoke 同步抛错，忽略
+  }
 };
+window.addEventListener('error', (e) => log(`JSERROR: ${e.message}`));
+window.addEventListener('unhandledrejection', (e) => log(`JSREJECT: ${String(e.reason)}`));
 
 function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -142,12 +149,20 @@ function drain() {
 requestAnimationFrame(drain);
 
 // ---------- 后端事件
-const statsCh = new Channel<StatsEvent>();
+// 注意：一个 JS Channel 只能传给一个命令。Rust 侧 Channel 在任务结束 Drop 时会发
+// end 标记，且每个 Rust Channel 实例的消息序号从 0 重新计数 —— 跨命令复用同一
+// JS Channel 会导致后续消息被 JS 侧当作乱序旧消息永久搁置（本次实测踩中）。
+const mkStatsChannel = () => {
+  const ch = new Channel<StatsEvent>();
+  ch.onmessage = onStatsEvent;
+  return ch;
+};
+
 const phases: Record<string, PhaseRange> = {};
 let allDone = false;
 let streamDoneInfo: Extract<StatsEvent, { type: 'stream_done' }> | null = null;
 
-statsCh.onmessage = (ev) => {
+function onStatsEvent(ev: StatsEvent) {
   switch (ev.type) {
     case 'stream_done':
       streamDoneInfo = ev;
@@ -166,7 +181,7 @@ statsCh.onmessage = (ev) => {
       log(ev.msg);
       break;
   }
-};
+}
 
 async function waitFor(pred: () => boolean, timeoutMs: number, what: string) {
   const t0 = Date.now();
@@ -196,7 +211,7 @@ async function main() {
 
   // 阶段 A：100MB 流（对应 cat 100MB）
   phases.stream = { start: Date.now() };
-  await invoke('start_stream', { data: streamCh, stats: statsCh, sizeMb: 100 });
+  await invoke('start_stream', { data: streamCh, stats: mkStatsChannel(), sizeMb: 100 });
   await waitFor(() => streamDoneInfo !== null, 180_000, 'stream_done');
   // 等前端队列排空（所有 credit 回流）
   await waitFor(() => pendingBytes === 0 && !flushing, 60_000, 'drain');
@@ -210,7 +225,7 @@ async function main() {
   await invoke('start_tunnel', { listenPort: 13389, targetPort: 9999 });
   await invoke('start_tunnel', { listenPort: 13390, targetPort: 9998 });
   log('tunnels up (13389→sink, 13390→source)');
-  await invoke('run_load_sequence', { stats: statsCh });
+  await invoke('run_load_sequence', { stats: mkStatsChannel() });
   await waitFor(() => allDone, 300_000, 'all_done');
 
   await invoke('stop_tunnels');

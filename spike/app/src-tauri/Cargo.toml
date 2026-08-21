@@ -11,7 +11,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.5", features = [] }
 
 [dependencies]
-tauri = { version = "2.11", features = [] }
+# custom-protocol 必须显式开启：否则 tauri build.rs 把 dev=true 传给 tauri-build，
+# release 也会去加载 devUrl 而非内嵌资源（实测踩中：vite 不在时窗口空白）
+tauri = { version = "2.11", features = ["custom-protocol"] }
 russh = { version = "0.62", default-features = false, features = ["ring"] }
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
@@ -19,5 +21,6 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.37"
+socket2 = { version = "0.6", features = ["all"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

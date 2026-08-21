@@ -4054,6 +4054,7 @@ dependencies = [
  "russh",
  "serde",
  "serde_json",
+ "socket2",
  "sysinfo",
  "tauri",
  "tauri-build",

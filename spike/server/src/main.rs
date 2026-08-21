@@ -186,25 +186,77 @@ impl Handler for ConnHandler {
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
-        match TcpStream::connect((host, port as u16)).await {
-            Ok(tcp) => {
-                let _ = tcp.set_nodelay(true);
-                reply.accept().await;
-                tokio::spawn(async move {
-                    let mut stream = channel.into_stream();
+        // 立即返回，connect+桥接放进独立 task —— russh 服务端在会话读循环里 inline
+        // await 此回调，同步 connect 会串行化同一连接上的所有 channel 打开（实测
+        // 500 并发建连时尾延迟 ~1s）
+        let host = host.to_string();
+        tokio::spawn(async move {
+            match TcpStream::connect((host.as_str(), port as u16)).await {
+                Ok(tcp) => {
+                    let _ = tcp.set_nodelay(true);
+                    reply.accept().await;
+                    let stream = channel.into_stream();
                     let mut tcp = tcp;
-                    match tokio::io::copy_bidirectional(&mut stream, &mut tcp).await {
-                        Ok((a, b)) => info!(up = a, down = b, "direct-tcpip closed"),
+                    // 32KB 中继缓冲，对齐 channel max_packet_size；
+                    // copy_bidirectional 的 8KB 缓冲会把下行消息切成 1/4，实测吞吐降 5 倍
+                    match relay_bridge(stream, &mut tcp).await {
+                        Ok((up, down)) => info!(up, down, "direct-tcpip closed"),
                         Err(e) => warn!(?e, "direct-tcpip bridge error"),
                     }
-                });
+                }
+                Err(e) => {
+                    warn!(?e, host, port, "direct-tcpip target unreachable");
+                    reply.reject(ChannelOpenFailure::ConnectFailed).await;
+                }
             }
-            Err(e) => {
-                warn!(?e, host, port, "direct-tcpip target unreachable");
-                reply.reject(ChannelOpenFailure::ConnectFailed).await;
+        });
+        Ok(())
+    }
+}
+
+/// 服务器侧 direct-tcpip 桥接：显式 32KB 双方向中继
+async fn relay_bridge(
+    chan: russh::ChannelStream<Msg>,
+    tcp: &mut TcpStream,
+) -> std::io::Result<(u64, u64)> {
+    let (mut cr, mut cw) = tokio::io::split(chan);
+    let (mut tr, mut tw) = tokio::io::split(tcp);
+
+    let up = async move {
+        let mut total = 0u64;
+        let mut buf = vec![0u8; 32 * 1024];
+        loop {
+            match tr.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if cw.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                    total += n as u64;
+                }
             }
         }
-        Ok(())
+        total
+    };
+    let down = async move {
+        let mut total = 0u64;
+        let mut buf = vec![0u8; 32 * 1024];
+        loop {
+            match cr.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tw.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                    total += n as u64;
+                }
+            }
+        }
+        total
+    };
+    tokio::select! {
+        u = up => Ok((u, 0)),
+        d = down => Ok((0, d)),
     }
 }
 
