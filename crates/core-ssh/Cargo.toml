@@ -1,0 +1,19 @@
+[package]
+name = "core-ssh"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+[dependencies]
+russh.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+anyhow.workspace = true
+rand = "0.10"

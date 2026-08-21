@@ -1,0 +1,16 @@
+@import 'tailwindcss';
+@import '@xterm/xterm/css/xterm.css';
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: #0b0e14;
+  color: #bfbdb6;
+  font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+}

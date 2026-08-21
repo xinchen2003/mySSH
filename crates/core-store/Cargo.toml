@@ -1,0 +1,12 @@
+[package]
+name = "core-store"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+zeroize = { version = "1", features = ["zeroize_derive"] }

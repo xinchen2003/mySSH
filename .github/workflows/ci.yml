@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+
+  frontend:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/ui/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  app-release:
+    # 验证 release 产物自包含（custom-protocol 内嵌资源，不依赖 devUrl）
+    runs-on: windows-latest
+    needs: [rust, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/ui/package-lock.json
+      - run: npm ci --prefix app/ui && npm run build --prefix app/ui
+      - name: build app (release)
+        run: cargo build --release -p app
+      - name: build cli (release)
+        run: cargo build --release -p cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: myssh-bin
+          path: |
+            target/release/app.exe
+            target/release/myssh-cli.exe
+          retention-days: 7
+
+  perf-bench:
+    # Spike 压测套件软门槛：跑完上传结果，不阻断合并（阈值告警另接）
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/ui/package-lock.json
+      - run: npm ci --prefix spike/app && npm run build --prefix spike/app
+      - run: cargo build --release --manifest-path spike/Cargo.toml
+      - name: run spike suite
+        run: |
+          Start-Process -FilePath spike\target\release\spike-server.exe
+          Start-Sleep -Seconds 2
+          spike\target\release\spike-app.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spike-results
+          path: spike/results/*.json
+          retention-days: 30

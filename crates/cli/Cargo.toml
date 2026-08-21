@@ -1,0 +1,23 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "myssh-cli"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+core-ssh.path = "../core-ssh"
+core-tunnel.path = "../core-tunnel"
+core-policy.path = "../core-policy"
+core-store.path = "../core-store"
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+clap = { version = "4", features = ["derive"] }

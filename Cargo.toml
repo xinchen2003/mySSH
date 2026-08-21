@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+thiserror = "2"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+russh = { version = "0.62", default-features = false, features = ["ring"] }
+
+[profile.release]
+debug = true
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+
+# 全 workspace 默认 lint：非测试代码禁止 unwrap/expect（附 // SAFETY: 注释豁免）
+[workspace.lints.clippy]
+unwrap_used = { level = "deny", priority = -1 }
+expect_used = { level = "deny", priority = -1 }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
