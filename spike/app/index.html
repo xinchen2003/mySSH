@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mySSH spike</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0b0e14; color: #bfbdb6; font: 12px/1.4 Consolas, monospace; }
+      #app { display: flex; height: 100vh; }
+      #term { flex: 1; min-width: 0; padding: 4px; }
+      #side { width: 340px; border-left: 1px solid #1c212b; display: flex; flex-direction: column; }
+      #hud { flex: 1; overflow-y: auto; white-space: pre-wrap; padding: 8px; }
+      #live { padding: 8px; border-top: 1px solid #1c212b; color: #59c2ff; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="term"></div>
+      <div id="side">
+        <div id="hud"></div>
+        <div id="live">boot…</div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
