@@ -4,7 +4,7 @@ import { TabBar } from './components/TabBar';
 import { ConnectDialog } from './components/ConnectDialog';
 import { HostKeyDialog } from './components/HostKeyDialog';
 import { KiDialog } from './components/KiDialog';
-import { TerminalView } from './terminal/TerminalView';
+import { SplitTree } from './components/SplitTree';
 import { useAppStore } from './state/app-store';
 
 export function App() {
@@ -38,7 +38,15 @@ export function App() {
             </button>
           </div>
         ) : (
-          tabs.map((t) => <TerminalView key={t.id} tab={t} visible={t.id === activeId} />)
+          tabs.map((t) => (
+            <div
+              key={t.id}
+              className="h-full w-full"
+              style={{ display: t.id === activeId ? undefined : 'none' }}
+            >
+              <SplitTree tab={t} node={t.layout} visible={t.id === activeId} />
+            </div>
+          ))
         )}
       </main>
       <ConnectDialog />

@@ -8,19 +8,19 @@ import type { KiChallengeFrame } from '../term/types';
  * echo=false 的提问用密码输入框（不回显）。
  */
 export function KiDialog() {
-  const pending = useAppStore((s) => s.pendingKi);
+  const pending = useAppStore((s) => s.pendingKis[0] ?? null);
   if (!pending) return null;
   // key=confirmId：新一轮质询重新挂载表单，答案数组随之重置
   return <KiForm key={pending.confirmId} pending={pending} />;
 }
 
 function KiForm({ pending }: { pending: KiChallengeFrame }) {
-  const clear = useAppStore((s) => s.setPendingKi);
+  const clear = useAppStore((s) => s.shiftKi);
   const [answers, setAnswers] = useState<string[]>(() => pending.prompts.map(() => ''));
 
   const submit = (values: string[] | null) => {
     void invoke('ki_respond', { confirmId: pending.confirmId, answers: values });
-    clear(null);
+    clear();
   };
 
   return (

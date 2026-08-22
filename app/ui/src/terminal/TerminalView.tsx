@@ -6,17 +6,17 @@ import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { SerializeAddon } from '@xterm/addon-serialize';
-import { useAppStore, type Tab } from '../state/app-store';
+import { useAppStore, type Pane, type Tab } from '../state/app-store';
 import { termRegistry } from '../term/registry';
 
 /**
- * 终端视图：xterm 生命周期 + 会话 attach。
- * 所有 tab 常驻挂载、非激活隐藏——保留回滚与渲染状态；
- * ResizeObserver 在重新可见时自动 fit。
+ * 终端视图：xterm 生命周期 + 会话 attach。每个 pane 一份。
+ * 显隐由外层 PaneFrame/tab 容器 display 控制——常驻挂载保留回滚与渲染状态；
+ * ResizeObserver 在重新可见时自动 fit（0 尺寸跳过）。
  */
-export function TerminalView({ tab, visible }: { tab: Tab; visible: boolean }) {
+export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const setTabState = useAppStore((s) => s.setTabState);
+  const setPaneState = useAppStore((s) => s.setPaneState);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -42,10 +42,10 @@ export function TerminalView({ tab, visible }: { tab: Tab; visible: boolean }) {
     } catch {
       // @xterm/addon-canvas 尚未支持 xterm 6（peer ^5），降级用 xterm 核心内置 canvas 渲染器
     }
-    termRegistry.set(tab.id, term);
+    termRegistry.set(pane.id, term);
 
-    tab.session.attach(term, tab.spec).catch((e: unknown) => {
-      setTabState(tab.id, 'error');
+    pane.session.attach(term, tab.spec).catch((e: unknown) => {
+      setPaneState(tab.id, pane.id, 'error');
       term.write(`\r\n\x1b[1;31m连接失败: ${String(e)}\x1b[0m\r\n`);
     });
 
@@ -56,17 +56,11 @@ export function TerminalView({ tab, visible }: { tab: Tab; visible: boolean }) {
     observer.observe(host);
     return () => {
       observer.disconnect();
-      termRegistry.delete(tab.id);
+      termRegistry.delete(pane.id);
       term.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return (
-    <div
-      ref={hostRef}
-      className="h-full w-full p-1"
-      style={{ display: visible ? undefined : 'none' }}
-    />
-  );
+  return <div ref={hostRef} className="h-full w-full p-1" />;
 }

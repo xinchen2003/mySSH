@@ -10,17 +10,29 @@ export function installDevHooks(): void {
   const w = window as unknown as { __myssh?: unknown };
   w.__myssh = {
     connect: (spec: TermOpenSpec) => useAppStore.getState().connect(spec),
+    splitActive: (dir: 'row' | 'col') => useAppStore.getState().splitActive(dir),
     tabs: () =>
       useAppStore.getState().tabs.map((t) => ({
         id: t.id,
         title: t.title,
-        state: t.state,
-        backendTabId: t.session.tabId,
+        activePaneId: t.activePaneId,
+        panes: Object.values(t.panes).map((p) => ({
+          id: p.id,
+          state: p.state,
+          backendTabId: p.session.tabId,
+        })),
       })),
+    /** 激活 tab 的激活 pane 的 xterm 实例 */
+    activeTerm: () => {
+      const s = useAppStore.getState();
+      const tab = s.tabs.find((t) => t.id === s.activeId);
+      return tab ? (termRegistry.get(tab.activePaneId) ?? null) : null;
+    },
     /** 读激活终端可见缓冲区文本（验证渲染内容） */
     activeBufferText: () => {
-      const id = useAppStore.getState().activeId;
-      const term = id ? termRegistry.get(id) : null;
+      const s = useAppStore.getState();
+      const tab = s.tabs.find((t2) => t2.id === s.activeId);
+      const term = tab ? termRegistry.get(tab.activePaneId) : null;
       if (!term) return null;
       const buf = term.buffer.active;
       const lines: string[] = [];
@@ -30,17 +42,18 @@ export function installDevHooks(): void {
     },
     /** 向激活终端注入输入（与键盘同路径：xterm paste → onData → term_input） */
     type: (text: string) => {
-      const id = useAppStore.getState().activeId;
-      const term = id ? termRegistry.get(id) : null;
+      const s = useAppStore.getState();
+      const tab = s.tabs.find((t) => t.id === s.activeId);
+      const term = tab ? termRegistry.get(tab.activePaneId) : null;
       term?.paste(text);
     },
-    pendingHostKey: () => useAppStore.getState().pendingHostKey,
+    pendingHostKey: () => useAppStore.getState().pendingHostKeys[0] ?? null,
     /** 应答 hostkey 弹窗（与点按钮同路径） */
     answerHostKey: async (accept: boolean, remember: boolean) => {
-      const p = useAppStore.getState().pendingHostKey;
+      const p = useAppStore.getState().pendingHostKeys[0] ?? null;
       if (!p) return false;
       await invoke('hostkey_confirm', { confirmId: p.confirmId, accept, remember });
-      useAppStore.getState().setPendingHostKey(null);
+      useAppStore.getState().shiftHostKey();
       return true;
     },
   };

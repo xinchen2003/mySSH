@@ -3,6 +3,7 @@ import { useAppStore } from '../state/app-store';
 const STATE_DOT: Record<string, string> = {
   connecting: 'bg-yellow-500',
   connected: 'bg-green-500',
+  reconnecting: 'bg-orange-500',
   closed: 'bg-neutral-500',
   error: 'bg-red-500',
 };
@@ -13,33 +14,57 @@ export function TabBar() {
   const setActive = useAppStore((s) => s.setActive);
   const closeTab = useAppStore((s) => s.closeTab);
   const openConnect = useAppStore((s) => s.openConnect);
+  const splitActive = useAppStore((s) => s.splitActive);
+
+  const activeTab = tabs.find((t) => t.id === activeId);
 
   return (
     <div className="flex items-center gap-1 overflow-x-auto border-b border-neutral-800 bg-neutral-900 px-2 py-1">
-      {tabs.map((t) => (
-        <div
-          key={t.id}
-          className={`group flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs ${
-            t.id === activeId
-              ? 'bg-neutral-700 text-neutral-100'
-              : 'text-neutral-400 hover:bg-neutral-800'
-          }`}
-          onClick={() => setActive(t.id)}
-        >
-          <span className={`h-1.5 w-1.5 rounded-full ${STATE_DOT[t.state] ?? ''}`} />
-          <span className="max-w-40 truncate">{t.title}</span>
-          <button
-            className="ml-1 hidden text-neutral-500 hover:text-neutral-200 group-hover:inline"
-            onClick={(e) => {
-              e.stopPropagation();
-              closeTab(t.id);
-            }}
-            aria-label="close tab"
+      {tabs.map((t) => {
+        const pane = t.panes[t.activePaneId];
+        return (
+          <div
+            key={t.id}
+            className={`group flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs ${
+              t.id === activeId
+                ? 'bg-neutral-700 text-neutral-100'
+                : 'text-neutral-400 hover:bg-neutral-800'
+            }`}
+            onClick={() => setActive(t.id)}
           >
-            ×
+            <span className={`h-1.5 w-1.5 rounded-full ${STATE_DOT[pane?.state ?? ''] ?? ''}`} />
+            <span className="max-w-40 truncate">{t.title}</span>
+            <button
+              className="ml-1 hidden text-neutral-500 hover:text-neutral-200 group-hover:inline"
+              onClick={(e) => {
+                e.stopPropagation();
+                closeTab(t.id);
+              }}
+              aria-label="close tab"
+            >
+              ×
+            </button>
+          </div>
+        );
+      })}
+      {activeTab && (
+        <span className="ml-1 flex gap-0.5 border-l border-neutral-700 pl-2">
+          <button
+            className="rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
+            onClick={() => splitActive('row')}
+            title="向右分屏（同主机新会话）"
+          >
+            ⬌
           </button>
-        </div>
-      ))}
+          <button
+            className="rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
+            onClick={() => splitActive('col')}
+            title="向下分屏（同主机新会话）"
+          >
+            ⬍
+          </button>
+        </span>
+      )}
       <button
         className="rounded px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
         onClick={openConnect}

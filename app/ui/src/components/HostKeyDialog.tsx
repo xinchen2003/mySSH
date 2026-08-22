@@ -6,8 +6,8 @@ import { useAppStore } from '../state/app-store';
  * 首连展示指纹，变更时硬警告（红）并展示新旧指纹对比。
  */
 export function HostKeyDialog() {
-  const pending = useAppStore((s) => s.pendingHostKey);
-  const clear = useAppStore((s) => s.setPendingHostKey);
+  const pending = useAppStore((s) => s.pendingHostKeys[0] ?? null);
+  const clear = useAppStore((s) => s.shiftHostKey);
 
   if (!pending) return null;
   const changed = pending.kind === 'changed';
@@ -18,7 +18,7 @@ export function HostKeyDialog() {
       accept,
       remember,
     });
-    clear(null);
+    clear();
   };
 
   return (
