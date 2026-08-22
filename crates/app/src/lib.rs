@@ -26,6 +26,7 @@ pub fn run() {
     info!("mySSH starting");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Arc::new(TerminalManager::default()))
         .invoke_handler(tauri::generate_handler![
             log_frontend,

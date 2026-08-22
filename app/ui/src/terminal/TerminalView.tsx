@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
@@ -6,17 +6,24 @@ import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { SerializeAddon } from '@xterm/addon-serialize';
+import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { useAppStore, type Pane, type Tab } from '../state/app-store';
 import { termRegistry } from '../term/registry';
 import type { SessionStateFrame } from '../term/types';
+import { SearchBar } from '../components/SearchBar';
 
 /**
  * 终端视图：xterm 生命周期 + 会话 attach。每个 pane 一份。
  * 显隐由外层 PaneFrame/tab 容器 display 控制——常驻挂载保留回滚与渲染状态；
  * ResizeObserver 在重新可见时自动 fit（0 尺寸跳过）。
+ *
+ * 体验项（M1）：Ctrl+Shift+F 搜索浮条；选中即复制；右键粘贴（括号粘贴模式
+ * 由 xterm 内建处理）；真彩色/Unicode11 宽字符/超链接由 addon 层提供。
  */
 export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const setPaneState = useAppStore((s) => s.setPaneState);
 
   useEffect(() => {
@@ -30,8 +37,10 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       fontSize: 14,
     });
     const fit = new FitAddon();
+    const search = new SearchAddon();
+    searchRef.current = search;
     term.loadAddon(fit);
-    term.loadAddon(new SearchAddon());
+    term.loadAddon(search);
     term.loadAddon(new WebLinksAddon());
     term.loadAddon(new Unicode11Addon());
     term.loadAddon(new SerializeAddon());
@@ -44,6 +53,37 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       // @xterm/addon-canvas 尚未支持 xterm 6（peer ^5），降级用 xterm 核心内置 canvas 渲染器
     }
     termRegistry.set(pane.id, term);
+
+    // Ctrl+Shift+F 唤起搜索；其余按键全部放行给终端
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyF' && e.type === 'keydown') {
+        setSearchOpen(true);
+        return false;
+      }
+      return true;
+    });
+
+    // 选中即复制（规格书 M1 体验项）。
+    // 剪贴板走 Tauri 插件：WebView2 的 navigator.clipboard 在窗口无焦点时静默挂起（实测）。
+    term.onSelectionChange(() => {
+      const sel = term.getSelection();
+      if (sel)
+        void writeText(sel).catch((e: unknown) => {
+          console.warn('copy failed', e);
+        });
+    });
+
+    // 右键粘贴
+    host.oncontextmenu = (e) => {
+      e.preventDefault();
+      void readText()
+        .then((text) => {
+          if (text) term.paste(text);
+        })
+        .catch((e: unknown) => {
+          console.warn('paste failed', e);
+        });
+    };
 
     // 断线/重连/终态标记直接写入 xterm（同一实例续写，回滚天然保留）
     const stateHook = (ev: SessionStateFrame) => {
@@ -68,9 +108,24 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       observer.disconnect();
       termRegistry.delete(pane.id);
       term.dispose();
+      searchRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return <div ref={hostRef} className="h-full w-full p-1" />;
+  return (
+    <div className="relative h-full w-full">
+      <div ref={hostRef} className="h-full w-full p-1" />
+      {searchOpen && (
+        <SearchBar
+          onFind={(q, dir) => {
+            if (!q) return;
+            if (dir === 'next') searchRef.current?.findNext(q, { incremental: true });
+            else searchRef.current?.findPrevious(q);
+          }}
+          onClose={() => setSearchOpen(false)}
+        />
+      )}
+    </div>
+  );
 }

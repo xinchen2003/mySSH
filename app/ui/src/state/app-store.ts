@@ -53,6 +53,8 @@ interface AppStore {
   splitActive(dir: 'row' | 'col'): void;
   closePane(tabId: string, paneId: string): void;
   setActive(id: string): void;
+  /** 拖拽重排：把 dragId 移到 targetId 之前 */
+  moveTab(dragId: string, targetId: string): void;
   setActivePane(tabId: string, paneId: string): void;
   setSplitRatio(tabId: string, splitId: string, ratio: number): void;
   setPaneState(tabId: string, paneId: string, state: PaneState): void;
@@ -136,6 +138,18 @@ export const useAppStore = create<AppStore>((set, get) => {
     },
 
     setActive: (id) => set({ activeId: id }),
+
+    moveTab: (dragId, targetId) =>
+      set((s) => {
+        if (dragId === targetId) return {};
+        const from = s.tabs.findIndex((t) => t.id === dragId);
+        if (from < 0) return {};
+        const tabs = [...s.tabs];
+        const [moved] = tabs.splice(from, 1);
+        const to = tabs.findIndex((t) => t.id === targetId);
+        tabs.splice(to < 0 ? tabs.length : to, 0, moved);
+        return { tabs };
+      }),
 
     setActivePane: (tabId, paneId) =>
       set((s) => ({

@@ -15,6 +15,7 @@ export function TabBar() {
   const closeTab = useAppStore((s) => s.closeTab);
   const openConnect = useAppStore((s) => s.openConnect);
   const splitActive = useAppStore((s) => s.splitActive);
+  const moveTab = useAppStore((s) => s.moveTab);
 
   const activeTab = tabs.find((t) => t.id === activeId);
 
@@ -25,6 +26,14 @@ export function TabBar() {
         return (
           <div
             key={t.id}
+            draggable
+            onDragStart={(e) => e.dataTransfer.setData('text/myssh-tab', t.id)}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const dragId = e.dataTransfer.getData('text/myssh-tab');
+              if (dragId) moveTab(dragId, t.id);
+            }}
             className={`group flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs ${
               t.id === activeId
                 ? 'bg-neutral-700 text-neutral-100'
