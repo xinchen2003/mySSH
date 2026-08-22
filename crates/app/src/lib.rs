@@ -1,6 +1,7 @@
 //! mySSH 应用后端。M0：壳 + 日志/panic；M1：终端会话（term_* 命令族）。
 //! 命令契约见 docs/design/03-ipc-contract.md（逐里程碑补齐）。
 
+mod files;
 mod logging;
 mod terminal;
 
@@ -36,6 +37,7 @@ pub fn run() {
             terminal::term_close,
             terminal::hostkey_confirm,
             terminal::ki_respond,
+            files::read_private_key,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

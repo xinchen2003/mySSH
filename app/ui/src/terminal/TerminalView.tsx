@@ -6,13 +6,17 @@ import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { SerializeAddon } from '@xterm/addon-serialize';
+import { useAppStore, type Tab } from '../state/app-store';
+import { termRegistry } from '../term/registry';
 
 /**
- * 终端视图。M0：xterm + 全 addon 挂载 + WebGL→Canvas 降级路径。
- * 数据通路（term_open/StreamConsumer 接线）在 M1 接通。
+ * 终端视图：xterm 生命周期 + 会话 attach。
+ * 所有 tab 常驻挂载、非激活隐藏——保留回滚与渲染状态；
+ * ResizeObserver 在重新可见时自动 fit。
  */
-export function TerminalView() {
+export function TerminalView({ tab, visible }: { tab: Tab; visible: boolean }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const setTabState = useAppStore((s) => s.setTabState);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -33,25 +37,36 @@ export function TerminalView() {
     term.open(host);
     fit.fit();
 
-    let renderer = 'webgl';
     try {
       term.loadAddon(new WebglAddon());
     } catch {
       // @xterm/addon-canvas 尚未支持 xterm 6（peer ^5），降级用 xterm 核心内置 canvas 渲染器
-      renderer = 'canvas(core)';
     }
-    term.write(`\x1b[1;36mmySSH\x1b[0m M0 骨架 · 渲染器 ${renderer}\r\n`);
-    term.write(
-      '\x1b[2m终端链路：8ms/256KB 聚合 → ipc::Channel(Raw) → rAF 背压 → credit 闸门\x1b[0m\r\n',
-    );
+    termRegistry.set(tab.id, term);
 
-    const observer = new ResizeObserver(() => fit.fit());
+    tab.session.attach(term, tab.spec).catch((e: unknown) => {
+      setTabState(tab.id, 'error');
+      term.write(`\r\n\x1b[1;31m连接失败: ${String(e)}\x1b[0m\r\n`);
+    });
+
+    const observer = new ResizeObserver(() => {
+      // display:none 时尺寸为 0，fit 会产生 0 列——跳过
+      if (host.clientWidth > 0 && host.clientHeight > 0) fit.fit();
+    });
     observer.observe(host);
     return () => {
       observer.disconnect();
+      termRegistry.delete(tab.id);
       term.dispose();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return <div ref={hostRef} className="h-full w-full p-1" />;
+  return (
+    <div
+      ref={hostRef}
+      className="h-full w-full p-1"
+      style={{ display: visible ? undefined : 'none' }}
+    />
+  );
 }
