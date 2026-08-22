@@ -1,8 +1,12 @@
-//! mySSH 应用后端。M0：壳 + 日志/panic + 最小命令面。
+//! mySSH 应用后端。M0：壳 + 日志/panic；M1：终端会话（term_* 命令族）。
 //! 命令契约见 docs/design/03-ipc-contract.md（逐里程碑补齐）。
 
 mod logging;
+mod terminal;
 
+use std::sync::Arc;
+
+use terminal::TerminalManager;
 use tracing::info;
 
 #[tauri::command]
@@ -21,7 +25,18 @@ pub fn run() {
     info!("mySSH starting");
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![log_frontend, app_version])
+        .manage(Arc::new(TerminalManager::default()))
+        .invoke_handler(tauri::generate_handler![
+            log_frontend,
+            app_version,
+            terminal::term_open,
+            terminal::term_input,
+            terminal::term_credit,
+            terminal::term_resize,
+            terminal::term_close,
+            terminal::hostkey_confirm,
+            terminal::ki_respond,
+        ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {
             tracing::error!(?e, "tauri exited");

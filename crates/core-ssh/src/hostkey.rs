@@ -69,6 +69,8 @@ pub enum HostKeyPrompt {
 pub enum HostKeyDecision {
     /// 信任并写入 known_hosts（Changed 情形会先移除旧记录）
     Learn,
+    /// 仅本次连接信任，不写 known_hosts（下次连接重新弹窗）
+    AcceptOnce,
     Reject,
 }
 

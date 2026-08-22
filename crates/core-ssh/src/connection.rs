@@ -416,6 +416,7 @@ impl client::Handler for ClientHandler {
                         }
                         Ok(true)
                     }
+                    HostKeyDecision::AcceptOnce => Ok(true),
                     HostKeyDecision::Reject => Ok(false),
                 }
             }
