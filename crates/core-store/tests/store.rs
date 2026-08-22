@@ -141,3 +141,54 @@ async fn audit_append_and_cursor_pagination() {
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
+
+#[tokio::test]
+async fn import_openssh_config() {
+    let path = temp_db("import");
+    let store = Store::open(&path).await.expect("open");
+    let text = r#"
+# 注释行
+Host prod-web prod-web.internal
+    HostName 192.0.2.10
+    User ops
+    Port 2222
+    IdentityFile ~/.ssh/id_ed25519
+
+Host *.internal
+    User jumped
+
+Host nouser
+    HostName 192.0.2.20
+
+Host legacy
+    HostName 192.0.2.30
+    User root
+"#;
+    let outcome = core_store::import_openssh(&store, text, "C:\\Users\\me")
+        .await
+        .expect("import");
+    assert_eq!(outcome.imported, 2, "prod-web + legacy 可导入");
+    assert_eq!(outcome.skipped, 2, "通配块 + 无 user 块");
+
+    let prod = store.sessions().get("ssh-prod-web").await.expect("get");
+    assert_eq!(prod.host, "192.0.2.10");
+    assert_eq!(prod.port, 2222);
+    assert_eq!(prod.user, "ops");
+    assert_eq!(prod.auth_type, AuthType::PublicKey);
+    assert_eq!(
+        prod.key_path.as_deref(),
+        Some("C:\\Users\\me/.ssh/id_ed25519")
+    );
+
+    let legacy = store.sessions().get("ssh-legacy").await.expect("get");
+    assert_eq!(legacy.auth_type, AuthType::Agent, "无 IdentityFile → agent");
+
+    // 幂等：重复导入不增生
+    let again = core_store::import_openssh(&store, text, "C:\\Users\\me")
+        .await
+        .expect("reimport");
+    assert_eq!(again.imported, 2);
+    assert_eq!(store.sessions().list().await.unwrap().len(), 2);
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}

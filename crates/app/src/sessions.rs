@@ -127,6 +127,39 @@ pub async fn vault_status(
     Ok(json!({ "unlocked": status == core_store::VaultStatus::Unlocked }))
 }
 
+/// 导入 OpenSSH 客户端配置（缺省 ~/.ssh/config）；幂等
+#[tauri::command]
+pub async fn import_openssh(
+    path: Option<String>,
+    state: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "无法定位用户主目录".to_string())?;
+    let file = path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home.join(".ssh").join("config"));
+    let text =
+        std::fs::read_to_string(&file).map_err(|e| format!("读取 {} 失败: {e}", file.display()))?;
+    let home_str = home.to_string_lossy().to_string();
+    let outcome = core_store::import_openssh(&state.store, &text, &home_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .audit()
+        .append(
+            Actor::Gui,
+            None,
+            "import_openssh",
+            &json!({ "path": file.display().to_string(), "imported": outcome.imported, "skipped": outcome.skipped }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "imported": outcome.imported, "skipped": outcome.skipped }))
+}
+
 /// sessionId → TermOpenSpec（秘密材料从保险库取出即用；Zeroizing 在 core-ssh 边界生效）
 pub async fn resolve_session_spec(
     store: &Store,

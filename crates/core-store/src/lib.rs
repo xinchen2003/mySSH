@@ -11,6 +11,7 @@
 mod audit;
 mod cred;
 mod error;
+pub mod import;
 mod session;
 
 use std::path::Path;
@@ -21,6 +22,7 @@ use sqlx::SqlitePool;
 pub use audit::{Actor, AuditRecord, AuditRepo};
 pub use cred::{CredentialKind, CredentialStore, VaultStatus};
 pub use error::StoreError;
+pub use import::{import_openssh, ImportOutcome};
 pub use session::{AuthType, SessionRecord, SessionRepo};
 
 /// 凭据载体：不实现 Serialize/Clone 的 Debug 明文输出；Drop 时零化。

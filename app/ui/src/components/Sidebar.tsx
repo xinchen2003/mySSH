@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../state/app-store';
 
 /**
@@ -30,13 +31,25 @@ export function Sidebar() {
     <aside className="flex w-56 shrink-0 flex-col border-r border-neutral-800 bg-neutral-900">
       <div className="flex items-center justify-between px-3 py-2 text-xs text-neutral-400">
         <span>会话</span>
-        <button
-          className="rounded px-1 hover:bg-neutral-800 hover:text-neutral-100"
-          onClick={() => openConnect()}
-          title="新建会话"
-        >
-          ＋
-        </button>
+        <span className="flex gap-1">
+          <button
+            className="rounded px-1 hover:bg-neutral-800 hover:text-neutral-100"
+            onClick={() => {
+              void invoke<{ imported: number; skipped: number }>('import_openssh', {})
+                .then((r) => window.alert(`导入完成：新增/更新 ${r.imported}，跳过 ${r.skipped}`))
+                .then(() => load())
+                .catch((e: unknown) => window.alert(`导入失败：${String(e)}`));
+            }}
+            title="从 ~/.ssh/config 导入"
+          >
+            ⇩
+          </button>
+          <button
+            className="rounded px-1 hover:bg-neutral-800 hover:text-neutral-100"
+            onClick={() => openConnect()}
+            title="新建会话"
+          ></button>
+        </span>
       </div>
       <div className="flex-1 overflow-y-auto px-1 pb-2">
         {sessions.length === 0 && (

@@ -59,6 +59,7 @@ pub fn run() {
             sessions::cred_set,
             sessions::cred_delete,
             sessions::vault_status,
+            sessions::import_openssh,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {
