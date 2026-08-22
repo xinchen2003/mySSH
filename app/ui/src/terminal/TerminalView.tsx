@@ -94,7 +94,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       else if (ev.state === 'closed') term.write('\r\n\x1b[2m[连接已关闭]\x1b[0m\r\n');
     };
 
-    pane.session.attach(term, tab.spec, stateHook).catch((e: unknown) => {
+    pane.session.attach(term, tab.target, stateHook).catch((e: unknown) => {
       setPaneState(tab.id, pane.id, 'error');
       term.write(`\r\n\x1b[1;31m连接失败: ${String(e)}\x1b[0m\r\n`);
     });

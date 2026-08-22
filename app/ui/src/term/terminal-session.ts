@@ -2,7 +2,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import type { Terminal } from '@xterm/xterm';
 import { createStreamChannel } from '../ipc/stream';
 import { StreamConsumer } from '../terminal/stream-consumer';
-import type { SessionStateFrame, TermEvent, TermOpenSpec } from './types';
+import type { ConnectTarget, SessionStateFrame, TermEvent } from './types';
 
 /**
  * 单标签终端会话编排：channels 建立 → term_open → 输入/resize/credit 直发。
@@ -22,7 +22,7 @@ export class TerminalSession {
 
   async attach(
     term: Terminal,
-    spec: TermOpenSpec,
+    target: ConnectTarget,
     stateHook?: (ev: SessionStateFrame) => void,
   ): Promise<string> {
     this.stateHook = stateHook ?? null;
@@ -41,7 +41,8 @@ export class TerminalSession {
     };
 
     const res = await invoke<{ tabId: string }>('term_open', {
-      spec,
+      spec: target.kind === 'spec' ? target.spec : null,
+      sessionId: target.kind === 'session' ? target.sessionId : null,
       data,
       events,
       cols: term.cols,

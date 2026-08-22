@@ -14,4 +14,8 @@ pub enum StoreError {
     Crypto(String),
     #[error("E7006 记录不存在: {0}")]
     NotFound(String),
+    #[error("E7007 数据库操作失败: {0}")]
+    Query(String),
+    #[error("E7008 数据损坏: {0}")]
+    Corrupt(String),
 }

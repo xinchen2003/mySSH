@@ -7,6 +7,26 @@ export type AuthSpec =
   | { type: 'keyboardInteractive' }
   | { type: 'agent' };
 
+/** 与 core-store SessionRecord 对齐（camelCase 序列化） */
+export interface SessionRecord {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authType: 'password' | 'publickey' | 'keyboard-interactive' | 'agent';
+  keyPath?: string | null;
+  groupPath: string;
+  tags: string[];
+  command?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 连接目标：内联参数 或 存储档案引用 */
+export type ConnectTarget =
+  { kind: 'spec'; spec: TermOpenSpec } | { kind: 'session'; sessionId: string };
+
 export interface TermOpenSpec {
   host: string;
   port: number;

@@ -3,10 +3,12 @@
 
 mod files;
 mod logging;
+mod sessions;
 mod terminal;
 
 use std::sync::Arc;
 
+use sessions::SessionManagerState;
 use terminal::TerminalManager;
 use tracing::info;
 
@@ -25,9 +27,21 @@ pub fn run() {
     let _log_guard = logging::init();
     info!("mySSH starting");
 
+    // 会话存储打不开属环境级故障：fail loud（M2 起会话/隧道/审计全依赖它）
+    let store = tauri::async_runtime::block_on(core_store::Store::open(&sessions::store_path()))
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "会话存储打开失败，终止");
+            eprintln!("会话存储打开失败: {e}");
+            std::process::exit(1);
+        });
+    let session_state = Arc::new(SessionManagerState {
+        store: Arc::new(store),
+    });
+
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Arc::new(TerminalManager::default()))
+        .manage(session_state)
         .invoke_handler(tauri::generate_handler![
             log_frontend,
             app_version,
@@ -39,6 +53,12 @@ pub fn run() {
             terminal::hostkey_confirm,
             terminal::ki_respond,
             files::read_private_key,
+            sessions::session_list,
+            sessions::session_upsert,
+            sessions::session_delete,
+            sessions::cred_set,
+            sessions::cred_delete,
+            sessions::vault_status,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

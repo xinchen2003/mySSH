@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand';
 import { TerminalSession } from '../term/terminal-session';
 import {
@@ -10,8 +11,10 @@ import {
   type LayoutNode,
 } from '../term/layout';
 import type {
+  ConnectTarget,
   HostKeyPromptFrame,
   KiChallengeFrame,
+  SessionRecord,
   SessionStateFrame,
   TermEvent,
   TermOpenSpec,
@@ -29,8 +32,8 @@ export interface Tab {
   /** 本地稳定 id（React key） */
   id: string;
   title: string;
-  /** 分屏新 pane 复用同一连接参数 */
-  spec: TermOpenSpec;
+  /** 分屏新 pane 复用同一连接目标 */
+  target: ConnectTarget;
   layout: LayoutNode;
   panes: Record<string, Pane>;
   activePaneId: string;
@@ -47,9 +50,18 @@ interface AppStore {
   pendingHostKeys: HostKeyPromptFrame[];
   pendingKis: KiChallengeFrame[];
 
-  openConnect(): void;
+  openConnect(editTarget?: SessionRecord): void;
   closeConnect(): void;
   connect(spec: TermOpenSpec): void;
+  connectBySession(sessionId: string, title: string): void;
+  /** 会话档案 CRUD（秘密经 cred_set 单独进保险库） */
+  loadSessions(): Promise<void>;
+  deleteSession(id: string): Promise<void>;
+  /** 编辑既有会话（null=新建） */
+  editing: SessionRecord | null;
+  sessions: SessionRecord[];
+  sidebarOpen: boolean;
+  toggleSidebar(): void;
   splitActive(dir: 'row' | 'col'): void;
   closePane(tabId: string, paneId: string): void;
   setActive(id: string): void;
@@ -75,28 +87,51 @@ export const useAppStore = create<AppStore>((set, get) => {
     return { id, session: new TerminalSession(onEvent), state: 'connecting' };
   };
 
+  const openTabWithTarget = (target: ConnectTarget, title: string) => {
+    const tabId = `tab${tabSeq++}`;
+    const pane = makePane(tabId);
+    const tab: Tab = {
+      id: tabId,
+      title,
+      target,
+      layout: leaf(pane.id),
+      panes: { [pane.id]: pane },
+      activePaneId: pane.id,
+    };
+    set((s) => ({ tabs: [...s.tabs, tab], activeId: tabId, showConnect: false }));
+  };
+
   return {
     tabs: [],
     activeId: null,
     showConnect: false,
     pendingHostKeys: [],
     pendingKis: [],
+    editing: null,
+    sessions: [],
+    sidebarOpen: true,
 
-    openConnect: () => set({ showConnect: true }),
-    closeConnect: () => set({ showConnect: false }),
+    toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+
+    loadSessions: async () => {
+      const sessions = await invoke<SessionRecord[]>('session_list');
+      set({ sessions });
+    },
+
+    deleteSession: async (id) => {
+      await invoke('session_delete', { sessionId: id });
+      await get().loadSessions();
+    },
+
+    connectBySession: (sessionId, title) => {
+      openTabWithTarget({ kind: 'session', sessionId }, title);
+    },
+
+    openConnect: (editTarget) => set({ showConnect: true, editing: editTarget ?? null }),
+    closeConnect: () => set({ showConnect: false, editing: null }),
 
     connect: (spec) => {
-      const tabId = `tab${tabSeq++}`;
-      const pane = makePane(tabId);
-      const tab: Tab = {
-        id: tabId,
-        title: `${spec.user}@${spec.host}`,
-        spec,
-        layout: leaf(pane.id),
-        panes: { [pane.id]: pane },
-        activePaneId: pane.id,
-      };
-      set((s) => ({ tabs: [...s.tabs, tab], activeId: tabId, showConnect: false }));
+      openTabWithTarget({ kind: 'spec', spec }, `${spec.user}@${spec.host}`);
     },
 
     splitActive: (dir) => {

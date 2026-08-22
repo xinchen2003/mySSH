@@ -76,7 +76,7 @@ export function TabBar() {
       )}
       <button
         className="rounded px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
-        onClick={openConnect}
+        onClick={() => openConnect()}
         aria-label="new connection"
       >
         ＋ 新建

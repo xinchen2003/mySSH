@@ -105,17 +105,28 @@ fn known_hosts_path() -> std::path::PathBuf {
         .join("known_hosts")
 }
 
+// Tauri 命令的 State 参数不占真实调用签名；clippy 误伤，豁免
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn term_open(
-    spec: TermOpenSpec,
+    spec: Option<TermOpenSpec>,
+    session_id: Option<String>,
     data: Channel<Response>,
     events: Channel<Value>,
     cols: u32,
     rows: u32,
     state: tauri::State<'_, Arc<TerminalManager>>,
+    sessions: tauri::State<'_, Arc<crate::sessions::SessionManagerState>>,
 ) -> Result<Value, String> {
     let mgr = state.inner().clone();
     let tab_id = next_id("t", &TAB_SEQ);
+
+    // 二选一：内联 spec（临时连接）或 sessionId（存储档案解析）
+    let spec = match (spec, session_id) {
+        (Some(s), None) => s,
+        (None, Some(id)) => crate::sessions::resolve_session_spec(&sessions.store, &id).await?,
+        _ => return Err("term_open 需要且仅需 spec 或 sessionId 之一".into()),
+    };
 
     let auth = match spec.auth {
         AuthSpec::Password { password } => AuthMethod::Password(Zeroizing::new(password)),

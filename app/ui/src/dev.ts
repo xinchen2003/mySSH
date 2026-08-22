@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from './state/app-store';
 import { termRegistry } from './term/registry';
-import type { TermOpenSpec } from './term/types';
+import type { SessionRecord, TermOpenSpec } from './term/types';
 
 /**
  * 冒烟/自动化钩子（CDP 驱动用）。与图形界面同一入口，不走旁路。
@@ -9,7 +9,15 @@ import type { TermOpenSpec } from './term/types';
 export function installDevHooks(): void {
   const w = window as unknown as { __myssh?: unknown };
   w.__myssh = {
+    rawInvoke: invoke,
     connect: (spec: TermOpenSpec) => useAppStore.getState().connect(spec),
+    connectBySession: (sessionId: string, title: string) =>
+      useAppStore.getState().connectBySession(sessionId, title),
+    loadSessions: () => useAppStore.getState().loadSessions(),
+    upsertSession: (record: SessionRecord) => invoke('session_upsert', { record }),
+    credSet: (sessionId: string, kind: 'password' | 'keyPassphrase', secret: string) =>
+      invoke('cred_set', { sessionId, kind, secret }),
+    sessions: () => useAppStore.getState().sessions,
     splitActive: (dir: 'row' | 'col') => useAppStore.getState().splitActive(dir),
     tabs: () =>
       useAppStore.getState().tabs.map((t) => ({

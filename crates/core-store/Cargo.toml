@@ -7,6 +7,15 @@ edition = "2021"
 workspace = true
 
 [dependencies]
+sqlx = { version = "0.9.0", features = ["sqlite", "runtime-tokio", "migrate"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+windows-dpapi = "0.2.0"
 zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+anyhow.workspace = true
