@@ -46,7 +46,10 @@ export interface SessionStateFrame {
   tabId: string;
   state: 'connected' | 'closed' | 'reconnecting' | 'error';
   message?: string;
+  /** reconnecting 时的第几次尝试 */
   attempt?: number;
+  /** true = 断线重连成功（区别于首次连接） */
+  reconnected?: boolean;
 }
 
 export type TermEvent = HostKeyPromptFrame | KiChallengeFrame | SessionStateFrame;

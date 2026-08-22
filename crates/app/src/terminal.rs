@@ -63,10 +63,20 @@ pub struct TermOpenSpec {
 }
 
 struct TermSession {
+    /// 重连时整枚替换（sessions 锁内 swap）
     writer: Arc<PtyWriter>,
     credits: Arc<Semaphore>,
     outstanding: Arc<AtomicI64>,
+    /// 最新终端尺寸：重连开 PTY 用（resize 命令实时更新）
+    cols: AtomicU64,
+    rows: AtomicU64,
     task: tauri::async_runtime::JoinHandle<()>,
+}
+
+/// 重连上限与退避：1/2/4/8/16s，5 次后判死
+const MAX_RECONNECT_ATTEMPTS: u32 = 5;
+fn reconnect_backoff(attempt: u32) -> Duration {
+    Duration::from_secs(1u64 << (attempt - 1).min(4))
 }
 
 /// 全局终端管理器。Tauri 以 `Arc<TerminalManager>` 托管，
@@ -199,26 +209,30 @@ pub async fn term_open(
         ki_prompter: Some(ki_prompter),
     };
 
-    let conn = SshConnection::connect(opts)
+    let conn = SshConnection::connect(opts.clone())
         .await
         .map_err(|e| e.to_string())?;
-    let term = spec.term.as_deref().unwrap_or("xterm-256color");
+    let term = spec.term.clone().unwrap_or_else(|| "xterm-256color".into());
     let pty = conn
-        .open_pty(term, cols, rows, spec.command.as_deref())
+        .open_pty(&term, cols, rows, spec.command.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     let (reader, writer) = pty.split();
 
     let credits = Arc::new(Semaphore::new(CREDIT_HIGH as usize));
     let outstanding = Arc::new(AtomicI64::new(0));
-    let task = tauri::async_runtime::spawn(stream_loop(
-        tab_id.clone(),
-        reader,
+    let task = tauri::async_runtime::spawn(supervise(SuperviseCtx {
+        tab_id: tab_id.clone(),
+        mgr: mgr.clone(),
+        opts,
+        term,
+        command: spec.command.clone(),
         data,
-        events.clone(),
-        credits.clone(),
-        outstanding.clone(),
-    ));
+        events: events.clone(),
+        credits: credits.clone(),
+        outstanding: outstanding.clone(),
+        reader,
+    }));
 
     mgr.sessions.lock().insert(
         tab_id.clone(),
@@ -226,6 +240,8 @@ pub async fn term_open(
             writer: Arc::new(writer),
             credits,
             outstanding,
+            cols: AtomicU64::new(cols as u64),
+            rows: AtomicU64::new(rows as u64),
             task,
         },
     );
@@ -235,6 +251,96 @@ pub async fn term_open(
         "host": spec.host, "port": spec.port, "user": spec.user,
     }));
     Ok(json!({ "tabId": tab_id }))
+}
+
+/// 会话监督器：读循环 → 意外断开则指数退避重连（同 events 决策桥仍可用）。
+/// 用户 term_close（表项摘除）或重连 5 次皆败 → 终态 closed。
+struct SuperviseCtx {
+    tab_id: String,
+    mgr: Arc<TerminalManager>,
+    opts: ConnectOptions,
+    term: String,
+    command: Option<String>,
+    data: Channel<Response>,
+    events: Channel<Value>,
+    credits: Arc<Semaphore>,
+    outstanding: Arc<AtomicI64>,
+    reader: PtyReader,
+}
+
+async fn supervise(mut ctx: SuperviseCtx) {
+    loop {
+        read_loop(&mut ctx.reader, &ctx.data, &ctx.credits, &ctx.outstanding).await;
+
+        // 用户主动关闭：表项已被 term_close 摘除 → 静默退出
+        if !ctx.mgr.sessions.lock().contains_key(&ctx.tab_id) {
+            return;
+        }
+
+        let (reader, writer) = match reconnect(&ctx).await {
+            Some(pair) => pair,
+            None => {
+                // 重连耗尽：终态 closed + 摘除表项（任务即表项持有者，自生自灭）
+                let _ = ctx.events.send(json!({
+                    "v": 1, "type": "session_state",
+                    "tabId": ctx.tab_id, "state": "closed",
+                }));
+                ctx.mgr.sessions.lock().remove(&ctx.tab_id);
+                return;
+            }
+        };
+        // 换写半（输入路径无感）；表项中途被摘则放弃
+        {
+            let mut sessions = ctx.mgr.sessions.lock();
+            match sessions.get_mut(&ctx.tab_id) {
+                Some(s) => s.writer = Arc::new(writer),
+                None => return,
+            }
+        }
+        let _ = ctx.events.send(json!({
+            "v": 1, "type": "session_state",
+            "tabId": ctx.tab_id, "state": "connected", "reconnected": true,
+        }));
+        ctx.reader = reader;
+    }
+}
+
+/// 指数退避重连；用户关闭（表项消失）立即放弃
+async fn reconnect(ctx: &SuperviseCtx) -> Option<(PtyReader, PtyWriter)> {
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        if attempt > MAX_RECONNECT_ATTEMPTS {
+            return None;
+        }
+        let _ = ctx.events.send(json!({
+            "v": 1, "type": "session_state",
+            "tabId": ctx.tab_id, "state": "reconnecting", "attempt": attempt,
+        }));
+        tokio::time::sleep(reconnect_backoff(attempt)).await;
+        if !ctx.mgr.sessions.lock().contains_key(&ctx.tab_id) {
+            return None;
+        }
+        let (cols, rows) = {
+            let sessions = ctx.mgr.sessions.lock();
+            match sessions.get(&ctx.tab_id) {
+                Some(s) => (
+                    s.cols.load(Ordering::Relaxed) as u32,
+                    s.rows.load(Ordering::Relaxed) as u32,
+                ),
+                None => return None,
+            }
+        };
+        let Ok(conn) = SshConnection::connect(ctx.opts.clone()).await else {
+            continue;
+        };
+        if let Ok(pty) = conn
+            .open_pty(&ctx.term, cols, rows, ctx.command.as_deref())
+            .await
+        {
+            return Some(pty.split());
+        }
+    }
 }
 
 #[tauri::command]
@@ -281,7 +387,11 @@ pub async fn term_resize(
 ) -> Result<(), String> {
     let writer = {
         let sessions = state.sessions.lock();
-        sessions.get(&tab_id).map(|s| s.writer.clone())
+        sessions.get(&tab_id).map(|s| {
+            s.cols.store(cols as u64, Ordering::Relaxed);
+            s.rows.store(rows as u64, Ordering::Relaxed);
+            s.writer.clone()
+        })
     };
     match writer {
         Some(w) => w.resize(cols, rows).await.map_err(|e| e.to_string()),
@@ -336,13 +446,12 @@ pub async fn ki_respond(
 
 /// 终端读取循环：8ms/256KB 聚合 + 信用背压（spike 验证形态）。
 /// 信用耗尽即停止 next_data() → russh 不再确认窗口 → 服务端停发，内存不堆积。
-async fn stream_loop(
-    tab_id: String,
-    mut reader: PtyReader,
-    data_ch: Channel<Response>,
-    events: Channel<Value>,
-    credits: Arc<Semaphore>,
-    outstanding: Arc<AtomicI64>,
+/// EOF/Close 时冲净残余即返回——断线语义与重连由 supervise() 负责。
+async fn read_loop(
+    reader: &mut PtyReader,
+    data_ch: &Channel<Response>,
+    credits: &Arc<Semaphore>,
+    outstanding: &Arc<AtomicI64>,
 ) {
     let mut agg: Vec<u8> = Vec::with_capacity(AGG_CAP);
     let mut flush_at = Instant::now() + AGG_WINDOW;
@@ -356,23 +465,19 @@ async fn stream_loop(
                     Some(bytes) => {
                         agg.extend_from_slice(&bytes);
                         if agg.len() >= AGG_CAP {
-                            flush(&data_ch, &mut agg, &credits, &outstanding).await;
+                            flush(data_ch, &mut agg, credits, outstanding).await;
                             flush_at = Instant::now() + AGG_WINDOW;
                         }
                     }
                     None => {
-                        flush(&data_ch, &mut agg, &credits, &outstanding).await;
-                        let _ = events.send(json!({
-                            "v": 1, "type": "session_state",
-                            "tabId": tab_id, "state": "closed",
-                        }));
+                        flush(data_ch, &mut agg, credits, outstanding).await;
                         return;
                     }
                 }
             }
             _ = &mut delay => {
                 if !agg.is_empty() {
-                    flush(&data_ch, &mut agg, &credits, &outstanding).await;
+                    flush(data_ch, &mut agg, credits, outstanding).await;
                 }
                 flush_at = Instant::now() + AGG_WINDOW;
             }

@@ -8,6 +8,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { useAppStore, type Pane, type Tab } from '../state/app-store';
 import { termRegistry } from '../term/registry';
+import type { SessionStateFrame } from '../term/types';
 
 /**
  * 终端视图：xterm 生命周期 + 会话 attach。每个 pane 一份。
@@ -44,7 +45,16 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
     }
     termRegistry.set(pane.id, term);
 
-    pane.session.attach(term, tab.spec).catch((e: unknown) => {
+    // 断线/重连/终态标记直接写入 xterm（同一实例续写，回滚天然保留）
+    const stateHook = (ev: SessionStateFrame) => {
+      if (ev.state === 'reconnecting')
+        term.write(`\r\n\x1b[33m[连接中断，正在第 ${ev.attempt ?? '?'} 次重连…]\x1b[0m\r\n`);
+      else if (ev.state === 'connected' && ev.reconnected)
+        term.write('\x1b[32m[已重连]\x1b[0m\r\n');
+      else if (ev.state === 'closed') term.write('\r\n\x1b[2m[连接已关闭]\x1b[0m\r\n');
+    };
+
+    pane.session.attach(term, tab.spec, stateHook).catch((e: unknown) => {
       setPaneState(tab.id, pane.id, 'error');
       term.write(`\r\n\x1b[1;31m连接失败: ${String(e)}\x1b[0m\r\n`);
     });
