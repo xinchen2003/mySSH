@@ -294,8 +294,11 @@ async fn auth_agent(
 ) -> Result<bool, SshError> {
     use russh::keys::agent::client::AgentClient;
 
-    // OpenSSH agent（命名管道）→ Pageant
-    let mut agent = match AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
+    // OpenSSH agent（命名管道）→ Pageant。
+    // MYSSH_AGENT_PIPE 可覆盖管道路径（Windows 版 SSH_AUTH_SOCK；测试注入用）。
+    let pipe = std::env::var_os("MYSSH_AGENT_PIPE")
+        .unwrap_or_else(|| r"\\.\pipe\openssh-ssh-agent".into());
+    let mut agent = match AgentClient::connect_named_pipe(pipe).await {
         Ok(a) => a.dynamic(),
         Err(_) => match AgentClient::connect_pageant().await {
             Ok(a) => a.dynamic(),

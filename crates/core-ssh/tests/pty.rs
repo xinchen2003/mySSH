@@ -386,3 +386,91 @@ async fn known_hosts_first_connect_learn_then_trusted() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// agent 回环：russh agent server（命名管道）+ add_identity → AuthMethod::Agent 建连。
+/// 两个断言共用一个测试体串行执行——MYSSH_AGENT_PIPE 是进程级环境变量，避免并发互踩。
+#[cfg(windows)]
+#[tokio::test]
+async fn agent_auth_roundtrip_and_unavailable() {
+    use russh::keys::agent::client::AgentClient;
+    use russh::keys::agent::server as agent_server;
+
+    // 1. agent server 监听测试管道（futures mpsc Receiver 原生实现 Stream）。
+    // 首个实例同步创建：命名管道必须先存在，客户端 connect 才不会吃 NotFound
+    let pipe_path = format!(r"\\.\pipe\myssh-test-agent-{}", std::process::id());
+    let first = tokio::net::windows::named_pipe::ServerOptions::new()
+        .create(&pipe_path)
+        .expect("create pipe");
+    let (mut tx, rx) = futures::channel::mpsc::channel::<
+        std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer>,
+    >(8);
+    let accept_path = pipe_path.clone();
+    tokio::spawn(async move {
+        use futures::SinkExt;
+        let mut pending = Some(first);
+        loop {
+            let server = match pending.take() {
+                Some(s) => s,
+                None => match tokio::net::windows::named_pipe::ServerOptions::new()
+                    .create(&accept_path)
+                {
+                    Ok(s) => s,
+                    Err(_) => break,
+                },
+            };
+            let _ = server.connect().await;
+            if tx.send(Ok(server)).await.is_err() {
+                break;
+            }
+        }
+    });
+    tokio::spawn(agent_server::serve(rx, ()));
+
+    // 2. 客户端私钥注入 agent
+    let client_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    let mut agent_client = AgentClient::connect_named_pipe(&pipe_path)
+        .await
+        .expect("connect agent pipe");
+    agent_client
+        .add_identity(&client_key, &[])
+        .await
+        .expect("add_identity");
+
+    // 3. SSH 服务端（签名校验由 russh 协议层完成，auth_publickey 接受即可）
+    let server_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    let mut methods = MethodSet::empty();
+    methods.push(MethodKind::PublicKey);
+    let config = russh::server::Config {
+        methods,
+        keys: vec![server_key],
+        inactivity_timeout: None,
+        ..Default::default()
+    };
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut server = PkServer;
+        let _ = server.run_on_socket(Arc::new(config), &listener).await;
+    });
+
+    // 4. AuthMethod::Agent 走 MYSSH_AGENT_PIPE → 应建连成功
+    std::env::set_var("MYSSH_AGENT_PIPE", &pipe_path);
+    let opts = test_opts(port, AuthMethod::Agent);
+    SshConnection::connect(opts)
+        .await
+        .expect("agent auth must succeed");
+
+    // 5. 负路径：管道不存在 → E2 凭据不可用
+    std::env::set_var("MYSSH_AGENT_PIPE", r"\\.\pipe\myssh-nonexistent-agent");
+    let opts = test_opts(port, AuthMethod::Agent);
+    let err = match SshConnection::connect(opts).await {
+        Ok(_) => panic!("agent auth must fail when pipe missing"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().starts_with("E2"),
+        "missing agent must be E2-coded: {err}"
+    );
+
+    std::env::remove_var("MYSSH_AGENT_PIPE");
+}
