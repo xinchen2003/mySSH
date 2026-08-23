@@ -240,3 +240,77 @@ async fn tunnel_defs_crud_and_jump_chain() {
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
+
+#[tokio::test]
+async fn config_export_import_roundtrip() {
+    let path = temp_db("export");
+    let store = Store::open(&path).await.expect("open");
+    let mut rec = sample("s1", "导出源");
+    rec.jump_chain = vec!["hop-x".into()];
+    store.sessions().upsert(&rec).await.expect("upsert");
+    store
+        .credentials()
+        .put(
+            "s1",
+            core_store::CredentialKind::Password,
+            &core_store::Secret::new(b"s3cret".to_vec()),
+        )
+        .await
+        .expect("put cred");
+    store
+        .tunnels()
+        .upsert(&core_store::TunnelRecord {
+            id: "td-1".into(),
+            session_id: "s1".into(),
+            kind: "local".into(),
+            bind_host: "127.0.0.1".into(),
+            bind_port: 13306,
+            target_host: Some("10.0.0.8".into()),
+            target_port: Some(3306),
+            autostart: true,
+            with_session: true,
+            created_at: String::new(),
+        })
+        .await
+        .expect("tunnel");
+
+    // 明文：不含秘密
+    let plain = core_store::export_plain(&store)
+        .await
+        .expect("export plain");
+    assert!(plain.contains("导出源"));
+    assert!(!plain.contains("s3cret"), "明文导出绝不含秘密材料");
+
+    // 加密：含凭据
+    let enc = core_store::export_encrypted(&store, b"passphrase-1")
+        .await
+        .expect("export enc");
+    assert!(enc.contains("\"encrypted\": true"));
+    assert!(!enc.contains("s3cret"));
+
+    // 导入到全新库
+    let path2 = temp_db("import");
+    let store2 = Store::open(&path2).await.expect("open2");
+    let out = core_store::import_config(&store2, &plain, None)
+        .await
+        .expect("import plain");
+    assert_eq!(out.sessions, 1);
+    assert_eq!(out.tunnels, 1);
+    assert_eq!(out.credentials, 0);
+    let got = store2.sessions().get("s1").await.expect("get");
+    assert_eq!(got.jump_chain, vec!["hop-x"]);
+
+    // 错误口令必须失败（不能静默导入）
+    let err = core_store::import_config(&store2, &enc, Some(b"wrong")).await;
+    assert!(err.is_err(), "错误口令必须报错");
+
+    let out2 = core_store::import_config(&store2, &enc, Some(b"passphrase-1"))
+        .await
+        .expect("import enc");
+    assert_eq!(out2.credentials, 1);
+    let sec = store2.credentials().get("s1").await.expect("cred back");
+    assert_eq!(sec.expose(), b"s3cret");
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    let _ = std::fs::remove_dir_all(path2.parent().unwrap());
+}

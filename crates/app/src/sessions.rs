@@ -157,7 +157,89 @@ pub async fn import_openssh(
         )
         .await
         .map_err(|e| e.to_string())?;
-    Ok(json!({ "imported": outcome.imported, "skipped": outcome.skipped }))
+    Ok(json!({
+        "imported": outcome.imported,
+        "skipped": outcome.skipped,
+        "unresolvedJumps": outcome.unresolved_jumps,
+    }))
+}
+
+/// 配置导出：写 %LOCALAPPDATA%/myssh/exports/myssh-config-<ts>.json，返回路径。
+/// encrypted=true 时需 passphrase（Argon2id 派生密钥，含凭据）；false = 明文（绝不含秘密）。
+#[tauri::command]
+pub async fn config_export(
+    encrypted: bool,
+    passphrase: Option<String>,
+    state: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    if encrypted && passphrase.as_deref().unwrap_or("").is_empty() {
+        return Err("加密导出需要导出口令".into());
+    }
+    let text = if encrypted {
+        core_store::export_encrypted(&state.store, passphrase.as_deref().unwrap_or("").as_bytes())
+            .await
+    } else {
+        core_store::export_plain(&state.store).await
+    }
+    .map_err(|e| e.to_string())?;
+    let dir = store_path()
+        .parent()
+        .map(|p| p.join("exports"))
+        .ok_or_else(|| "无法定位导出目录".to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建导出目录失败: {e}"))?;
+    let file = dir.join(format!(
+        "myssh-config-{}.json",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&file, text).map_err(|e| format!("写导出文件失败: {e}"))?;
+    state
+        .store
+        .audit()
+        .append(
+            Actor::Gui,
+            None,
+            "config_export",
+            &json!({ "path": file.display().to_string(), "encrypted": encrypted }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "path": file.display().to_string() }))
+}
+
+/// 配置导入（自动识别明文/加密包络；加密需口令）
+#[tauri::command]
+pub async fn config_import(
+    path: String,
+    passphrase: Option<String>,
+    state: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("读取 {path} 失败: {e}"))?;
+    let outcome = core_store::import_config(
+        &state.store,
+        &text,
+        passphrase.as_deref().map(str::as_bytes),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    state
+        .store
+        .audit()
+        .append(
+            Actor::Gui,
+            None,
+            "config_import",
+            &json!({ "path": path, "sessions": outcome.sessions, "tunnels": outcome.tunnels, "credentials": outcome.credentials }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({
+        "sessions": outcome.sessions,
+        "tunnels": outcome.tunnels,
+        "credentials": outcome.credentials,
+    }))
 }
 
 /// sessionId → TermOpenSpec（秘密材料从保险库取出即用；Zeroizing 在 core-ssh 边界生效）

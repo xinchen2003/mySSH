@@ -11,6 +11,7 @@
 mod audit;
 mod cred;
 mod error;
+pub mod export;
 pub mod import;
 mod session;
 mod tunnel;
@@ -23,6 +24,7 @@ use sqlx::SqlitePool;
 pub use audit::{Actor, AuditRecord, AuditRepo};
 pub use cred::{CredentialKind, CredentialStore, VaultStatus};
 pub use error::StoreError;
+pub use export::{export_encrypted, export_plain, import_config, ConfigImportOutcome};
 pub use import::{import_openssh, ImportOutcome};
 pub use session::{AuthType, SessionRecord, SessionRepo};
 pub use tunnel::{TunnelRecord, TunnelRepo};

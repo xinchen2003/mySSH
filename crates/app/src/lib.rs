@@ -77,6 +77,8 @@ pub fn run() {
             sessions::cred_delete,
             sessions::vault_status,
             sessions::import_openssh,
+            sessions::config_export,
+            sessions::config_import,
             tunnels::tunnel_start,
             tunnels::tunnel_stop,
             tunnels::tunnel_list,

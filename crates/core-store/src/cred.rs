@@ -15,10 +15,18 @@ pub enum CredentialKind {
 }
 
 impl CredentialKind {
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Password => "password",
             Self::KeyPassphrase => "key_passphrase",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, StoreError> {
+        match s {
+            "password" => Ok(Self::Password),
+            "key_passphrase" => Ok(Self::KeyPassphrase),
+            other => Err(StoreError::Corrupt(format!("未知凭据类型 {other}"))),
         }
     }
 }
@@ -71,15 +79,24 @@ impl CredentialStore {
     }
 
     pub async fn get(&self, session_id: &str) -> Result<Secret, StoreError> {
-        let row: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT blob FROM credentials WHERE session_id = ?")
+        self.get_with_kind(session_id).await.map(|(_, s)| s)
+    }
+
+    /// 连类型一起取（配置导出用）
+    pub async fn get_with_kind(
+        &self,
+        session_id: &str,
+    ) -> Result<(CredentialKind, Secret), StoreError> {
+        let row: Option<(String, Vec<u8>)> =
+            sqlx::query_as("SELECT kind, blob FROM credentials WHERE session_id = ?")
                 .bind(session_id)
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(|e| StoreError::Query(e.to_string()))?;
-        let blob = row.ok_or_else(|| StoreError::NotFound(format!("credential {session_id}")))?;
+        let (kind, blob) =
+            row.ok_or_else(|| StoreError::NotFound(format!("credential {session_id}")))?;
         let plain = unprotect(&blob)?;
-        Ok(Secret::new(plain))
+        Ok((CredentialKind::parse(&kind)?, Secret::new(plain)))
     }
 
     pub async fn delete(&self, session_id: &str) -> Result<(), StoreError> {
