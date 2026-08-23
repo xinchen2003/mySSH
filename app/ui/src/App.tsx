@@ -135,7 +135,7 @@ export function App() {
           >
             ⚙
           </button>
-          <span>v{version} · M4</span>
+          <span>v{version} · M5</span>
         </span>
       </header>
       <TabBar />
