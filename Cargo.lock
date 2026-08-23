@@ -733,6 +733,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-monitor"
+version = "0.1.0"
+dependencies = [
+ "core-ssh",
+ "rand",
+ "russh",
+ "serde",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "core-policy"
 version = "0.1.0"
 dependencies = [
