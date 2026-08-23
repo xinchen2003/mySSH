@@ -84,6 +84,15 @@ interface AppStore {
   /** 监控面板：tabId → 是否打开（与 SFTP 互斥，共用底栏位） */
   metricsOpen: Record<string, boolean>;
   toggleMetrics(tabId: string): void;
+  /** 应用设置（settings KV 全量缓存；启动时 loadSettings 拉一次） */
+  settings: Record<string, unknown>;
+  settingsLoaded: boolean;
+  loadSettings(): Promise<void>;
+  /** 乐观本地更新 + 落库（theme/terminal 键的副作用由 App 效果层统一应用） */
+  setSetting(key: string, value: unknown): void;
+  /** 设置面板开关 */
+  settingsOpen: boolean;
+  toggleSettings(): void;
   /** 隧道面板 */
   tunnels: TunnelInfo[];
   /** 持久化隧道定义 */
@@ -152,6 +161,21 @@ export const useAppStore = create<AppStore>((set, get) => {
     _tunnelsSubscribed: false,
     sftpOpen: {},
     metricsOpen: {},
+    settings: {},
+    settingsLoaded: false,
+    settingsOpen: false,
+
+    toggleSettings: () => set((s) => ({ settingsOpen: !s.settingsOpen })),
+
+    loadSettings: async () => {
+      const res = await invoke<{ settings: Record<string, unknown> }>('settings_list');
+      set({ settings: res.settings, settingsLoaded: true });
+    },
+
+    setSetting: (key, value) => {
+      set((s) => ({ settings: { ...s.settings, [key]: value } }));
+      invoke('settings_set', { key, value }).catch(() => undefined);
+    },
 
     toggleTunnelPanel: () => set((s) => ({ tunnelPanelOpen: !s.tunnelPanelOpen })),
 

@@ -8,7 +8,9 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { useAppStore, type Pane, type Tab } from '../state/app-store';
-import { termRegistry } from '../term/registry';
+import { fitRegistry, termRegistry } from '../term/registry';
+import { resolveTheme } from '../term/themes';
+import { readTerminalSettings } from '../state/apply-settings';
 import type { SessionStateFrame } from '../term/types';
 import { SearchBar } from '../components/SearchBar';
 
@@ -30,11 +32,17 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
     const host = hostRef.current;
     if (!host) return;
 
+    const settings = useAppStore.getState().settings;
+    const termOpts = readTerminalSettings(settings);
     const term = new Terminal({
-      scrollback: 10_000,
+      scrollback: termOpts.scrollback,
       allowProposedApi: true,
-      fontFamily: "'Cascadia Code', 'JetBrains Mono', Consolas, monospace",
-      fontSize: 14,
+      fontFamily: termOpts.fontFamily,
+      fontSize: termOpts.fontSize,
+      theme: resolveTheme(
+        typeof settings['theme'] === 'string' ? settings['theme'] : 'one-dark',
+        typeof settings['theme.customJson'] === 'string' ? settings['theme.customJson'] : undefined,
+      ).xterm,
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
@@ -53,6 +61,9 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       // @xterm/addon-canvas 尚未支持 xterm 6（peer ^5），降级用 xterm 核心内置 canvas 渲染器
     }
     termRegistry.set(pane.id, term);
+    fitRegistry.set(pane.id, () => {
+      if (host.clientWidth > 0 && host.clientHeight > 0) fit.fit();
+    });
 
     // Ctrl+Shift+F 唤起搜索；其余按键全部放行给终端
     term.attachCustomKeyEventHandler((e) => {
@@ -107,6 +118,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
     return () => {
       observer.disconnect();
       termRegistry.delete(pane.id);
+      fitRegistry.delete(pane.id);
       term.dispose();
       searchRef.current = null;
     };

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { applyTerminalSettings, applyTheme } from './state/apply-settings';
 import { invoke } from '@tauri-apps/api/core';
 import { Sidebar } from './components/Sidebar';
 import { TabBar } from './components/TabBar';
@@ -47,6 +48,29 @@ export function App() {
     invoke<string>('app_version')
       .then(setVersion)
       .catch(() => setVersion('dev'));
+  }, []);
+
+  // 设置：启动拉取一次；变更即应用（主题/终端字体）；system 主题跟随 OS 切换
+  const settings = useAppStore((s) => s.settings);
+  const settingsLoaded = useAppStore((s) => s.settingsLoaded);
+  const loadSettings = useAppStore((s) => s.loadSettings);
+  useEffect(() => {
+    if (!settingsLoaded) {
+      loadSettings().catch(() => undefined);
+      return;
+    }
+    applyTheme(settings);
+    applyTerminalSettings(settings);
+  }, [settings, settingsLoaded, loadSettings]);
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => {
+      if (useAppStore.getState().settings['theme'] === 'system') {
+        applyTheme(useAppStore.getState().settings);
+      }
+    };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
   }, []);
 
   return (
