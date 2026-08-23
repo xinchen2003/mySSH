@@ -193,3 +193,50 @@ Host legacy
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
+
+#[tokio::test]
+async fn tunnel_defs_crud_and_jump_chain() {
+    let path = temp_db("tunneldefs");
+    let store = Store::open(&path).await.expect("open");
+    store
+        .sessions()
+        .upsert(&sample("s1", "目标机"))
+        .await
+        .expect("session");
+
+    // 迁移 0002：jump_chain 往返
+    let mut hop = sample("s1", "目标机");
+    hop.jump_chain = vec!["jump-a".into(), "jump-b".into()];
+    let got = store.sessions().upsert(&hop).await.expect("upsert jump");
+    assert_eq!(got.jump_chain, vec!["jump-a", "jump-b"]);
+
+    let def = core_store::TunnelRecord {
+        id: "td-1".into(),
+        session_id: "s1".into(),
+        kind: "local".into(),
+        bind_host: "127.0.0.1".into(),
+        bind_port: 13306,
+        target_host: Some("10.0.0.8".into()),
+        target_port: Some(3306),
+        autostart: true,
+        with_session: false,
+        created_at: String::new(),
+    };
+    store.tunnels().upsert(&def).await.expect("tunnel upsert");
+    let all = store.tunnels().list().await.expect("list");
+    assert_eq!(all.len(), 1);
+    assert!(all[0].autostart);
+    assert!(!all[0].with_session);
+    let for_s = store
+        .tunnels()
+        .for_session("s1")
+        .await
+        .expect("for_session");
+    assert_eq!(for_s.len(), 1);
+
+    // 会话删除级联隧道定义（FK ON DELETE CASCADE）
+    store.sessions().delete("s1").await.expect("delete session");
+    assert!(store.tunnels().list().await.expect("list").is_empty());
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}

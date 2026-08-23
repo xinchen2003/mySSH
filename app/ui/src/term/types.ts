@@ -27,6 +27,22 @@ export interface SessionRecord {
 
 export type TunnelKind = 'local' | 'remote' | 'dynamic';
 
+/** 持久化隧道定义（core-store TunnelRecord 对齐） */
+export interface TunnelDef {
+  id: string;
+  sessionId: string;
+  kind: TunnelKind;
+  bindHost: string;
+  bindPort: number;
+  targetHost?: string | null;
+  targetPort?: number | null;
+  /** 开机自启（app 启动即建立） */
+  autostart: boolean;
+  /** 随会话自动建立 */
+  withSession: boolean;
+  createdAt: string;
+}
+
 export interface TunnelInfo {
   tunnelId: string;
   kind: TunnelKind;

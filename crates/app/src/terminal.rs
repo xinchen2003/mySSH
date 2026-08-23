@@ -159,11 +159,13 @@ pub async fn term_open(
     rows: u32,
     state: tauri::State<'_, Arc<TerminalManager>>,
     sessions: tauri::State<'_, Arc<crate::sessions::SessionManagerState>>,
+    tunnels_state: tauri::State<'_, Arc<crate::tunnels::TunnelManagerState>>,
 ) -> Result<Value, String> {
     let mgr = state.inner().clone();
     let tab_id = next_id("t", &TAB_SEQ);
 
     // 二选一：内联 spec（临时连接）或 sessionId（存储档案解析）
+    let via_session = session_id.clone();
     let spec = match (spec, session_id) {
         (Some(s), None) => s,
         (None, Some(id)) => crate::sessions::resolve_session_spec(&sessions.store, &id).await?,
@@ -256,6 +258,14 @@ pub async fn term_open(
     let conn = SshConnection::connect(opts.clone())
         .await
         .map_err(|e| e.to_string())?;
+    // 随会话自动建立的隧道（规格书 M2）；fire-and-forget，失败仅日志
+    if let Some(sid) = via_session {
+        let tmgr = tunnels_state.mgr.clone();
+        let store = sessions.store.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::tunnels::start_session_tunnels(tmgr, store, sid).await;
+        });
+    }
     let term = spec.term.clone().unwrap_or_else(|| "xterm-256color".into());
     let pty = conn
         .open_pty(&term, cols, rows, spec.command.as_deref())

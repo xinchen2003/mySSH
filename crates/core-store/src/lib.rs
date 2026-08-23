@@ -13,6 +13,7 @@ mod cred;
 mod error;
 pub mod import;
 mod session;
+mod tunnel;
 
 use std::path::Path;
 
@@ -24,6 +25,7 @@ pub use cred::{CredentialKind, CredentialStore, VaultStatus};
 pub use error::StoreError;
 pub use import::{import_openssh, ImportOutcome};
 pub use session::{AuthType, SessionRecord, SessionRepo};
+pub use tunnel::{TunnelRecord, TunnelRepo};
 
 /// 凭据载体：不实现 Serialize/Clone 的 Debug 明文输出；Drop 时零化。
 #[derive(zeroize::ZeroizeOnDrop)]
@@ -87,5 +89,9 @@ impl Store {
 
     pub fn audit(&self) -> AuditRepo {
         AuditRepo::new(self.pool.clone())
+    }
+
+    pub fn tunnels(&self) -> TunnelRepo {
+        TunnelRepo::new(self.pool.clone())
     }
 }

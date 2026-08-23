@@ -96,61 +96,277 @@ fn tunnel_host_key_check() -> core_ssh::HostKeyCheck {
     })
 }
 
-#[tauri::command]
-pub async fn tunnel_start(
-    spec: TunnelSpecWire,
-    state: tauri::State<'_, Arc<TunnelManagerState>>,
-    sessions: tauri::State<'_, Arc<SessionManagerState>>,
-) -> Result<Value, String> {
+/// 隧道定义的持久化形态（与前端 TunnelForm + 标记位对齐）
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TunnelDefWire {
+    pub id: String,
+    pub session_id: String,
+    pub kind: String,
+    pub bind_host: String,
+    pub bind_port: u16,
+    pub target_host: Option<String>,
+    pub target_port: Option<u16>,
+    #[serde(default)]
+    pub autostart: bool,
+    #[serde(default)]
+    pub with_session: bool,
+    #[serde(default)]
+    pub fail_fast: Option<bool>,
+    /// true = 保存后立即建立（false 仅落库，如面板开关标记位）
+    #[serde(default)]
+    pub start: bool,
+}
+
+/// 启动一条隧道（隧道_start / 自启 / 随会话共用）；id 由调用方给（定义 id 或运行时序号）。
+/// 参数即隧道定义的全部字段，压成结构体只会多一层间接——豁免参数数。
+#[allow(clippy::too_many_arguments)]
+async fn start_tunnel(
+    mgr: &Arc<core_tunnel::TunnelManager>,
+    store: &Arc<Store>,
+    id: String,
+    session_id: &str,
+    kind: &str,
+    bind_host: &str,
+    bind_port: u16,
+    target_host: Option<String>,
+    target_port: Option<u16>,
+    fail_fast: bool,
+) -> Result<(), String> {
+    // 幂等：同 id 已在运行/重连中则跳过
+    let already = mgr.list().into_iter().any(|t| {
+        t.id == id
+            && matches!(
+                t.status,
+                core_tunnel::TunnelStatus::Starting
+                    | core_tunnel::TunnelStatus::Listening
+                    | core_tunnel::TunnelStatus::Reconnecting
+            )
+    });
+    if already {
+        return Ok(());
+    }
     // 档案存在性前置校验（错误信息比连接失败友好）
-    sessions
-        .store
+    store
         .sessions()
-        .get(&spec.session_id)
+        .get(session_id)
         .await
         .map_err(|e| e.to_string())?;
 
-    let kind = match spec.kind.as_str() {
+    let kind = match kind {
         "local" => TunnelKind::Local {
-            bind: (spec.bind_host.clone(), spec.bind_port),
+            bind: (bind_host.to_string(), bind_port),
         },
         "remote" => TunnelKind::Remote {
-            bind: (spec.bind_host.clone(), spec.bind_port),
+            bind: (bind_host.to_string(), bind_port),
         },
         "dynamic" => TunnelKind::DynamicSocks5 {
-            bind: (spec.bind_host.clone(), spec.bind_port),
+            bind: (bind_host.to_string(), bind_port),
         },
         other => return Err(format!("未知隧道类型 {other}（local|remote|dynamic）")),
     };
-    let target = match (spec.target_host, spec.target_port) {
+    let target = match (target_host, target_port) {
         (Some(h), Some(p)) => Some((h, p)),
         _ => None,
     };
     if !matches!(kind, TunnelKind::DynamicSocks5 { .. }) && target.is_none() {
         return Err("local/remote 隧道需要 targetHost+targetPort".into());
     }
-
-    let id = format!("tn-{}", TUNNEL_SEQ.fetch_add(1, Ordering::Relaxed));
-    let connect = make_connect_fn(sessions.store.clone(), spec.session_id);
-    state
-        .mgr
-        .start(
-            id.clone(),
-            TunnelSpec {
-                kind,
-                target,
-                max_conns: 500,
-                on_disconnect: if spec.fail_fast.unwrap_or(false) {
-                    DisconnectPolicy::FailFast
-                } else {
-                    DisconnectPolicy::Queue
-                },
+    let connect = make_connect_fn(store.clone(), session_id.to_string());
+    mgr.start(
+        id,
+        TunnelSpec {
+            kind,
+            target,
+            max_conns: 500,
+            on_disconnect: if fail_fast {
+                DisconnectPolicy::FailFast
+            } else {
+                DisconnectPolicy::Queue
             },
-            connect,
-        )
+        },
+        connect,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn tunnel_start(
+    spec: TunnelSpecWire,
+    state: tauri::State<'_, Arc<TunnelManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let id = format!("tn-{}", TUNNEL_SEQ.fetch_add(1, Ordering::Relaxed));
+    start_tunnel(
+        &state.mgr,
+        &sessions.store,
+        id.clone(),
+        &spec.session_id,
+        &spec.kind,
+        &spec.bind_host,
+        spec.bind_port,
+        spec.target_host,
+        spec.target_port,
+        spec.fail_fast.unwrap_or(false),
+    )
+    .await?;
+    Ok(json!({ "tunnelId": id }))
+}
+
+/// 保存隧道定义并立即建立（幂等）；返回 tunnelId=定义 id
+#[tauri::command]
+pub async fn tunnel_save(
+    def: TunnelDefWire,
+    state: tauri::State<'_, Arc<TunnelManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    sessions
+        .store
+        .tunnels()
+        .upsert(&core_store::TunnelRecord {
+            id: def.id.clone(),
+            session_id: def.session_id.clone(),
+            kind: def.kind.clone(),
+            bind_host: def.bind_host.clone(),
+            bind_port: def.bind_port,
+            target_host: def.target_host.clone(),
+            target_port: def.target_port,
+            autostart: def.autostart,
+            with_session: def.with_session,
+            created_at: String::new(),
+        })
         .await
         .map_err(|e| e.to_string())?;
-    Ok(json!({ "tunnelId": id }))
+    let _ = sessions
+        .store
+        .audit()
+        .append(
+            core_store::Actor::Gui,
+            Some(&def.session_id),
+            "tunnel_save",
+            &json!({ "tunnelId": def.id, "kind": def.kind }),
+        )
+        .await;
+    if def.start {
+        start_tunnel(
+            &state.mgr,
+            &sessions.store,
+            def.id.clone(),
+            &def.session_id,
+            &def.kind,
+            &def.bind_host,
+            def.bind_port,
+            def.target_host.clone(),
+            def.target_port,
+            def.fail_fast.unwrap_or(false),
+        )
+        .await?;
+    }
+    Ok(json!({ "tunnelId": def.id }))
+}
+
+/// 停止运行 + 删除定义（级联审计保留）
+#[tauri::command]
+pub async fn tunnel_delete(
+    tunnel_id: String,
+    state: tauri::State<'_, Arc<TunnelManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<(), String> {
+    let _ = state.mgr.stop(&tunnel_id).await; // 未运行忽略
+    sessions
+        .store
+        .tunnels()
+        .delete(&tunnel_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = sessions
+        .store
+        .audit()
+        .append(
+            core_store::Actor::Gui,
+            None,
+            "tunnel_delete",
+            &json!({ "tunnelId": tunnel_id }),
+        )
+        .await;
+    Ok(())
+}
+
+/// 持久化的隧道定义列表（运行态由 tunnel_list/tunnel_subscribe 提供）
+#[tauri::command]
+pub async fn tunnel_defs(
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let defs = sessions
+        .store
+        .tunnels()
+        .list()
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(defs).map_err(|e| e.to_string())
+}
+
+/// app 启动：拉起 autostart 定义（在 lib.rs setup 调用）
+pub async fn autostart_tunnels(mgr: Arc<core_tunnel::TunnelManager>, store: Arc<Store>) {
+    let defs = match store.tunnels().list().await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = %e, "隧道定义读取失败，跳过自启");
+            return;
+        }
+    };
+    for d in defs.into_iter().filter(|d| d.autostart) {
+        let r = start_tunnel(
+            &mgr,
+            &store,
+            d.id.clone(),
+            &d.session_id,
+            &d.kind,
+            &d.bind_host,
+            d.bind_port,
+            d.target_host,
+            d.target_port,
+            false,
+        )
+        .await;
+        if let Err(e) = r {
+            tracing::warn!(tunnel = %d.id, error = %e, "自启隧道建立失败（监督器将继续重连）");
+        }
+    }
+}
+
+/// 会话连接成功：拉起该会话 with_session 的定义（term_open 调用，fire-and-forget）
+pub async fn start_session_tunnels(
+    mgr: Arc<core_tunnel::TunnelManager>,
+    store: Arc<Store>,
+    session_id: String,
+) {
+    let defs = match store.tunnels().for_session(&session_id).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = %e, "随会话隧道定义读取失败");
+            return;
+        }
+    };
+    for d in defs.into_iter().filter(|d| d.with_session) {
+        let r = start_tunnel(
+            &mgr,
+            &store,
+            d.id.clone(),
+            &d.session_id,
+            &d.kind,
+            &d.bind_host,
+            d.bind_port,
+            d.target_host,
+            d.target_port,
+            false,
+        )
+        .await;
+        if let Err(e) = r {
+            tracing::warn!(tunnel = %d.id, error = %e, "随会话隧道建立失败");
+        }
+    }
 }
 
 #[tauri::command]

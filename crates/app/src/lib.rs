@@ -39,15 +39,26 @@ pub fn run() {
     let session_state = Arc::new(SessionManagerState {
         store: Arc::new(store),
     });
+    let tunnel_mgr_state = Arc::new(TunnelManagerState {
+        mgr: core_tunnel::TunnelManager::new(),
+        last: parking_lot::Mutex::new(std::collections::HashMap::new()),
+    });
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Arc::new(TerminalManager::default()))
-        .manage(session_state)
-        .manage(Arc::new(TunnelManagerState {
-            mgr: core_tunnel::TunnelManager::new(),
-            last: parking_lot::Mutex::new(std::collections::HashMap::new()),
-        }))
+        .manage(session_state.clone())
+        .manage(tunnel_mgr_state.clone())
+        .setup(move |app| {
+            // 开机自启隧道：store 已就绪，后台拉起（失败仅日志，监督器自持重连）
+            let mgr = tunnel_mgr_state.mgr.clone();
+            let store = session_state.store.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::tunnels::autostart_tunnels(mgr, store).await;
+            });
+            let _ = app;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             log_frontend,
             app_version,
@@ -70,6 +81,9 @@ pub fn run() {
             tunnels::tunnel_stop,
             tunnels::tunnel_list,
             tunnels::tunnel_subscribe,
+            tunnels::tunnel_save,
+            tunnels::tunnel_delete,
+            tunnels::tunnel_defs,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

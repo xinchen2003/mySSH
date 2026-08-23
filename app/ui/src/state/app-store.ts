@@ -18,6 +18,7 @@ import type {
   SessionStateFrame,
   TermEvent,
   TermOpenSpec,
+  TunnelDef,
   TunnelForm,
   TunnelInfo,
 } from '../term/types';
@@ -69,12 +70,18 @@ interface AppStore {
   _tunnelsSubscribed: boolean;
   /** 隧道面板 */
   tunnels: TunnelInfo[];
+  /** 持久化隧道定义 */
+  tunnelDefs: TunnelDef[];
   tunnelPanelOpen: boolean;
   toggleTunnelPanel(): void;
   /** 1Hz 订阅（App 挂载时调用一次；重复调用幂等） */
   subscribeTunnels(): void;
   startTunnel(form: TunnelForm): Promise<string>;
   stopTunnel(id: string): Promise<void>;
+  loadTunnelDefs(): Promise<void>;
+  /** 保存定义；start=true 时立即建立 */
+  saveTunnel(def: TunnelDef, start: boolean): Promise<void>;
+  deleteTunnel(id: string): Promise<void>;
   splitActive(dir: 'row' | 'col'): void;
   closePane(tabId: string, paneId: string): void;
   setActive(id: string): void;
@@ -124,6 +131,7 @@ export const useAppStore = create<AppStore>((set, get) => {
     sessions: [],
     sidebarOpen: true,
     tunnels: [],
+    tunnelDefs: [],
     tunnelPanelOpen: false,
     _tunnelsSubscribed: false,
 
@@ -154,6 +162,21 @@ export const useAppStore = create<AppStore>((set, get) => {
 
     stopTunnel: async (id) => {
       await invoke('tunnel_stop', { tunnelId: id });
+    },
+
+    loadTunnelDefs: async () => {
+      const defs = await invoke<TunnelDef[]>('tunnel_defs');
+      set({ tunnelDefs: defs });
+    },
+
+    saveTunnel: async (def, start) => {
+      await invoke('tunnel_save', { def: { ...def, start } });
+      await get().loadTunnelDefs();
+    },
+
+    deleteTunnel: async (id) => {
+      await invoke('tunnel_delete', { tunnelId: id });
+      await get().loadTunnelDefs();
     },
 
     toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
