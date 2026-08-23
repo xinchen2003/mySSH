@@ -1,0 +1,107 @@
+//! 快捷键注册表（M5）：动作 → 组合键，方案预设（default/vim/emacs）+ 自定义覆盖。
+//! 约束：组合键必须带修饰键（终端占用裸键）；vim/emacs 方案只重排修饰组合，不引入和弦。
+
+export interface KeyAction {
+  id: string;
+  label: string;
+  /** default 方案的绑定（vim/emacs 无覆盖时回落 default） */
+  default: string;
+  vim?: string;
+  emacs?: string;
+}
+
+export const KEY_ACTIONS: KeyAction[] = [
+  { id: 'palette', label: '命令面板', default: 'Ctrl+Shift+P' },
+  { id: 'search', label: '终端内搜索', default: 'Ctrl+Shift+F' },
+  { id: 'newTab', label: '新建会话', default: 'Ctrl+Shift+T' },
+  { id: 'closeTab', label: '关闭标签', default: 'Ctrl+Shift+W' },
+  {
+    id: 'nextTab',
+    label: '下一标签',
+    default: 'Ctrl+Tab',
+    vim: 'Alt+L',
+    emacs: 'Ctrl+PageDown',
+  },
+  {
+    id: 'prevTab',
+    label: '上一标签',
+    default: 'Ctrl+Shift+Tab',
+    vim: 'Alt+H',
+    emacs: 'Ctrl+PageUp',
+  },
+  { id: 'sftp', label: 'SFTP 面板', default: 'Ctrl+Shift+E' },
+  { id: 'metrics', label: '监控面板', default: 'Ctrl+Shift+M' },
+  { id: 'tunnels', label: '隧道面板', default: 'Ctrl+Shift+U' },
+  { id: 'settings', label: '设置', default: 'Ctrl+,' },
+  {
+    id: 'splitRow',
+    label: '向右分屏',
+    default: 'Ctrl+Shift+ArrowRight',
+    vim: 'Alt+V',
+  },
+  {
+    id: 'splitCol',
+    label: '向下分屏',
+    default: 'Ctrl+Shift+ArrowDown',
+    vim: 'Alt+S',
+  },
+];
+
+export type KeymapScheme = 'default' | 'vim' | 'emacs';
+
+/** 解析生效绑定：scheme 覆盖 → custom 覆盖 → default */
+export function effectiveBindings(
+  scheme: KeymapScheme,
+  custom?: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const a of KEY_ACTIONS) {
+    out[a.id] = (scheme !== 'default' && a[scheme]) || a.default;
+  }
+  if (custom) {
+    for (const [id, combo] of Object.entries(custom)) {
+      if (id in out && typeof combo === 'string' && isValidCombo(combo)) out[id] = combo;
+    }
+  }
+  return out;
+}
+
+/** 组合键合法性：必须含至少一个修饰键（防占终端裸键），格式 Mod+Mod+Key */
+export function isValidCombo(combo: string): boolean {
+  const parts = combo.split('+').map((p) => p.trim());
+  if (parts.length < 2) return false;
+  const mods = parts.slice(0, -1);
+  const key = parts[parts.length - 1];
+  return (
+    mods.every((m) => ['Ctrl', 'Alt', 'Shift'].includes(m)) &&
+    key.length > 0 &&
+    !['Ctrl', 'Alt', 'Shift'].includes(key)
+  );
+}
+
+/** KeyboardEvent 匹配组合键（key 比较大小写不敏感） */
+export function matchCombo(e: KeyboardEvent, combo: string): boolean {
+  const parts = combo.split('+').map((p) => p.trim());
+  const key = parts[parts.length - 1];
+  const wantCtrl = parts.includes('Ctrl');
+  const wantAlt = parts.includes('Alt');
+  const wantShift = parts.includes('Shift');
+  if (e.ctrlKey !== wantCtrl || e.altKey !== wantAlt || e.shiftKey !== wantShift) return false;
+  // 特殊键用 e.code 语义名（ArrowRight/PageDown/Tab），字符键大小写不敏感
+  if (/^(Arrow|Page|Tab|Enter|Escape|Home|End|Space)/.test(key)) {
+    return e.code === key || e.key === key;
+  }
+  return e.key.toLowerCase() === key.toLowerCase() || e.code === `Key${key.toUpperCase()}`;
+}
+
+/** 从设置读 scheme 与自定义表 */
+export function keymapFromSettings(s: Record<string, unknown>): Record<string, string> {
+  const schemeRaw = s['keymap.scheme'];
+  const scheme: KeymapScheme = schemeRaw === 'vim' || schemeRaw === 'emacs' ? schemeRaw : 'default';
+  const customRaw = s['keymap.custom'];
+  const custom =
+    customRaw && typeof customRaw === 'object' && !Array.isArray(customRaw)
+      ? (customRaw as Record<string, string>)
+      : undefined;
+  return effectiveBindings(scheme, custom);
+}

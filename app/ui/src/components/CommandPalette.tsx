@@ -50,6 +50,11 @@ export function CommandPalette() {
       { id: 'a-tunnel', label: '隧道面板', run: () => toggleTunnelPanel() },
       { id: 'a-sftp', label: 'SFTP 面板开关（当前标签）', run: () => toggleSftpActive() },
       { id: 'a-metrics', label: '监控面板开关（当前标签）', run: () => toggleMetricsActive() },
+      {
+        id: 'a-settings',
+        label: '设置',
+        run: () => useAppStore.getState().toggleSettings(),
+      },
       { id: 'a-sidebar', label: '侧栏开关', run: () => toggleSidebar() },
       {
         id: 'a-imp-ssh',

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { applyTerminalSettings, applyTheme } from './state/apply-settings';
+import { keymapFromSettings, matchCombo } from './term/keymap';
 import { invoke } from '@tauri-apps/api/core';
 import { Sidebar } from './components/Sidebar';
 import { TabBar } from './components/TabBar';
@@ -10,6 +11,7 @@ import { HostKeyDialog } from './components/HostKeyDialog';
 import { KiDialog } from './components/KiDialog';
 import { SftpPanel } from './components/SftpPanel';
 import { MetricsPanel } from './components/MetricsPanel';
+import { SettingsDialog } from './components/SettingsDialog';
 import { SplitTree } from './components/SplitTree';
 import { useAppStore } from './state/app-store';
 
@@ -21,7 +23,8 @@ export function App() {
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const toggleTunnelPanel = useAppStore((s) => s.toggleTunnelPanel);
   const subscribeTunnels = useAppStore((s) => s.subscribeTunnels);
-  const togglePalette = useAppStore((s) => s.togglePalette);
+  const settingsOpen = useAppStore((s) => s.settingsOpen);
+  const toggleSettings = useAppStore((s) => s.toggleSettings);
   const sftpOpen = useAppStore((s) => s.sftpOpen);
   const metricsOpen = useAppStore((s) => s.metricsOpen);
   const paletteOpen = useAppStore((s) => s.paletteOpen);
@@ -31,17 +34,34 @@ export function App() {
     subscribeTunnels();
   }, [subscribeTunnels]);
 
-  // 全局命令面板快捷键（xterm 焦点下 window keydown 仍可收到）
+  // 全局快捷键（注册表驱动，M5）：xterm 焦点下 window keydown 仍可收到
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && (e.key === 'P' || e.key === 'p')) {
-        e.preventDefault();
-        togglePalette();
-      }
+      const s = useAppStore.getState();
+      const bindings = keymapFromSettings(s.settings);
+      const hit = (id: string) => bindings[id] && matchCombo(e, bindings[id]);
+      const active = s.tabs.find((t) => t.id === s.activeId);
+      if (hit('palette')) s.togglePalette();
+      else if (hit('newTab')) s.openConnect();
+      else if (hit('closeTab') && s.activeId) s.closeTab(s.activeId);
+      else if (hit('nextTab') || hit('prevTab')) {
+        if (s.tabs.length > 1 && s.activeId) {
+          const i = s.tabs.findIndex((t) => t.id === s.activeId);
+          const d = hit('nextTab') ? 1 : -1;
+          s.setActive(s.tabs[(i + d + s.tabs.length) % s.tabs.length].id);
+        }
+      } else if (hit('sftp') && active?.target.kind === 'session') s.toggleSftp(active.id);
+      else if (hit('metrics') && active?.target.kind === 'session') s.toggleMetrics(active.id);
+      else if (hit('tunnels')) s.toggleTunnelPanel();
+      else if (hit('settings')) s.toggleSettings();
+      else if (hit('splitRow')) s.splitActive('row');
+      else if (hit('splitCol')) s.splitActive('col');
+      else return;
+      e.preventDefault();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [togglePalette]);
+  }, []);
 
   useEffect(() => {
     // 纯浏览器（vite 诊断）下 invoke 不可用
@@ -94,6 +114,13 @@ export function App() {
           >
             ⇄
           </button>
+          <button
+            className="rounded px-1 hover:bg-neutral-800"
+            onClick={toggleSettings}
+            title="设置（Ctrl+,）"
+          >
+            ⚙
+          </button>
           <span>v{version} · M4</span>
         </span>
       </header>
@@ -130,6 +157,7 @@ export function App() {
       <HostKeyDialog />
       <KiDialog />
       {paletteOpen && <CommandPalette />}
+      {settingsOpen && <SettingsDialog />}
       {notice && (
         <div className="fixed bottom-10 left-1/2 z-40 -translate-x-1/2 rounded bg-neutral-800 px-4 py-2 text-xs text-neutral-200 shadow-lg">
           {notice}

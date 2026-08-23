@@ -11,6 +11,7 @@ import { useAppStore, type Pane, type Tab } from '../state/app-store';
 import { fitRegistry, termRegistry } from '../term/registry';
 import { resolveTheme } from '../term/themes';
 import { readTerminalSettings } from '../state/apply-settings';
+import { keymapFromSettings, matchCombo } from '../term/keymap';
 import type { SessionStateFrame } from '../term/types';
 import { SearchBar } from '../components/SearchBar';
 
@@ -65,9 +66,10 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       if (host.clientWidth > 0 && host.clientHeight > 0) fit.fit();
     });
 
-    // Ctrl+Shift+F 唤起搜索；其余按键全部放行给终端
+    // 搜索快捷键（keymap 注册表，默认 Ctrl+Shift+F）；其余按键全部放行给终端
     term.attachCustomKeyEventHandler((e) => {
-      if (e.ctrlKey && e.shiftKey && e.code === 'KeyF' && e.type === 'keydown') {
+      const bindings = keymapFromSettings(useAppStore.getState().settings);
+      if (e.type === 'keydown' && bindings['search'] && matchCombo(e, bindings['search'])) {
         setSearchOpen(true);
         return false;
       }

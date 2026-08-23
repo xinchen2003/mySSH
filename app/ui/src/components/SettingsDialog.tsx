@@ -1,0 +1,167 @@
+import { useState } from 'react';
+import { useAppStore } from '../state/app-store';
+import { BUILTIN_THEMES } from '../term/themes';
+import { KEY_ACTIONS, keymapFromSettings, type KeymapScheme } from '../term/keymap';
+import { readTerminalSettings } from '../state/apply-settings';
+
+const inputCls =
+  'rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-200 outline-none focus:border-blue-500';
+
+export function SettingsDialog() {
+  const settings = useAppStore((s) => s.settings);
+  const setSetting = useAppStore((s) => s.setSetting);
+  const toggleSettings = useAppStore((s) => s.toggleSettings);
+
+  const theme = typeof settings['theme'] === 'string' ? settings['theme'] : 'one-dark';
+  const customJson =
+    typeof settings['theme.customJson'] === 'string' ? settings['theme.customJson'] : '';
+  const term = readTerminalSettings(settings);
+  const schemeRaw = settings['keymap.scheme'];
+  const scheme: KeymapScheme = schemeRaw === 'vim' || schemeRaw === 'emacs' ? schemeRaw : 'default';
+  const bindings = keymapFromSettings(settings);
+  const [customKeys, setCustomKeys] = useState(
+    typeof settings['keymap.custom'] === 'object' && settings['keymap.custom'] !== null
+      ? JSON.stringify(settings['keymap.custom'], null, 2)
+      : '',
+  );
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={toggleSettings}
+      role="dialog"
+      aria-label="设置"
+    >
+      <div
+        className="max-h-[80vh] w-[560px] overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-xs text-neutral-300 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-neutral-100">设置</h2>
+          <button
+            className="rounded px-1 text-neutral-500 hover:text-neutral-200"
+            onClick={toggleSettings}
+            aria-label="关闭设置"
+          >
+            ✕
+          </button>
+        </div>
+
+        <section className="mb-4">
+          <h3 className="mb-1.5 font-semibold text-neutral-200">主题</h3>
+          <div className="flex items-center gap-2">
+            <select
+              className={inputCls}
+              value={theme}
+              onChange={(e) => setSetting('theme', e.target.value)}
+            >
+              <option value="system">跟随系统</option>
+              {BUILTIN_THEMES.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.label}
+                </option>
+              ))}
+              <option value="custom">自定义 JSON</option>
+            </select>
+            <span className="text-neutral-500">chrome 明暗档随主题 UI 字段切换</span>
+          </div>
+          {theme === 'custom' && (
+            <textarea
+              className={`${inputCls} mt-2 h-28 w-full font-mono`}
+              placeholder='{"ui":"dark","background":"#1e1e1e","foreground":"#d4d4d4",…}'
+              value={customJson}
+              onChange={(e) => setSetting('theme.customJson', e.target.value)}
+            />
+          )}
+        </section>
+
+        <section className="mb-4">
+          <h3 className="mb-1.5 font-semibold text-neutral-200">终端</h3>
+          <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
+            <label htmlFor="set-font">字体族</label>
+            <input
+              id="set-font"
+              className={inputCls}
+              value={term.fontFamily}
+              onChange={(e) => setSetting('terminal.fontFamily', e.target.value)}
+            />
+            <label htmlFor="set-size">字号</label>
+            <input
+              id="set-size"
+              className={`${inputCls} w-20`}
+              type="number"
+              min={10}
+              max={24}
+              value={term.fontSize}
+              onChange={(e) => setSetting('terminal.fontSize', Number(e.target.value))}
+            />
+            <label htmlFor="set-scroll">回滚行数</label>
+            <span className="flex items-center gap-2">
+              <input
+                id="set-scroll"
+                className={`${inputCls} w-24`}
+                type="number"
+                min={1000}
+                max={100000}
+                step={1000}
+                value={term.scrollback}
+                onChange={(e) => setSetting('terminal.scrollback', Number(e.target.value))}
+              />
+              <span className="text-neutral-500">新建终端生效（xterm 不支持在线改）</span>
+            </span>
+          </div>
+        </section>
+
+        <section>
+          <h3 className="mb-1.5 font-semibold text-neutral-200">快捷键</h3>
+          <div className="mb-2 flex items-center gap-2">
+            <label htmlFor="set-scheme">键位方案</label>
+            <select
+              id="set-scheme"
+              className={inputCls}
+              value={scheme}
+              onChange={(e) => setSetting('keymap.scheme', e.target.value)}
+            >
+              <option value="default">默认</option>
+              <option value="vim">Vim（Alt 系）</option>
+              <option value="emacs">Emacs</option>
+            </select>
+          </div>
+          <table className="mb-2 w-full text-left">
+            <tbody>
+              {KEY_ACTIONS.map((a) => (
+                <tr key={a.id} className="border-t border-neutral-800/50">
+                  <td className="py-0.5 pr-2">{a.label}</td>
+                  <td className="py-0.5 text-right font-mono text-neutral-400">{bindings[a.id]}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <details>
+            <summary className="cursor-pointer text-neutral-500 hover:text-neutral-300">
+              自定义覆盖（JSON：动作 id → 组合键，须含修饰键）
+            </summary>
+            <textarea
+              className={`${inputCls} mt-1 h-20 w-full font-mono`}
+              placeholder='{"nextTab":"Alt+L"}'
+              value={customKeys}
+              onChange={(e) => setCustomKeys(e.target.value)}
+              onBlur={() => {
+                const t = customKeys.trim();
+                if (!t) {
+                  setSetting('keymap.custom', {});
+                  return;
+                }
+                try {
+                  setSetting('keymap.custom', JSON.parse(t));
+                } catch {
+                  /* 坏 JSON 不落库，留编辑态 */
+                }
+              }}
+            />
+          </details>
+        </section>
+      </div>
+    </div>
+  );
+}
