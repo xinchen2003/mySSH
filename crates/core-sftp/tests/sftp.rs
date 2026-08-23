@@ -519,7 +519,11 @@ async fn transfer_upload_download_integrity() {
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
     let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
-    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(sftp, 3));
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        sftp,
+        3,
+        tokio::runtime::Handle::current(),
+    ));
 
     let payload = pattern(1024 * 1024 + 7); // 1MB+ 跨块
     let local_up = temp_root("xfer-local").join("up.bin");
@@ -560,7 +564,11 @@ async fn download_resumes_from_local_offset() {
     let port = start_sftp_server(root).await;
     let conn = connect(port).await;
     let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
-    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(sftp, 2));
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        sftp,
+        2,
+        tokio::runtime::Handle::current(),
+    ));
 
     // 预置 50KB 半成品（断点）
     let local = temp_root("resume-local").join("full.bin");
@@ -585,7 +593,11 @@ async fn pause_then_cancel_slow_upload() {
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
     let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
-    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(sftp, 2));
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        sftp,
+        2,
+        tokio::runtime::Handle::current(),
+    ));
 
     // 进度回调应被触发
     let hits = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));

@@ -71,6 +71,8 @@ pub type ProgressFn = Arc<dyn Fn(TransferInfo) + Send + Sync>;
 
 pub struct TransferQueue {
     sftp: Arc<SftpClient>,
+    /// 传输任务落点（app 传 bulk-rt 的 Handle，保 runtime 分离铁律）
+    rt: tokio::runtime::Handle,
     permits: Arc<Semaphore>,
     transfers: Mutex<HashMap<TransferId, Arc<TransferInner>>>,
     id_seq: AtomicU64,
@@ -86,9 +88,10 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl TransferQueue {
-    pub fn new(sftp: Arc<SftpClient>, max_concurrent: usize) -> Self {
+    pub fn new(sftp: Arc<SftpClient>, max_concurrent: usize, rt: tokio::runtime::Handle) -> Self {
         Self {
             sftp,
+            rt,
             permits: Arc::new(Semaphore::new(max_concurrent.max(1))),
             transfers: Mutex::new(HashMap::new()),
             id_seq: AtomicU64::new(1),
@@ -173,7 +176,7 @@ impl TransferQueue {
     ) -> TransferId {
         let (id, inner) = self.register(direction, local, remote, bytes_total);
         let q = self.clone();
-        tokio::spawn(async move {
+        self.rt.spawn(async move {
             q.run_transfer(inner).await;
         });
         id

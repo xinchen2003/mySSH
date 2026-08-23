@@ -314,3 +314,55 @@ async fn config_export_import_roundtrip() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
     let _ = std::fs::remove_dir_all(path2.parent().unwrap());
 }
+
+#[tokio::test]
+async fn transfer_history_crud() {
+    let path = temp_db("transfer");
+    let store = Store::open(&path).await.expect("open");
+    store
+        .sessions()
+        .upsert(&sample("s1", "A"))
+        .await
+        .expect("session");
+
+    let repo = store.transfers();
+    let rec = core_store::TransferRecord {
+        id: "tr-1".into(),
+        session_id: "s1".into(),
+        direction: "download".into(),
+        local: "C:/tmp/a.bin".into(),
+        remote: "/var/a.bin".into(),
+        bytes_done: 50,
+        bytes_total: 100,
+        state: "paused".into(),
+        error: None,
+        updated_at: String::new(),
+    };
+    repo.upsert(&rec).await.expect("insert");
+
+    // upsert 覆盖：断点前进 + 终态
+    let mut rec2 = rec.clone();
+    rec2.bytes_done = 100;
+    rec2.state = "done".into();
+    repo.upsert(&rec2).await.expect("update");
+    let list = repo.for_session("s1").await.expect("list");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].bytes_done, 100);
+    assert_eq!(list[0].state, "done");
+    assert!(
+        !list[0].updated_at.is_empty(),
+        "updated_at 由 SQLite 时钟生成"
+    );
+
+    // clear_settled：done/canceled 清除，failed 保留
+    let mut rec3 = rec.clone();
+    rec3.id = "tr-2".into();
+    rec3.state = "failed".into();
+    rec3.error = Some("E5004 传输中断".into());
+    repo.upsert(&rec3).await.expect("insert2");
+    let cleared = repo.clear_settled("s1").await.expect("clear");
+    assert_eq!(cleared, 1);
+    let rest = repo.for_session("s1").await.expect("list2");
+    assert_eq!(rest.len(), 1);
+    assert_eq!(rest[0].id, "tr-2");
+}

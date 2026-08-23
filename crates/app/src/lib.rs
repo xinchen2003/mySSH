@@ -4,6 +4,7 @@
 mod files;
 mod logging;
 mod sessions;
+mod sftp;
 mod terminal;
 mod tunnels;
 
@@ -43,12 +44,14 @@ pub fn run() {
         mgr: core_tunnel::TunnelManager::new(),
         last: parking_lot::Mutex::new(std::collections::HashMap::new()),
     });
+    let sftp_state = sftp::SftpManagerState::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Arc::new(TerminalManager::default()))
         .manage(session_state.clone())
         .manage(tunnel_mgr_state.clone())
+        .manage(sftp_state)
         .setup(move |app| {
             // 开机自启隧道：store 已就绪，后台拉起（失败仅日志，监督器自持重连）
             let mgr = tunnel_mgr_state.mgr.clone();
@@ -89,6 +92,21 @@ pub fn run() {
             tunnels::tunnel_save,
             tunnels::tunnel_delete,
             tunnels::tunnel_defs,
+            sftp::sftp_list,
+            sftp::sftp_stat,
+            sftp::sftp_mkdir,
+            sftp::sftp_delete,
+            sftp::sftp_rename,
+            sftp::sftp_chmod,
+            sftp::local_list,
+            sftp::sftp_upload,
+            sftp::sftp_download,
+            sftp::transfer_list,
+            sftp::transfer_pause,
+            sftp::transfer_resume,
+            sftp::transfer_cancel,
+            sftp::transfer_subscribe,
+            sftp::sftp_edit_open,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

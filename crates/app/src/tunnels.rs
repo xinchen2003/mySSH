@@ -89,7 +89,7 @@ async fn connect_for_tunnel(
 
 /// 隧道侧主机密钥策略：known_hosts 严格校验，未知/变更一律拒绝并走日志
 /// （后台流量无交互上下文；用户须先经终端侧完成首连确认——与 FinalShell 一致）
-fn tunnel_host_key_check() -> core_ssh::HostKeyCheck {
+pub(crate) fn tunnel_host_key_check() -> core_ssh::HostKeyCheck {
     core_ssh::HostKeyCheck::KnownHosts(core_ssh::KnownHostsPolicy {
         path: crate::terminal::known_hosts_path(),
         prompter: Arc::new(|_prompt| async { core_ssh::HostKeyDecision::Reject }),

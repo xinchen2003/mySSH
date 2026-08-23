@@ -15,6 +15,7 @@ pub mod export;
 pub mod import;
 pub mod import_ext;
 mod session;
+mod transfer;
 mod tunnel;
 
 use std::path::Path;
@@ -28,6 +29,7 @@ pub use error::StoreError;
 pub use export::{export_encrypted, export_plain, import_config, ConfigImportOutcome};
 pub use import::{import_openssh, ImportOutcome};
 pub use session::{AuthType, SessionRecord, SessionRepo};
+pub use transfer::{TransferRecord, TransferRepo};
 pub use tunnel::{TunnelRecord, TunnelRepo};
 
 /// 凭据载体：不实现 Serialize/Clone 的 Debug 明文输出；Drop 时零化。
@@ -96,5 +98,9 @@ impl Store {
 
     pub fn tunnels(&self) -> TunnelRepo {
         TunnelRepo::new(self.pool.clone())
+    }
+
+    pub fn transfers(&self) -> TransferRepo {
+        TransferRepo::new(self.pool.clone())
     }
 }
