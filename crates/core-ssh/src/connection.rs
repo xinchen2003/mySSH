@@ -544,8 +544,8 @@ fn client_config(opts: &ConnectOptions) -> client::Config {
     client::Config {
         window_size: opts.window_size,
         maximum_packet_size: opts.max_packet_size,
-        // 消息数上界 = 窗口/包长：用户态排队内存与窗口值对齐（05 内存账）
-        channel_buffer_size: (opts.window_size / opts.max_packet_size).max(1) as usize,
+        // 通道事件队列：1024（spike 实测吞吐基线）；过小会限制高 BDP 链路在途消息数
+        channel_buffer_size: 1024,
         nodelay: true,
         inactivity_timeout: None,
         keepalive_interval: Some(opts.keepalive.interval),

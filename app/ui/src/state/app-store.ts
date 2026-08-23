@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand';
 import { TerminalSession } from '../term/terminal-session';
 import {
@@ -18,6 +18,8 @@ import type {
   SessionStateFrame,
   TermEvent,
   TermOpenSpec,
+  TunnelForm,
+  TunnelInfo,
 } from '../term/types';
 
 export type PaneState = 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'error';
@@ -62,6 +64,17 @@ interface AppStore {
   sessions: SessionRecord[];
   sidebarOpen: boolean;
   toggleSidebar(): void;
+
+  /** 内部：订阅去重标记 */
+  _tunnelsSubscribed: boolean;
+  /** 隧道面板 */
+  tunnels: TunnelInfo[];
+  tunnelPanelOpen: boolean;
+  toggleTunnelPanel(): void;
+  /** 1Hz 订阅（App 挂载时调用一次；重复调用幂等） */
+  subscribeTunnels(): void;
+  startTunnel(form: TunnelForm): Promise<string>;
+  stopTunnel(id: string): Promise<void>;
   splitActive(dir: 'row' | 'col'): void;
   closePane(tabId: string, paneId: string): void;
   setActive(id: string): void;
@@ -110,6 +123,38 @@ export const useAppStore = create<AppStore>((set, get) => {
     editing: null,
     sessions: [],
     sidebarOpen: true,
+    tunnels: [],
+    tunnelPanelOpen: false,
+    _tunnelsSubscribed: false,
+
+    toggleTunnelPanel: () => set((s) => ({ tunnelPanelOpen: !s.tunnelPanelOpen })),
+
+    subscribeTunnels: () => {
+      if (get()._tunnelsSubscribed) return;
+      set({ _tunnelsSubscribed: true });
+      const events = new Channel<{ tunnels: TunnelInfo[] }>();
+      events.onmessage = (frame) => set({ tunnels: frame.tunnels });
+      void invoke('tunnel_subscribe', { events });
+    },
+
+    startTunnel: async (form) => {
+      const res = await invoke<{ tunnelId: string }>('tunnel_start', {
+        spec: {
+          sessionId: form.sessionId,
+          kind: form.kind,
+          bindHost: form.bindHost,
+          bindPort: form.bindPort,
+          targetHost: form.targetHost ?? null,
+          targetPort: form.targetPort ?? null,
+          failFast: false,
+        },
+      });
+      return res.tunnelId;
+    },
+
+    stopTunnel: async (id) => {
+      await invoke('tunnel_stop', { tunnelId: id });
+    },
 
     toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
 

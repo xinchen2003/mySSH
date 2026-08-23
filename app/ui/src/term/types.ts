@@ -23,6 +23,33 @@ export interface SessionRecord {
   updatedAt: string;
 }
 
+export type TunnelKind = 'local' | 'remote' | 'dynamic';
+
+export interface TunnelInfo {
+  tunnelId: string;
+  kind: TunnelKind;
+  bind: string;
+  target: string | null;
+  status: 'starting' | 'listening' | 'reconnecting' | 'stopped' | 'failed';
+  activeConns: number;
+  totalConns: number;
+  bytesUp: number;
+  bytesDown: number;
+  rateUp: number;
+  rateDown: number;
+  errors: number;
+  reconnects: number;
+}
+
+export interface TunnelForm {
+  sessionId: string;
+  kind: TunnelKind;
+  bindHost: string;
+  bindPort: number;
+  targetHost?: string;
+  targetPort?: number;
+}
+
 /** 连接目标：内联参数 或 存储档案引用 */
 export type ConnectTarget =
   { kind: 'spec'; spec: TermOpenSpec } | { kind: 'session'; sessionId: string };

@@ -5,12 +5,14 @@ mod files;
 mod logging;
 mod sessions;
 mod terminal;
+mod tunnels;
 
 use std::sync::Arc;
 
 use sessions::SessionManagerState;
 use terminal::TerminalManager;
 use tracing::info;
+use tunnels::TunnelManagerState;
 
 #[tauri::command]
 async fn log_frontend(msg: String) -> Result<(), String> {
@@ -42,6 +44,10 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Arc::new(TerminalManager::default()))
         .manage(session_state)
+        .manage(Arc::new(TunnelManagerState {
+            mgr: core_tunnel::TunnelManager::new(),
+            last: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        }))
         .invoke_handler(tauri::generate_handler![
             log_frontend,
             app_version,
@@ -60,6 +66,10 @@ pub fn run() {
             sessions::cred_delete,
             sessions::vault_status,
             sessions::import_openssh,
+            tunnels::tunnel_start,
+            tunnels::tunnel_stop,
+            tunnels::tunnel_list,
+            tunnels::tunnel_subscribe,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

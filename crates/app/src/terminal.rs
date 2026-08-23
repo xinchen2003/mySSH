@@ -97,7 +97,7 @@ fn next_id(prefix: &str, seq: &AtomicU64) -> String {
     format!("{prefix}{}", seq.fetch_add(1, Ordering::Relaxed))
 }
 
-fn known_hosts_path() -> std::path::PathBuf {
+pub(crate) fn known_hosts_path() -> std::path::PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("."))

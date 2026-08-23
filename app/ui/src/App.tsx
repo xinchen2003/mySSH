@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Sidebar } from './components/Sidebar';
 import { TabBar } from './components/TabBar';
+import { TunnelPanel } from './components/TunnelPanel';
 import { ConnectDialog } from './components/ConnectDialog';
 import { HostKeyDialog } from './components/HostKeyDialog';
 import { KiDialog } from './components/KiDialog';
@@ -14,6 +15,12 @@ export function App() {
   const activeId = useAppStore((s) => s.activeId);
   const openConnect = useAppStore((s) => s.openConnect);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
+  const toggleTunnelPanel = useAppStore((s) => s.toggleTunnelPanel);
+  const subscribeTunnels = useAppStore((s) => s.subscribeTunnels);
+
+  useEffect(() => {
+    subscribeTunnels();
+  }, [subscribeTunnels]);
 
   useEffect(() => {
     // 纯浏览器（vite 诊断）下 invoke 不可用
@@ -35,7 +42,16 @@ export function App() {
           </button>
           <span className="font-semibold text-neutral-200">mySSH</span>
         </span>
-        <span>v{version} · M2</span>
+        <span className="flex items-center gap-2">
+          <button
+            className="rounded px-1 hover:bg-neutral-800"
+            onClick={toggleTunnelPanel}
+            title="隧道面板"
+          >
+            ⇄
+          </button>
+          <span>v{version} · M2</span>
+        </span>
       </header>
       <TabBar />
       <main className="flex min-h-0 flex-1">
@@ -63,6 +79,7 @@ export function App() {
           )}
         </div>
       </main>
+      <TunnelPanel />
       <ConnectDialog />
       <HostKeyDialog />
       <KiDialog />

@@ -141,6 +141,66 @@ impl Handler for DevShellHandler {
         Ok(())
     }
 
+    /// 隧道目标桥：direct-tcpip → 真连目标 → 双向泵（冒烟隧道全链路用）
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _orig_addr: &str,
+        _orig_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        match tokio::net::TcpStream::connect((host_to_connect, port_to_connect as u16)).await {
+            Ok(mut tcp) => {
+                let _ = tcp.set_nodelay(true);
+                reply.accept().await;
+                eprintln!("[dev_shell] direct-tcpip → {host_to_connect}:{port_to_connect}");
+                tokio::spawn(async move {
+                    // 与 spike relay_bridge 同形态：ChannelStream + 32KB 双泵
+                    let (mut cr, mut cw) = tokio::io::split(channel.into_stream());
+                    let (mut tr, mut tw) = tcp.split();
+                    let up = async move {
+                        let mut buf = vec![0u8; 32768];
+                        loop {
+                            match tr.read(&mut buf).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => {
+                                    if cw.write_all(&buf[..n]).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    let down = async move {
+                        let mut buf = vec![0u8; 32768];
+                        loop {
+                            match cr.read(&mut buf).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => {
+                                    if tw.write_all(&buf[..n]).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    tokio::select! {
+                        _ = up => {}
+                        _ = down => {}
+                    }
+                });
+            }
+            Err(_) => {
+                reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            }
+        }
+        Ok(())
+    }
+
     async fn data(
         &mut self,
         _channel: ChannelId,
@@ -165,9 +225,15 @@ async fn main() {
     let mut methods = MethodSet::empty();
     methods.push(MethodKind::None);
     methods.push(MethodKind::Password);
+    // 窗口/缓冲对齐 spike 验证值（默认 event_buffer_size=10 会把隧道吞吐压到 ~30MB/s——实测）
     let config = russh::server::Config {
         methods,
         keys: vec![key],
+        window_size: 16 * 1024 * 1024,
+        maximum_packet_size: 32768,
+        channel_buffer_size: 1024,
+        event_buffer_size: 4096,
+        nodelay: true,
         inactivity_timeout: None,
         ..Default::default()
     };
