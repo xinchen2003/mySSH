@@ -73,6 +73,8 @@ pub fn run() {
             terminal::hostkey_confirm,
             terminal::ki_respond,
             files::read_private_key,
+            files::open_local,
+            files::local_mkdir,
             sessions::session_list,
             sessions::session_upsert,
             sessions::session_delete,

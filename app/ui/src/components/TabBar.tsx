@@ -16,6 +16,8 @@ export function TabBar() {
   const openConnect = useAppStore((s) => s.openConnect);
   const splitActive = useAppStore((s) => s.splitActive);
   const moveTab = useAppStore((s) => s.moveTab);
+  const toggleSftp = useAppStore((s) => s.toggleSftp);
+  const sftpOpen = useAppStore((s) => s.sftpOpen);
 
   const activeTab = tabs.find((t) => t.id === activeId);
 
@@ -72,6 +74,19 @@ export function TabBar() {
           >
             ⬍
           </button>
+          {activeTab.target.kind === 'session' && (
+            <button
+              className={`rounded px-1.5 py-0.5 text-xs ${
+                sftpOpen[activeTab.id]
+                  ? 'bg-blue-800 text-neutral-100'
+                  : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100'
+              }`}
+              onClick={() => toggleSftp(activeTab.id)}
+              title="SFTP 文件管理（仅档案会话）"
+            >
+              📂
+            </button>
+          )}
         </span>
       )}
       <button

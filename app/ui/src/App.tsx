@@ -7,6 +7,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { ConnectDialog } from './components/ConnectDialog';
 import { HostKeyDialog } from './components/HostKeyDialog';
 import { KiDialog } from './components/KiDialog';
+import { SftpPanel } from './components/SftpPanel';
 import { SplitTree } from './components/SplitTree';
 import { useAppStore } from './state/app-store';
 
@@ -19,6 +20,7 @@ export function App() {
   const toggleTunnelPanel = useAppStore((s) => s.toggleTunnelPanel);
   const subscribeTunnels = useAppStore((s) => s.subscribeTunnels);
   const togglePalette = useAppStore((s) => s.togglePalette);
+  const sftpOpen = useAppStore((s) => s.sftpOpen);
   const paletteOpen = useAppStore((s) => s.paletteOpen);
   const notice = useAppStore((s) => s.notice);
 
@@ -95,6 +97,7 @@ export function App() {
           )}
         </div>
       </main>
+      {activeId && sftpOpen[activeId] && <SftpPanel tabId={activeId} />}
       <TunnelPanel />
       <ConnectDialog />
       <HostKeyDialog />

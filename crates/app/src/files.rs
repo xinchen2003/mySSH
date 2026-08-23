@@ -28,3 +28,32 @@ pub async fn read_private_key(path: String) -> Result<String, String> {
     }
     std::fs::read_to_string(p).map_err(|e| format!("读取失败: {e}"))
 }
+
+/// 系统默认方式打开本地路径（SFTP 直编的临时文件 → 默认编辑器）。
+/// 只允许打开 %TEMP%/myssh-edit-* 下的文件——本命令存在的唯一场景。
+#[tauri::command]
+pub async fn open_local(path: String) -> Result<(), String> {
+    let p = std::path::PathBuf::from(&path);
+    let temp = std::env::temp_dir();
+    let in_edit_area = p
+        .parent()
+        .and_then(|d| d.file_name())
+        .and_then(|n| n.to_str())
+        .map(|n| n.starts_with("myssh-edit-"))
+        .unwrap_or(false)
+        && p.starts_with(&temp);
+    if !in_edit_area {
+        return Err("仅允许打开 myssh-edit 临时区文件".into());
+    }
+    std::process::Command::new("cmd")
+        .args(["/c", "start", "", &path])
+        .spawn()
+        .map_err(|e| format!("打开失败: {e}"))?;
+    Ok(())
+}
+
+/// 本地新建目录（SFTP 面板本地栏操作；用户本机文件管理语义，路径不做白名单）
+#[tauri::command]
+pub async fn local_mkdir(path: String) -> Result<(), String> {
+    std::fs::create_dir_all(&path).map_err(|e| format!("创建 {path} 失败: {e}"))
+}

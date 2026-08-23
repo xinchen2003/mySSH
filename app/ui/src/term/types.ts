@@ -68,6 +68,34 @@ export interface TunnelForm {
   targetPort?: number;
 }
 
+/** SFTP/本地目录条目（app sftp_list/local_list 对齐） */
+export interface FileEntry {
+  name: string;
+  path: string;
+  kind: 'file' | 'dir' | 'symlink' | 'other';
+  size: number;
+  permissions?: number | null;
+  mtime?: number | null;
+  user?: string | null;
+  group?: string | null;
+}
+
+/** 传输快照（app transfer_subscribe 帧对齐；rate 由后端差分） */
+export interface TransferView {
+  id: string;
+  direction: 'upload' | 'download';
+  local: string;
+  remote: string;
+  state: 'queued' | 'running' | 'paused' | 'done' | 'failed' | 'canceled';
+  bytesDone: number;
+  bytesTotal: number;
+  retries: number;
+  error?: string | null;
+  rate?: number;
+  /** 历史记录（上次运行终态，非本次运行） */
+  history?: boolean;
+}
+
 /** 连接目标：内联参数 或 存储档案引用 */
 export type ConnectTarget =
   { kind: 'spec'; spec: TermOpenSpec } | { kind: 'session'; sessionId: string };

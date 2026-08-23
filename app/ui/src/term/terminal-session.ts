@@ -13,6 +13,8 @@ import type { ConnectTarget, SessionStateFrame, TermEvent } from './types';
 export class TerminalSession {
   /** 后端 tabId（term_open 返回后有效） */
   tabId: string | null = null;
+  /** 终端 cwd（OSC 7 上报；shell 未开集成时为 null） */
+  cwd: string | null = null;
   /** TerminalView 的旁路钩子：session_state 帧写重连/关闭标记进 xterm */
   private stateHook: ((ev: SessionStateFrame) => void) | null = null;
   private consumer: StreamConsumer | null = null;
@@ -53,6 +55,19 @@ export class TerminalSession {
       rows: openedRows,
     });
     this.tabId = res.tabId;
+
+    // OSC 7：shell 上报 cwd（file://host/path），SFTP 面板「跟随终端」用
+    term.parser.registerOscHandler(7, (data) => {
+      const m = /^file:\/\/[^/]*(\/.*)$/.exec(data);
+      if (m) {
+        try {
+          this.cwd = decodeURIComponent(m[1]);
+        } catch {
+          this.cwd = m[1];
+        }
+      }
+      return true;
+    });
     if (term.cols !== openedCols || term.rows !== openedRows)
       void invoke('term_resize', { tabId: res.tabId, cols: term.cols, rows: term.rows });
 

@@ -28,6 +28,10 @@ export function CommandPalette() {
   const importFrom = useAppStore((s) => s.importFrom);
   const exportConfig = useAppStore((s) => s.exportConfig);
   const importConfigFile = useAppStore((s) => s.importConfigFile);
+  const toggleSftpActive = () => {
+    const s = useAppStore.getState();
+    if (s.activeId) s.toggleSftp(s.activeId);
+  };
 
   const [query, setQuery] = useState('');
   const [index, setIndex] = useState(0);
@@ -40,6 +44,7 @@ export function CommandPalette() {
     () => [
       { id: 'a-new', label: '新建会话', run: () => openConnect() },
       { id: 'a-tunnel', label: '隧道面板', run: () => toggleTunnelPanel() },
+      { id: 'a-sftp', label: 'SFTP 面板开关（当前标签）', run: () => toggleSftpActive() },
       { id: 'a-sidebar', label: '侧栏开关', run: () => toggleSidebar() },
       {
         id: 'a-imp-ssh',
@@ -64,7 +69,7 @@ export function CommandPalette() {
       },
     ],
     [openConnect, toggleTunnelPanel, toggleSidebar, importFrom, exportConfig, importConfigFile],
-  );
+  ); // eslint-disable-line react-hooks/exhaustive-deps -- toggleSftpActive 为稳定包装
 
   type Item =
     | { kind: 'session'; id: string; label: string; hint: string; score: number }
