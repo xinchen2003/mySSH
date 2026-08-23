@@ -3,6 +3,7 @@
 
 mod files;
 mod logging;
+mod monitor;
 mod sessions;
 mod sftp;
 mod terminal;
@@ -45,6 +46,7 @@ pub fn run() {
         last: parking_lot::Mutex::new(std::collections::HashMap::new()),
     });
     let sftp_state = sftp::SftpManagerState::new();
+    let monitor_state = monitor::MonitorState::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -52,6 +54,7 @@ pub fn run() {
         .manage(session_state.clone())
         .manage(tunnel_mgr_state.clone())
         .manage(sftp_state)
+        .manage(monitor_state)
         .setup(move |app| {
             // 开机自启隧道：store 已就绪，后台拉起（失败仅日志，监督器自持重连）
             let mgr = tunnel_mgr_state.mgr.clone();
@@ -109,6 +112,8 @@ pub fn run() {
             sftp::transfer_cancel,
             sftp::transfer_subscribe,
             sftp::sftp_edit_open,
+            monitor::metrics_subscribe,
+            monitor::metrics_unsubscribe,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

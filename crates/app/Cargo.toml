@@ -19,6 +19,7 @@ tauri = { version = "2.11", features = ["custom-protocol"] }
 core-ssh.path = "../core-ssh"
 core-tunnel.path = "../core-tunnel"
 core-sftp = { version = "0.1.0", path = "../core-sftp" }
+core-monitor = { version = "0.1.0", path = "../core-monitor" }
 core-store.path = "../core-store"
 core-policy.path = "../core-policy"
 tokio.workspace = true

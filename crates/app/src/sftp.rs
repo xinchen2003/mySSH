@@ -37,7 +37,17 @@ pub struct SftpManagerState {
     rt: tokio::runtime::Handle,
 }
 
+impl SftpCtx {
+    /// 监控复用同一 Bulk 连接（通道复用，不占交互连接）
+    pub(crate) fn conn(&self) -> &core_ssh::SshConnection {
+        &self._conn
+    }
+}
+
 impl SftpManagerState {
+    pub(crate) fn rt(&self) -> tokio::runtime::Handle {
+        self.rt.clone()
+    }
     /// 建 bulk-rt 线程（与 tunnel-rt 同构；设计 06 批量 runtime）
     pub fn new() -> Arc<Self> {
         let (tx, rx) = std::sync::mpsc::channel::<tokio::runtime::Handle>();
@@ -66,7 +76,7 @@ impl SftpManagerState {
 }
 
 /// 取/建会话的 SFTP 上下文（Bulk 连接 + SFTP 子系统通道，bulk-rt 上建立）
-async fn ensure_ctx(
+pub(crate) async fn ensure_ctx(
     state: &Arc<SftpManagerState>,
     store: &Arc<Store>,
     session_id: &str,
@@ -691,7 +701,7 @@ pub async fn sftp_edit_open(
 
 // ---------- 内部 ----------
 
-async fn audit(store: &Arc<Store>, session_id: &str, action: &str, detail: &str) {
+pub(crate) async fn audit(store: &Arc<Store>, session_id: &str, action: &str, detail: &str) {
     let _ = store
         .audit()
         .append(

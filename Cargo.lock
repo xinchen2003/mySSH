@@ -146,6 +146,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "core-monitor",
  "core-policy",
  "core-sftp",
  "core-ssh",
