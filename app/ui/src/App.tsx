@@ -68,7 +68,7 @@ export function App() {
           >
             ⇄
           </button>
-          <span>v{version} · M2</span>
+          <span>v{version} · M3</span>
         </span>
       </header>
       <TabBar />
