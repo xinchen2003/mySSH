@@ -2,7 +2,7 @@
 //!
 //! M1 范围：认证族（password / publickey 含 .ppk / keyboard-interactive / agent）、
 //! known_hosts 校验（首连与变更交互决策）、PTY 通道打开。
-//! ProxyJump 在 M2 补齐。
+//! ProxyJump 尚未实现（M2 欠项，见 docs/项目实现情况总结.md 差距清单）。
 
 use std::borrow::Cow;
 use std::fmt;
