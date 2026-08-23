@@ -95,7 +95,12 @@ function ConnectForm({ initial }: { initial: SessionRecord | null }) {
   };
 
   return (
-    <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/60">
+    <div
+      className="fixed inset-0 z-10 flex items-center justify-center bg-black/60"
+      role="dialog"
+      aria-modal="true"
+      aria-label="新建/编辑会话"
+    >
       <div className="w-96 rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl">
         <h2 className="mb-3 text-base font-semibold">{initial ? '编辑会话' : '新建 SSH 连接'}</h2>
         <div className="flex flex-col gap-2">

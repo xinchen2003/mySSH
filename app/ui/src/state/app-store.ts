@@ -44,6 +44,12 @@ export interface Tab {
 
 let tabSeq = 1;
 let paneSeq = 1;
+/** 多窗口隔离（M5 标签分离）：窗口 label 作 id 前缀，防跨窗口 tab/pane id 碰撞 */
+let idPrefix = '';
+/** App 挂载时以窗口 label 初始化一次 */
+export function initIdPrefix(windowLabel: string): void {
+  idPrefix = windowLabel === 'main' ? '' : `${windowLabel}-`;
+}
 
 interface AppStore {
   tabs: Tab[];
@@ -122,7 +128,7 @@ interface AppStore {
 
 export const useAppStore = create<AppStore>((set, get) => {
   const makePane = (tabId: string): Pane => {
-    const id = `p${paneSeq++}`;
+    const id = `${idPrefix}p${paneSeq++}`;
     const onEvent = (ev: TermEvent) => {
       if (ev.type === 'hostkey_prompt')
         set((s) => ({ pendingHostKeys: [...s.pendingHostKeys, ev] }));
@@ -133,7 +139,7 @@ export const useAppStore = create<AppStore>((set, get) => {
   };
 
   const openTabWithTarget = (target: ConnectTarget, title: string) => {
-    const tabId = `tab${tabSeq++}`;
+    const tabId = `${idPrefix}tab${tabSeq++}`;
     const pane = makePane(tabId);
     const tab: Tab = {
       id: tabId,

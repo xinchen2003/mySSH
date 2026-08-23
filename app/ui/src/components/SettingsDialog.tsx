@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { check } from '@tauri-apps/plugin-updater';
 import { useAppStore } from '../state/app-store';
 import { BUILTIN_THEMES } from '../term/themes';
 import { KEY_ACTIONS, keymapFromSettings, type KeymapScheme } from '../term/keymap';
@@ -161,7 +162,46 @@ export function SettingsDialog() {
             />
           </details>
         </section>
+
+        <section className="mt-4 border-t border-neutral-800 pt-3">
+          <h3 className="mb-1.5 font-semibold text-neutral-200">关于</h3>
+          <AboutRow />
+        </section>
       </div>
+    </div>
+  );
+}
+
+function AboutRow() {
+  const notify = useAppStore((s) => s.notify);
+  const [checking, setChecking] = useState(false);
+  const onCheck = async () => {
+    setChecking(true);
+    try {
+      const update = await check();
+      notify(update ? `发现新版本 ${update.version}，开始下载…` : '已是最新版本');
+      if (update) {
+        await update.downloadAndInstall();
+        notify('更新已就绪，重启后生效');
+      }
+    } catch (e) {
+      notify(`检查更新失败: ${e}`);
+    } finally {
+      setChecking(false);
+    }
+  };
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-neutral-500">
+        自动更新通道已配置（签名验证明文预留；发布源接入后生效）
+      </span>
+      <button
+        className={`${inputCls} hover:border-blue-500`}
+        onClick={() => void onCheck()}
+        disabled={checking}
+      >
+        {checking ? '检查中…' : '检查更新'}
+      </button>
     </div>
   );
 }

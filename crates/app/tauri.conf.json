@@ -15,16 +15,27 @@
         "label": "main",
         "title": "mySSH",
         "width": 1440,
-        "height": 900
+        "height": 900,
+        "windowEffects": { "effects": ["mica"], "state": "followsWindowActiveState" }
       }
     ],
     "security": {
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVENDQ3RkFDMUVGMDAxMDAKUldRQUFmQWVySDlFWGRTVUxCcS9NaHR1UlQvdzZkOWZyZXZ5ZWNkYUlzcUppVStHbmpXSmFsaFcK",
+      "endpoints": ["https://releases.myssh.dev/latest.json"]
+    }
+  },
   "bundle": {
-    "active": false,
-    "targets": [],
-    "icon": ["icons/icon.ico"]
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "publisher": "mySSH",
+    "category": "Utility",
+    "copyright": "mySSH contributors",
+    "icon": ["icons/icon.ico"],
+    "windows": { "nsis": { "installMode": "perMachine" } }
   }
 }

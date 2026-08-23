@@ -22,7 +22,12 @@ export function HostKeyDialog() {
   };
 
   return (
-    <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/60">
+    <div
+      className="fixed inset-0 z-20 flex items-center justify-center bg-black/60"
+      role="dialog"
+      aria-modal="true"
+      aria-label="主机密钥确认"
+    >
       <div
         className={`w-[28rem] rounded-lg border p-4 text-sm shadow-xl ${
           changed

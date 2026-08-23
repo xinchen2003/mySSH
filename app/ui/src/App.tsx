@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { applyTerminalSettings, applyTheme } from './state/apply-settings';
 import { keymapFromSettings, matchCombo } from './term/keymap';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { initIdPrefix } from './state/app-store';
 import { invoke } from '@tauri-apps/api/core';
 import { Sidebar } from './components/Sidebar';
 import { TabBar } from './components/TabBar';
@@ -68,6 +70,18 @@ export function App() {
     invoke<string>('app_version')
       .then(setVersion)
       .catch(() => setVersion('dev'));
+    // 标签分离（M5）：?detach=<sessionId> 的独立窗口启动即连接该会话
+    initIdPrefix(getCurrentWindow().label);
+    const detach = new URLSearchParams(window.location.search).get('detach');
+    if (detach) {
+      const s = useAppStore.getState();
+      s.loadSessions()
+        .then(() => {
+          const rec = useAppStore.getState().sessions.find((r) => r.id === detach);
+          if (rec) useAppStore.getState().connectBySession(rec.id, rec.name);
+        })
+        .catch(() => undefined);
+    }
   }, []);
 
   // 设置：启动拉取一次；变更即应用（主题/终端字体）；system 主题跟随 OS 切换
@@ -159,7 +173,11 @@ export function App() {
       {paletteOpen && <CommandPalette />}
       {settingsOpen && <SettingsDialog />}
       {notice && (
-        <div className="fixed bottom-10 left-1/2 z-40 -translate-x-1/2 rounded bg-neutral-800 px-4 py-2 text-xs text-neutral-200 shadow-lg">
+        <div
+          className="fixed bottom-10 left-1/2 z-40 -translate-x-1/2 rounded bg-neutral-800 px-4 py-2 text-xs text-neutral-200 shadow-lg"
+          role="status"
+          aria-live="polite"
+        >
           {notice}
         </div>
       )}

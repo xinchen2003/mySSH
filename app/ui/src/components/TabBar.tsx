@@ -1,3 +1,4 @@
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../state/app-store';
 
 const STATE_DOT: Record<string, string> = {
@@ -99,6 +100,24 @@ export function TabBar() {
                 title="服务器监控（CPU/内存/网络/磁盘/进程）"
               >
                 📈
+              </button>
+              <button
+                className="rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
+                onClick={() => {
+                  const t = activeTab.target;
+                  if (t.kind !== 'session') return;
+                  const label = `det-${t.sessionId}`.replace(/[^a-zA-Z0-9-]/g, '-');
+                  const win = new WebviewWindow(label, {
+                    url: `index.html?detach=${encodeURIComponent(t.sessionId)}`,
+                    title: `${activeTab.title} · mySSH`,
+                    width: 1200,
+                    height: 800,
+                  });
+                  void win.once('tauri://error', () => undefined);
+                }}
+                title="在新窗口打开此会话（标签分离）"
+              >
+                ⧉
               </button>
             </>
           )}

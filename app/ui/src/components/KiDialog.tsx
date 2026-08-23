@@ -24,7 +24,12 @@ function KiForm({ pending }: { pending: KiChallengeFrame }) {
   };
 
   return (
-    <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/60">
+    <div
+      className="fixed inset-0 z-20 flex items-center justify-center bg-black/60"
+      role="dialog"
+      aria-modal="true"
+      aria-label="键盘交互认证"
+    >
       <div className="w-96 rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl">
         <h2 className="mb-1 text-base font-semibold">二次认证</h2>
         {pending.name && <p className="text-xs text-neutral-400">{pending.name}</p>}

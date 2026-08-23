@@ -33,3 +33,4 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 tauri-plugin-clipboard-manager = "2.3.2"
+tauri-plugin-updater = "2.10.1"

@@ -151,6 +151,9 @@ export function CommandPalette() {
   return (
     <div
       className="fixed inset-0 z-30 flex items-start justify-center bg-black/50 pt-24"
+      role="dialog"
+      aria-modal="true"
+      aria-label="命令面板"
       onClick={toggle}
     >
       <div
