@@ -146,3 +146,24 @@ export interface SessionStateFrame {
 }
 
 export type TermEvent = HostKeyPromptFrame | KiChallengeFrame | SessionStateFrame;
+
+/** 监控快照（core-monitor camelCase 直推） */
+export interface MetricsSnapshot {
+  tsMs: number;
+  intervalMs: number;
+  cpuBusyPct?: number | null;
+  load: [number, number, number];
+  procsRunning: number;
+  procsTotal: number;
+  memTotalKb: number;
+  memAvailKb: number;
+  swapTotalKb: number;
+  swapFreeKb: number;
+  disks: { name: string; readBps?: number | null; writeBps?: number | null }[];
+  nets: { iface: string; rxBps?: number | null; txBps?: number | null }[];
+  procs: { pid: number; rssKb: number; cpuPct: number; memPct: number; comm: string }[];
+}
+
+/** metrics_subscribe 推送帧 */
+export type MetricsEvent =
+  { kind: 'snapshot'; data: MetricsSnapshot } | { kind: 'error'; message: string; fatal: boolean };

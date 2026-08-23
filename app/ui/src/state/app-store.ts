@@ -81,6 +81,9 @@ interface AppStore {
   /** SFTP 面板：tabId → 是否打开 */
   sftpOpen: Record<string, boolean>;
   toggleSftp(tabId: string): void;
+  /** 监控面板：tabId → 是否打开（与 SFTP 互斥，共用底栏位） */
+  metricsOpen: Record<string, boolean>;
+  toggleMetrics(tabId: string): void;
   /** 隧道面板 */
   tunnels: TunnelInfo[];
   /** 持久化隧道定义 */
@@ -148,11 +151,21 @@ export const useAppStore = create<AppStore>((set, get) => {
     tunnelPanelOpen: false,
     _tunnelsSubscribed: false,
     sftpOpen: {},
+    metricsOpen: {},
 
     toggleTunnelPanel: () => set((s) => ({ tunnelPanelOpen: !s.tunnelPanelOpen })),
 
     toggleSftp: (tabId) =>
-      set((s) => ({ sftpOpen: { ...s.sftpOpen, [tabId]: !s.sftpOpen[tabId] } })),
+      set((s) => ({
+        sftpOpen: { ...s.sftpOpen, [tabId]: !s.sftpOpen[tabId] },
+        metricsOpen: { ...s.metricsOpen, [tabId]: false },
+      })),
+
+    toggleMetrics: (tabId) =>
+      set((s) => ({
+        metricsOpen: { ...s.metricsOpen, [tabId]: !s.metricsOpen[tabId] },
+        sftpOpen: { ...s.sftpOpen, [tabId]: false },
+      })),
 
     subscribeTunnels: () => {
       if (get()._tunnelsSubscribed) return;
