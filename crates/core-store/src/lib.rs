@@ -13,6 +13,7 @@ mod cred;
 mod error;
 pub mod export;
 pub mod import;
+pub mod import_ext;
 mod session;
 mod tunnel;
 

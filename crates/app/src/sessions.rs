@@ -209,6 +209,100 @@ pub async fn config_export(
     Ok(json!({ "path": file.display().to_string() }))
 }
 
+/// PuTTY 注册表导入（仅 Windows 有效；其它平台返回 0）
+#[tauri::command]
+pub async fn import_putty(
+    state: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let outcome = core_store::import_ext::import_putty(&state.store)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .audit()
+        .append(
+            Actor::Gui,
+            None,
+            "import_putty",
+            &json!({ "imported": outcome.imported }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "imported": outcome.imported, "skipped": outcome.skipped }))
+}
+
+/// Xshell .xsh 目录导入（缺省扫 %USERPROFILE%\Documents\NetSarang Computer\<ver>\Xshell\Sessions）
+#[tauri::command]
+pub async fn import_xshell(
+    path: Option<String>,
+    state: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let dir = match path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => find_xshell_dir()
+            .ok_or_else(|| "未找到 Xshell 会话目录（请手工指定路径）".to_string())?,
+    };
+    let outcome = core_store::import_ext::import_xshell_dir(&state.store, &dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .audit()
+        .append(
+            Actor::Gui,
+            None,
+            "import_xshell",
+            &json!({ "dir": dir.display().to_string(), "imported": outcome.imported }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "imported": outcome.imported, "skipped": outcome.skipped }))
+}
+
+/// FinalShell conn 目录导入（缺省 %USERPROFILE%\.finalshell\conn）
+#[tauri::command]
+pub async fn import_finalshell(
+    path: Option<String>,
+    state: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let dir = match path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::var_os("USERPROFILE")
+            .map(std::path::PathBuf::from)
+            .map(|h| h.join(".finalshell").join("conn"))
+            .filter(|d| d.is_dir())
+            .ok_or_else(|| "未找到 FinalShell 会话目录（请手工指定路径）".to_string())?,
+    };
+    let outcome = core_store::import_ext::import_finalshell_dir(&state.store, &dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .audit()
+        .append(
+            Actor::Gui,
+            None,
+            "import_finalshell",
+            &json!({ "dir": dir.display().to_string(), "imported": outcome.imported }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "imported": outcome.imported, "skipped": outcome.skipped }))
+}
+
+/// Xshell 默认会话目录探测（NetSarang 6/7/8 版本目录）
+fn find_xshell_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)?;
+    let base = home.join("Documents").join("NetSarang Computer");
+    for ver in ["8", "7", "6"] {
+        let d = base.join(ver).join("Xshell").join("Sessions");
+        if d.is_dir() {
+            return Some(d);
+        }
+    }
+    None
+}
+
 /// 配置导入（自动识别明文/加密包络；加密需口令）
 #[tauri::command]
 pub async fn config_import(
