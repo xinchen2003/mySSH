@@ -7,6 +7,7 @@ edition = "2021"
 workspace = true
 
 [dependencies]
+parking_lot.workspace = true
 russh.workspace = true
 tokio.workspace = true
 bytes.workspace = true

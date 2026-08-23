@@ -9,10 +9,12 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use russh::client::{self, KeyboardInteractiveAuthResponse};
 use russh::keys::ssh_key;
 use russh::keys::{decode_secret_key, PrivateKeyWithHashAlg};
-use russh::{cipher, Preferred};
+use russh::{cipher, Channel, ChannelStream, Preferred};
+use tokio::sync::mpsc;
 
 use crate::auth::{AuthMethod, KeyboardInteractivePrompt, KiChallenge, SharedKiPrompter};
 use crate::error::SshError;
@@ -77,20 +79,28 @@ impl fmt::Debug for ConnectOptions {
     }
 }
 
+/// 远程转发（-R）回连路由表：服务端以 forwarded-tcpip 回开的通道按
+/// (bind_host, bind_port) 派发给注册的隧道任务
+pub type ForwardRoutes =
+    Arc<Mutex<std::collections::HashMap<(String, u32), mpsc::Sender<Channel<client::Msg>>>>>;
+
 pub struct SshConnection {
     handle: Arc<client::Handle<ClientHandler>>,
     class: ConnClass,
+    forward_routes: ForwardRoutes,
 }
 
 impl SshConnection {
     pub async fn connect(opts: ConnectOptions) -> Result<Self, SshError> {
         let config = client_config(&opts);
+        let target = (opts.host.as_str(), opts.port);
+        let forward_routes: ForwardRoutes = Default::default();
         let handler = ClientHandler {
             check: opts.host_key_check.clone(),
             host: opts.host.clone(),
             port: opts.port,
+            routes: forward_routes.clone(),
         };
-        let target = (opts.host.as_str(), opts.port);
         let mut handle = client::connect(Arc::new(config), target, handler)
             .await
             .map_err(|e| SshError::Connect {
@@ -102,11 +112,72 @@ impl SshConnection {
         Ok(Self {
             handle: Arc::new(handle),
             class: opts.class,
+            forward_routes,
         })
     }
 
     pub fn class(&self) -> ConnClass {
         self.class
+    }
+
+    /// 连接活性探针（russh 会话任务结束即 closed）
+    pub fn is_closed(&self) -> bool {
+        self.handle.is_closed()
+    }
+
+    /// 隧道数据通道：direct-tcpip，返回 AsyncRead+AsyncWrite 流（中继直接对接）
+    pub async fn open_direct_tcpip(
+        &self,
+        target_host: &str,
+        target_port: u16,
+    ) -> Result<ChannelStream<client::Msg>, SshError> {
+        let ch = self
+            .handle
+            .channel_open_direct_tcpip(target_host, target_port as u32, "127.0.0.1", 0u32)
+            .await
+            .map_err(|e| SshError::ChannelOpen {
+                kind: "direct-tcpip",
+                reason: e.to_string(),
+            })?;
+        Ok(ch.into_stream())
+    }
+
+    /// 注册远程转发：服务端收到到 bind 的连接后回开 forwarded-tcpip 通道，
+    /// 经返回的 Receiver 交付（容量 64 有界）
+    pub async fn tcpip_forward(
+        &self,
+        bind_host: &str,
+        bind_port: u16,
+    ) -> Result<mpsc::Receiver<Channel<client::Msg>>, SshError> {
+        let (tx, rx) = mpsc::channel(64);
+        self.forward_routes
+            .lock()
+            .insert((bind_host.to_string(), bind_port as u32), tx);
+        if let Err(e) = self.handle.tcpip_forward(bind_host, bind_port as u32).await {
+            self.forward_routes
+                .lock()
+                .remove(&(bind_host.to_string(), bind_port as u32));
+            return Err(SshError::ChannelOpen {
+                kind: "tcpip-forward",
+                reason: e.to_string(),
+            });
+        }
+        Ok(rx)
+    }
+
+    pub async fn cancel_tcpip_forward(
+        &self,
+        bind_host: &str,
+        bind_port: u16,
+    ) -> Result<(), SshError> {
+        self.handle
+            .cancel_tcpip_forward(bind_host, bind_port as u32)
+            .await
+            .map_err(|e| SshError::ChannelIo(e.to_string()))?;
+        self.forward_routes
+            .lock()
+            .remove(&(bind_host.to_string(), bind_port as u32));
+        Ok(())
     }
 
     /// 打开交互式 PTY 通道并启动 shell 或指定命令。
@@ -373,10 +444,43 @@ struct ClientHandler {
     check: HostKeyCheck,
     host: String,
     port: u16,
+    /// -R 回连通道路由（SshConnection::tcpip_forward 注册）
+    routes: ForwardRoutes,
 }
 
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
+
+    /// 服务端回开的 forwarded-tcpip：按 (connected_address, connected_port) 派发
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<client::Msg>,
+        connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        let tx = self
+            .routes
+            .lock()
+            .get(&(connected_address.to_string(), connected_port))
+            .cloned();
+        match tx {
+            Some(tx) => {
+                reply.accept().await;
+                // 有界派发：隧道任务消费不过来时丢通道（对端见连接失败），不堆积
+                let _ = tx.try_send(channel);
+            }
+            None => {
+                reply
+                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+            }
+        }
+        Ok(())
+    }
 
     async fn check_server_key(&mut self, key: &ssh_key::PublicKey) -> Result<bool, Self::Error> {
         match &self.check {

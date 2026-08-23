@@ -12,3 +12,10 @@ tokio.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+parking_lot.workspace = true
+russh.workspace = true
+socket2 = "0.5"
+
+[dev-dependencies]
+anyhow.workspace = true
+rand = "0.10"
