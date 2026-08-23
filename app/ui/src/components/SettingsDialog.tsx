@@ -110,6 +110,26 @@ export function SettingsDialog() {
               />
               <span className="text-neutral-500">新建终端生效（xterm 不支持在线改）</span>
             </span>
+            <label htmlFor="set-copy-sel">选中即复制</label>
+            <span className="flex items-center gap-2">
+              <input
+                id="set-copy-sel"
+                type="checkbox"
+                checked={settings['terminal.copyOnSelect'] !== false}
+                onChange={(e) => setSetting('terminal.copyOnSelect', e.target.checked)}
+              />
+              <span className="text-neutral-500">选中终端文本后自动复制（对已有终端立即生效）</span>
+            </span>
+            <label htmlFor="set-confirm-close">关闭确认</label>
+            <span className="flex items-center gap-2">
+              <input
+                id="set-confirm-close"
+                type="checkbox"
+                checked={settings['terminal.confirmCloseTab'] !== false}
+                onChange={(e) => setSetting('terminal.confirmCloseTab', e.target.checked)}
+              />
+              <span className="text-neutral-500">关闭有活动连接的标签前确认（默认开启）</span>
+            </span>
           </div>
         </section>
 
@@ -179,13 +199,13 @@ function AboutRow() {
     setChecking(true);
     try {
       const update = await check();
-      notify(update ? `发现新版本 ${update.version}，开始下载…` : '已是最新版本');
+      notify(update ? `发现新版本 ${update.version}，开始下载…` : '已是最新版本', 'info');
       if (update) {
         await update.downloadAndInstall();
-        notify('更新已就绪，重启后生效');
+        notify('更新已就绪，重启后生效', 'success');
       }
     } catch (e) {
-      notify(`检查更新失败: ${e}`);
+      notify(`检查更新失败: ${e}`, 'error');
     } finally {
       setChecking(false);
     }

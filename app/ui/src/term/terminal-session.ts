@@ -19,6 +19,8 @@ export class TerminalSession {
   private stateHook: ((ev: SessionStateFrame) => void) | null = null;
   private consumer: StreamConsumer | null = null;
   private encoder = new TextEncoder();
+  /** 输入/resize 订阅释放器：attach 幂等关键——原位重连重挂前必须先释放上一轮 */
+  private disposers: { dispose(): void }[] = [];
 
   constructor(private readonly onEvent: (ev: TermEvent) => void) {}
 
@@ -28,6 +30,9 @@ export class TerminalSession {
     stateHook?: (ev: SessionStateFrame) => void,
   ): Promise<string> {
     this.stateHook = stateHook ?? null;
+    // 原位重连幂等：同一 xterm 实例重复 attach 时，先释放上一轮输入订阅与消费器，
+    // 否则 onData/onResize 会注册两次导致输入重复发送
+    this.detachInput();
     // 消费器必须先于 term_open 就绪：shell banner 可能紧随返回抵达
     this.consumer = new StreamConsumer(
       (chunk, cb) => term.write(chunk, cb),
@@ -72,24 +77,33 @@ export class TerminalSession {
       void invoke('term_resize', { tabId: res.tabId, cols: term.cols, rows: term.rows });
 
     // 输入零聚合直发（规格书输入路径预算）
-    term.onData((s) => {
-      if (!this.tabId) return;
-      void invoke('term_input', {
-        tabId: this.tabId,
-        bytes: Array.from(this.encoder.encode(s)),
-      });
-    });
-    term.onResize(({ cols, rows }) => {
-      if (this.tabId) void invoke('term_resize', { tabId: this.tabId, cols, rows });
-    });
+    this.disposers.push(
+      term.onData((s) => {
+        if (!this.tabId) return;
+        void invoke('term_input', {
+          tabId: this.tabId,
+          bytes: Array.from(this.encoder.encode(s)),
+        });
+      }),
+      term.onResize(({ cols, rows }) => {
+        if (this.tabId) void invoke('term_resize', { tabId: this.tabId, cols, rows });
+      }),
+    );
     return this.tabId;
+  }
+
+  /** 释放输入/resize 订阅与消费器（OSC 7 handler 重注册即覆盖，无需释放） */
+  private detachInput(): void {
+    for (const d of this.disposers) d.dispose();
+    this.disposers = [];
+    this.consumer?.dispose();
+    this.consumer = null;
   }
 
   async close(): Promise<void> {
     const id = this.tabId;
     this.tabId = null;
-    this.consumer?.dispose();
-    this.consumer = null;
+    this.detachInput();
     if (id) await invoke('term_close', { tabId: id });
   }
 }

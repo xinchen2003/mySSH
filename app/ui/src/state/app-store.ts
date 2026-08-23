@@ -24,6 +24,29 @@ import type {
 } from '../term/types';
 
 export type PaneState = 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'error';
+/** 通知分级（批次一 7.7）：success/info 短时自动消失，warning 较长，error 常驻手动关 */
+export type NotificationLevel = 'success' | 'info' | 'warning' | 'error';
+
+export interface Notice {
+  id: number;
+  level: NotificationLevel;
+  message: string;
+}
+
+/** 各级别自动消失时长（ms）；null = 常驻手动关闭 */
+const NOTICE_TTL: Record<NotificationLevel, number | null> = {
+  success: 3000,
+  info: 4000,
+  warning: 8000,
+  error: null,
+};
+
+/** 堆叠上限：溢出时优先丢弃最旧的非 error 通知 */
+const MAX_NOTICES = 5;
+
+let noticeSeq = 1;
+/** 一次性自动消失定时器（非空转轮询；手动关闭时清理） */
+const noticeTimers = new Map<number, number>();
 
 export interface Pane {
   id: string;
@@ -64,10 +87,20 @@ interface AppStore {
   /** 命令面板（Ctrl+Shift+P） */
   paletteOpen: boolean;
   togglePalette(): void;
-  /** 瞬态通知（toast）；null 清除 */
-  notice: string | null;
-  notify(msg: string): void;
-  /** 导入/导出（错误也走 notice） */
+  /** 分级通知堆叠（toast） */
+  notices: Notice[];
+  notify(message: string, level?: NotificationLevel): void;
+  dismissNotice(id: number): void;
+  /** 待确认删除的会话档案（删除会级联清凭据，必须确认） */
+  pendingDeleteSession: SessionRecord | null;
+  requestDeleteSession(rec: SessionRecord): void;
+  confirmDeleteSession(): Promise<void>;
+  cancelDeleteSession(): void;
+  /** 待确认关闭的标签 id（有活跃连接时需确认） */
+  pendingCloseTab: string | null;
+  confirmCloseTab(): void;
+  cancelCloseTab(): void;
+  /** 导入/导出（错误也走 notices） */
   importFrom(source: 'openssh' | 'putty' | 'xshell' | 'finalshell', path?: string): Promise<void>;
   exportConfig(encrypted: boolean, passphrase?: string): Promise<void>;
   importConfigFile(path: string, passphrase?: string): Promise<void>;
@@ -127,6 +160,18 @@ interface AppStore {
 }
 
 export const useAppStore = create<AppStore>((set, get) => {
+  /** 实际执行关标签：关闭全部 pane 会话并移除标签（确认守卫见 closeTab） */
+  const doCloseTab = (id: string) => {
+    const { tabs, activeId } = get();
+    const tab = tabs.find((t) => t.id === id);
+    if (tab) for (const pid of paneIds(tab.layout)) void tab.panes[pid]?.session.close();
+    const next = tabs.filter((t) => t.id !== id);
+    set({
+      tabs: next,
+      activeId: activeId === id ? (next[next.length - 1]?.id ?? null) : activeId,
+    });
+  };
+
   const makePane = (tabId: string): Pane => {
     const id = `${idPrefix}p${paneSeq++}`;
     const onEvent = (ev: TermEvent) => {
@@ -260,13 +305,62 @@ export const useAppStore = create<AppStore>((set, get) => {
 
     paletteOpen: false,
     togglePalette: () => set((s) => ({ paletteOpen: !s.paletteOpen })),
-    notice: null,
-    notify: (msg) => {
-      set({ notice: msg });
-      setTimeout(() => {
-        if (get().notice === msg) set({ notice: null });
-      }, 4000);
+    notices: [],
+    notify: (message, level = 'info') => {
+      const id = noticeSeq++;
+      set((s) => {
+        const notices = [...s.notices, { id, level, message }];
+        while (notices.length > MAX_NOTICES) {
+          const idx = notices.findIndex((n) => n.level !== 'error');
+          const [dropped] = notices.splice(idx >= 0 ? idx : 0, 1);
+          const t = noticeTimers.get(dropped.id);
+          if (t !== undefined) {
+            clearTimeout(t);
+            noticeTimers.delete(dropped.id);
+          }
+        }
+        return { notices };
+      });
+      const ttl = NOTICE_TTL[level];
+      if (ttl !== null) {
+        noticeTimers.set(
+          id,
+          setTimeout(() => {
+            noticeTimers.delete(id);
+            get().dismissNotice(id);
+          }, ttl),
+        );
+      }
     },
+    dismissNotice: (id) => {
+      const t = noticeTimers.get(id);
+      if (t !== undefined) {
+        clearTimeout(t);
+        noticeTimers.delete(id);
+      }
+      set((s) => ({ notices: s.notices.filter((n) => n.id !== id) }));
+    },
+    pendingDeleteSession: null,
+    requestDeleteSession: (rec) => set({ pendingDeleteSession: rec }),
+    cancelDeleteSession: () => set({ pendingDeleteSession: null }),
+    confirmDeleteSession: async () => {
+      const rec = get().pendingDeleteSession;
+      if (!rec) return;
+      set({ pendingDeleteSession: null });
+      try {
+        await get().deleteSession(rec.id);
+        get().notify(`已删除服务器「${rec.name}」`, 'success');
+      } catch (e) {
+        get().notify(`删除服务器失败: ${String(e)}`, 'error');
+      }
+    },
+    pendingCloseTab: null,
+    confirmCloseTab: () => {
+      const id = get().pendingCloseTab;
+      set({ pendingCloseTab: null });
+      if (id) doCloseTab(id);
+    },
+    cancelCloseTab: () => set({ pendingCloseTab: null }),
 
     importFrom: async (source, path) => {
       try {
@@ -284,9 +378,9 @@ export const useAppStore = create<AppStore>((set, get) => {
         let msg = `导入 ${r.imported} 条会话`;
         if (r.skipped) msg += `，跳过 ${r.skipped}`;
         if (r.unresolvedJumps) msg += `，${r.unresolvedJumps} 个跳板引用待手工补链`;
-        get().notify(msg);
+        get().notify(msg, r.unresolvedJumps ? 'warning' : 'success');
       } catch (e) {
-        get().notify(`导入失败: ${String(e)}`);
+        get().notify(`导入失败: ${String(e)}`, 'error');
       }
     },
 
@@ -296,9 +390,9 @@ export const useAppStore = create<AppStore>((set, get) => {
           encrypted,
           passphrase: passphrase ?? null,
         });
-        get().notify(`已导出: ${r.path}`);
+        get().notify(`已导出: ${r.path}`, 'success');
       } catch (e) {
-        get().notify(`导出失败: ${String(e)}`);
+        get().notify(`导出失败: ${String(e)}`, 'error');
       }
     },
 
@@ -310,9 +404,12 @@ export const useAppStore = create<AppStore>((set, get) => {
         );
         await get().loadSessions();
         await get().loadTunnelDefs();
-        get().notify(`导入完成: ${r.sessions} 会话 / ${r.tunnels} 隧道 / ${r.credentials} 凭据`);
+        get().notify(
+          `导入完成: ${r.sessions} 会话 / ${r.tunnels} 隧道 / ${r.credentials} 凭据`,
+          'success',
+        );
       } catch (e) {
-        get().notify(`导入失败: ${String(e)}`);
+        get().notify(`导入失败: ${String(e)}`, 'error');
       }
     },
 
@@ -343,14 +440,15 @@ export const useAppStore = create<AppStore>((set, get) => {
       const { tabs } = get();
       const tab = tabs.find((t) => t.id === tabId);
       if (!tab) return;
-      const pane = tab.panes[paneId];
-      if (pane) void pane.session.close();
       const layout = removeLeaf(tab.layout, paneId);
       if (!layout) {
-        // 最后一叶：整标签关闭
+        // 最后一叶：走整标签关闭入口（含活跃连接确认守卫；
+        // session 统一由确认后的 doCloseTab 关闭，避免取消确认留下僵尸 pane）
         get().closeTab(tabId);
         return;
       }
+      const pane = tab.panes[paneId];
+      if (pane) void pane.session.close();
       const panes = Object.fromEntries(Object.entries(tab.panes).filter(([k]) => k !== paneId));
       const activePaneId = tab.activePaneId === paneId ? firstLeaf(layout) : tab.activePaneId;
       set((s) => ({
@@ -399,15 +497,20 @@ export const useAppStore = create<AppStore>((set, get) => {
         ),
       })),
 
+    /** 关标签守卫（批次一 7.6）：设置开启且有活跃连接时先弹确认；全部已关闭则直接关 */
     closeTab: (id) => {
-      const { tabs, activeId } = get();
+      const { tabs, settings } = get();
       const tab = tabs.find((t) => t.id === id);
-      if (tab) for (const pid of paneIds(tab.layout)) void tab.panes[pid]?.session.close();
-      const next = tabs.filter((t) => t.id !== id);
-      set({
-        tabs: next,
-        activeId: activeId === id ? (next[next.length - 1]?.id ?? null) : activeId,
-      });
+      if (!tab) return;
+      const live = paneIds(tab.layout).filter((pid) => {
+        const st = tab.panes[pid]?.state;
+        return st === 'connected' || st === 'connecting' || st === 'reconnecting';
+      }).length;
+      if (settings['terminal.confirmCloseTab'] !== false && live > 0) {
+        set({ pendingCloseTab: id });
+        return;
+      }
+      doCloseTab(id);
     },
 
     shiftHostKey: () => set((s) => ({ pendingHostKeys: s.pendingHostKeys.slice(1) })),

@@ -16,6 +16,9 @@ import { MetricsPanel } from './components/MetricsPanel';
 import { SettingsDialog } from './components/SettingsDialog';
 import { SplitTree } from './components/SplitTree';
 import { useAppStore } from './state/app-store';
+import { ConfirmDialog } from './components/ConfirmDialog';
+import { Notices } from './components/Notices';
+import { paneIds } from './term/layout';
 
 export function App() {
   const [version, setVersion] = useState('…');
@@ -30,7 +33,15 @@ export function App() {
   const sftpOpen = useAppStore((s) => s.sftpOpen);
   const metricsOpen = useAppStore((s) => s.metricsOpen);
   const paletteOpen = useAppStore((s) => s.paletteOpen);
-  const notice = useAppStore((s) => s.notice);
+  const pendingDeleteSession = useAppStore((s) => s.pendingDeleteSession);
+  const pendingCloseTab = useAppStore((s) => s.pendingCloseTab);
+  const pendingCloseTabData = tabs.find((t) => t.id === pendingCloseTab) ?? null;
+  // 关标签确认数据：pane 总数与即将断开的活跃连接数
+  const pendingCloseIds = pendingCloseTabData ? paneIds(pendingCloseTabData.layout) : [];
+  const pendingCloseLive = pendingCloseIds.filter((pid) => {
+    const st = pendingCloseTabData?.panes[pid]?.state;
+    return st === 'connected' || st === 'connecting' || st === 'reconnecting';
+  }).length;
 
   useEffect(() => {
     subscribeTunnels();
@@ -135,7 +146,7 @@ export function App() {
           >
             ⚙
           </button>
-          <span>v{version} · M5</span>
+          <span>v{version}</span>
         </span>
       </header>
       <TabBar />
@@ -172,15 +183,40 @@ export function App() {
       <KiDialog />
       {paletteOpen && <CommandPalette />}
       {settingsOpen && <SettingsDialog />}
-      {notice && (
-        <div
-          className="fixed bottom-10 left-1/2 z-40 -translate-x-1/2 rounded bg-neutral-800 px-4 py-2 text-xs text-neutral-200 shadow-lg"
-          role="status"
-          aria-live="polite"
+      {/* 批次一 7.1：删除服务器确认（级联清凭据，不可撤销；默认焦点在取消） */}
+      {pendingDeleteSession && (
+        <ConfirmDialog
+          title={`删除服务器“${pendingDeleteSession.name}”？`}
+          confirmLabel="删除服务器"
+          onCancel={() => useAppStore.getState().cancelDeleteSession()}
+          onConfirm={() => void useAppStore.getState().confirmDeleteSession()}
         >
-          {notice}
-        </div>
+          <p className="mb-1 text-neutral-300">
+            主机：{pendingDeleteSession.username}@{pendingDeleteSession.host}:
+            {pendingDeleteSession.port}
+          </p>
+          <p className="mb-1">
+            分组：{pendingDeleteSession.groupPath.replace(/\//g, ' / ') || '未分组'}
+          </p>
+          <p className="mb-1">删除后，该服务器保存的密码或凭据也会一并删除。</p>
+          <p className="text-red-300">此操作无法撤销。</p>
+        </ConfirmDialog>
       )}
+      {/* 批次一 7.6：关闭有活跃连接的标签前确认 */}
+      {pendingCloseTabData && (
+        <ConfirmDialog
+          title={`关闭标签“${pendingCloseTabData.title}”？`}
+          confirmLabel="关闭标签"
+          onCancel={() => useAppStore.getState().cancelCloseTab()}
+          onConfirm={() => useAppStore.getState().confirmCloseTab()}
+        >
+          <p className="mb-1">
+            该标签包含 {pendingCloseIds.length} 个窗格，其中 {pendingCloseLive} 个连接仍活跃。
+          </p>
+          <p className="text-red-300">关闭后，{pendingCloseLive} 个活跃连接将立即断开。</p>
+        </ConfirmDialog>
+      )}
+      <Notices />
     </div>
   );
 }

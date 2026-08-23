@@ -56,6 +56,12 @@ export function installDevHooks(): void {
       term?.paste(text);
     },
     pendingHostKey: () => useAppStore.getState().pendingHostKeys[0] ?? null,
+    /** 当前通知堆叠（分级冒烟断言用） */
+    notices: () => useAppStore.getState().notices,
+    /** 待确认关闭的标签 id（关标签确认冒烟断言用） */
+    pendingCloseTab: () => useAppStore.getState().pendingCloseTab,
+    /** 待确认删除的会话（删除确认冒烟断言用） */
+    pendingDeleteSession: () => useAppStore.getState().pendingDeleteSession,
     /** 应答 hostkey 弹窗（与点按钮同路径） */
     answerHostKey: async (accept: boolean, remember: boolean) => {
       const p = useAppStore.getState().pendingHostKeys[0] ?? null;

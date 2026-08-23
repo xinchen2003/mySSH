@@ -12,7 +12,7 @@ export function Sidebar() {
   const open = useAppStore((s) => s.sidebarOpen);
   const load = useAppStore((s) => s.loadSessions);
   const connectBySession = useAppStore((s) => s.connectBySession);
-  const deleteSession = useAppStore((s) => s.deleteSession);
+  const requestDeleteSession = useAppStore((s) => s.requestDeleteSession);
   const openConnect = useAppStore((s) => s.openConnect);
   const importFrom = useAppStore((s) => s.importFrom);
   const exportConfig = useAppStore((s) => s.exportConfig);
@@ -119,7 +119,7 @@ export function Sidebar() {
               s={s}
               onConnect={() => connectBySession(s.id, s.name)}
               onEdit={() => openConnect(s)}
-              onDelete={() => void deleteSession(s.id)}
+              onDelete={() => requestDeleteSession(s)}
             />
           ))
         ) : (
@@ -128,7 +128,7 @@ export function Sidebar() {
             depth={0}
             onConnect={connectBySession}
             onEdit={openConnect}
-            onDelete={deleteSession}
+            onDelete={requestDeleteSession}
           />
         )}
       </div>
@@ -234,7 +234,7 @@ function GroupNode({
   depth: number;
   onConnect: (id: string, title: string) => void;
   onEdit: (s: SessionRecord) => void;
-  onDelete: (id: string) => Promise<void>;
+  onDelete: (s: SessionRecord) => void;
 }) {
   return (
     <>
@@ -245,7 +245,7 @@ function GroupNode({
           indent={depth}
           onConnect={() => onConnect(s.id, s.name)}
           onEdit={() => onEdit(s)}
-          onDelete={() => void onDelete(s.id)}
+          onDelete={() => onDelete(s)}
         />
       ))}
       {[...node.groups.entries()].map(([name, child]) => (

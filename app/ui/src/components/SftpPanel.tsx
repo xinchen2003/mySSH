@@ -3,6 +3,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAppStore } from '../state/app-store';
 import type { FileEntry, TransferView } from '../term/types';
+import { ConfirmDialog } from './ConfirmDialog';
 
 /** 双栏 SFTP 面板：左本地 / 右远程，拖拽互传 + 队列进度 + 终端 cwd 联动（OSC 7）。
  *  远端操作命令见 crates/app/src/sftp.rs；传输速率由后端差分下发。 */
@@ -141,6 +142,8 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     side: 'local' | 'remote';
     value: string;
   } | null>(null);
+  /** 待确认删除的远程条目（批次一 7.2；多选落地后扩展为条目数组，组件已按批量预留） */
+  const [confirmDel, setConfirmDel] = useState<FileEntry | null>(null);
   const remotePaneRef = useRef<HTMLDivElement>(null);
 
   const refreshLocal = useCallback(
@@ -154,7 +157,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         setLocalEntries(res.entries);
         if (res.path !== target) setLocalPath(res.path);
       } catch (e) {
-        notify(`本地目录读取失败: ${e}`);
+        notify(`本地目录读取失败: ${e}`, 'error');
       } finally {
         setLocalLoading(false);
       }
@@ -175,7 +178,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         setRemoteEntries(res.entries);
         setRemotePath(target);
       } catch (e) {
-        notify(`远程目录读取失败: ${e}`);
+        notify(`远程目录读取失败: ${e}`, 'error');
       } finally {
         setRemoteLoading(false);
       }
@@ -220,7 +223,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
           for (const p of ev.payload.paths) {
             void invoke('sftp_upload', { sessionId, local: p, remote: remotePath }).catch((e) =>
-              notify(`上传失败: ${e}`),
+              notify(`上传失败: ${e}`, 'error'),
             );
           }
         }
@@ -259,9 +262,9 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             remote: e.path,
           });
           await invoke('open_local', { path: res.localPath });
-          notify(`已打开编辑: ${e.name}（保存即回传）`);
+          notify(`已打开编辑: ${e.name}（保存即回传）`, 'success');
         } catch (err) {
-          notify(`编辑打开失败: ${err}`);
+          notify(`编辑打开失败: ${err}`, 'error');
         }
       })();
     }
@@ -271,11 +274,11 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     for (const p of paths) {
       if (toSide === 'remote') {
         void invoke('sftp_upload', { sessionId, local: p, remote: remotePath }).catch((e) =>
-          notify(`上传失败: ${e}`),
+          notify(`上传失败: ${e}`, 'error'),
         );
       } else {
         void invoke('sftp_download', { sessionId, remote: p, local: localPath || '' }).catch((e) =>
-          notify(`下载失败: ${e}`),
+          notify(`下载失败: ${e}`, 'error'),
         );
       }
     }
@@ -307,20 +310,20 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         void refreshRemote();
       }
     } catch (e) {
-      notify(`操作失败: ${e}`);
+      notify(`操作失败: ${e}`, 'error');
     }
     setPrompt(null);
   };
 
-  const deleteSelected = async () => {
-    if (!selected || selected.side !== 'remote') return;
+  /** 确认后执行删除（目录递归删除，无法恢复） */
+  const deleteEntry = async (entry: FileEntry) => {
     try {
-      await invoke('sftp_delete', { sessionId, path: selected.path });
+      await invoke('sftp_delete', { sessionId, path: entry.path });
       setSelected(null);
       void refreshRemote();
-      notify('已删除');
+      notify(`已删除: ${entry.name}`, 'success');
     } catch (e) {
-      notify(`删除失败: ${e}`);
+      notify(`删除失败: ${e}`, 'error');
     }
   };
 
@@ -385,7 +388,10 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         <button
           className="rounded px-1.5 py-0.5 text-red-400 hover:bg-neutral-800 disabled:opacity-40"
           disabled={!selEntry('remote')}
-          onClick={() => void deleteSelected()}
+          onClick={() => {
+            const e = selEntry('remote');
+            if (e) setConfirmDel(e);
+          }}
         >
           删除
         </button>
@@ -396,7 +402,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             const e = selEntry('local');
             if (e)
               void invoke('sftp_upload', { sessionId, local: e.path, remote: remotePath }).catch(
-                (err) => notify(`上传失败: ${err}`),
+                (err) => notify(`上传失败: ${err}`, 'error'),
               );
           }}
         >
@@ -412,7 +418,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
                 sessionId,
                 remote: e.path,
                 local: localPath || '',
-              }).catch((err) => notify(`下载失败: ${err}`));
+              }).catch((err) => notify(`下载失败: ${err}`, 'error'));
           }}
         >
           ← 下载
@@ -456,6 +462,26 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             取消
           </button>
         </div>
+      )}
+
+      {/* 远程删除确认（递归删除无法恢复；默认焦点在取消） */}
+      {confirmDel && (
+        <ConfirmDialog
+          title={`删除远程${confirmDel.kind === 'dir' ? '目录' : '文件'}“${confirmDel.name}”？`}
+          confirmLabel={confirmDel.kind === 'dir' ? '递归删除' : '删除'}
+          onCancel={() => setConfirmDel(null)}
+          onConfirm={() => {
+            const e = confirmDel;
+            setConfirmDel(null);
+            void deleteEntry(e);
+          }}
+        >
+          <p className="mb-1 break-all font-mono text-neutral-300">{confirmDel.path}</p>
+          {confirmDel.kind === 'dir' && (
+            <p className="mb-1 text-red-300">目录将被递归删除，其中所有文件和子目录都会丢失。</p>
+          )}
+          <p>共 1 个项目。此操作无法恢复。</p>
+        </ConfirmDialog>
       )}
 
       {/* 双栏 */}

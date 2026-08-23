@@ -59,15 +59,29 @@ function PaneFrame({
   children: React.ReactNode;
 }) {
   const setActivePane = useAppStore((s) => s.setActivePane);
+  const closePane = useAppStore((s) => s.closePane);
   const active = tab.activePaneId === paneId;
   const multi = Object.keys(tab.panes).length > 1;
   return (
     <div
-      className={`h-full w-full ${multi ? (active ? 'ring-1 ring-blue-500/60' : 'ring-1 ring-neutral-800') : ''}`}
+      className={`group relative h-full w-full ${multi ? (active ? 'ring-1 ring-blue-500/60' : 'ring-1 ring-neutral-800') : ''}`}
       style={{ display: visible ? undefined : 'none' }}
       onMouseDown={() => setActivePane(tab.id, paneId)}
     >
       {children}
+      {/* 批次一 7.3：pane 关闭入口。absolute 悬浮不压缩终端空间；
+          hover/focus-within 显示（键盘可达）；末叶走整标签关闭逻辑 */}
+      <button
+        className="absolute right-1 top-1 z-10 rounded bg-neutral-800/80 px-1.5 py-0.5 text-xs text-neutral-400 opacity-0 transition-opacity hover:bg-neutral-700 hover:text-neutral-100 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+        title="关闭此窗格"
+        aria-label="关闭此窗格"
+        onClick={(e) => {
+          e.stopPropagation();
+          closePane(tab.id, paneId);
+        }}
+      >
+        ×
+      </button>
     </div>
   );
 }
