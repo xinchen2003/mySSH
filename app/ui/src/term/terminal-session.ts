@@ -40,15 +40,21 @@ export class TerminalSession {
       if (ev.type === 'session_state') this.stateHook?.(ev);
     };
 
+    // term_open 可能耗时数秒（WAN 首连 + hostkey 确认），期间 fit 可能改尺寸；
+    // 记下开链尺寸，连接建立后比对补发 resize（onResize 注册前的变更会丢）
+    const openedCols = term.cols;
+    const openedRows = term.rows;
     const res = await invoke<{ tabId: string }>('term_open', {
       spec: target.kind === 'spec' ? target.spec : null,
       sessionId: target.kind === 'session' ? target.sessionId : null,
       data,
       events,
-      cols: term.cols,
-      rows: term.rows,
+      cols: openedCols,
+      rows: openedRows,
     });
     this.tabId = res.tabId;
+    if (term.cols !== openedCols || term.rows !== openedRows)
+      void invoke('term_resize', { tabId: res.tabId, cols: term.cols, rows: term.rows });
 
     // 输入零聚合直发（规格书输入路径预算）
     term.onData((s) => {
