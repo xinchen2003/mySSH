@@ -5,6 +5,7 @@ mod files;
 mod logging;
 mod monitor;
 mod sessions;
+mod settings;
 mod sftp;
 mod terminal;
 mod tunnels;
@@ -114,6 +115,9 @@ pub fn run() {
             sftp::sftp_edit_open,
             monitor::metrics_subscribe,
             monitor::metrics_unsubscribe,
+            settings::settings_list,
+            settings::settings_set,
+            settings::settings_delete,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

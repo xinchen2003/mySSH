@@ -3,6 +3,27 @@
 
 use core_store::{Actor, AuthType, CredentialKind, Secret, SessionRecord, Store};
 
+#[tokio::test]
+async fn settings_kv_roundtrip() {
+    let path = temp_db("settings");
+    let _ = std::fs::remove_file(&path);
+    let store = Store::open(&path).await.unwrap();
+    let s = store.settings();
+    assert!(s.get("theme").await.unwrap().is_none());
+    s.set("theme", "\"one-dark\"").await.unwrap();
+    assert_eq!(
+        s.get("theme").await.unwrap().as_deref(),
+        Some("\"one-dark\"")
+    );
+    s.set("theme", "\"nord\"").await.unwrap(); // upsert 覆盖
+    s.set("font.size", "14").await.unwrap();
+    let all = s.all().await.unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].0, "font.size"); // ORDER BY key
+    s.delete("theme").await.unwrap();
+    assert!(s.get("theme").await.unwrap().is_none());
+}
+
 fn temp_db(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("myssh-store-test-{}-{tag}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

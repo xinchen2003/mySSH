@@ -15,6 +15,7 @@ pub mod export;
 pub mod import;
 pub mod import_ext;
 mod session;
+mod settings;
 mod transfer;
 mod tunnel;
 
@@ -29,6 +30,7 @@ pub use error::StoreError;
 pub use export::{export_encrypted, export_plain, import_config, ConfigImportOutcome};
 pub use import::{import_openssh, ImportOutcome};
 pub use session::{AuthType, SessionRecord, SessionRepo};
+pub use settings::SettingsRepo;
 pub use transfer::{TransferRecord, TransferRepo};
 pub use tunnel::{TunnelRecord, TunnelRepo};
 
@@ -98,6 +100,10 @@ impl Store {
 
     pub fn tunnels(&self) -> TunnelRepo {
         TunnelRepo::new(self.pool.clone())
+    }
+
+    pub fn settings(&self) -> SettingsRepo {
+        SettingsRepo::new(self.pool.clone())
     }
 
     pub fn transfers(&self) -> TransferRepo {
