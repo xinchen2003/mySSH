@@ -55,6 +55,16 @@ interface AppStore {
 
   openConnect(editTarget?: SessionRecord): void;
   closeConnect(): void;
+  /** 命令面板（Ctrl+Shift+P） */
+  paletteOpen: boolean;
+  togglePalette(): void;
+  /** 瞬态通知（toast）；null 清除 */
+  notice: string | null;
+  notify(msg: string): void;
+  /** 导入/导出（错误也走 notice） */
+  importFrom(source: 'openssh' | 'putty' | 'xshell' | 'finalshell', path?: string): Promise<void>;
+  exportConfig(encrypted: boolean, passphrase?: string): Promise<void>;
+  importConfigFile(path: string, passphrase?: string): Promise<void>;
   connect(spec: TermOpenSpec): void;
   connectBySession(sessionId: string, title: string): void;
   /** 会话档案 CRUD（秘密经 cred_set 单独进保险库） */
@@ -197,6 +207,64 @@ export const useAppStore = create<AppStore>((set, get) => {
 
     openConnect: (editTarget) => set({ showConnect: true, editing: editTarget ?? null }),
     closeConnect: () => set({ showConnect: false, editing: null }),
+
+    paletteOpen: false,
+    togglePalette: () => set((s) => ({ paletteOpen: !s.paletteOpen })),
+    notice: null,
+    notify: (msg) => {
+      set({ notice: msg });
+      setTimeout(() => {
+        if (get().notice === msg) set({ notice: null });
+      }, 4000);
+    },
+
+    importFrom: async (source, path) => {
+      try {
+        const cmd = {
+          openssh: 'import_openssh',
+          putty: 'import_putty',
+          xshell: 'import_xshell',
+          finalshell: 'import_finalshell',
+        }[source];
+        const r = await invoke<{ imported: number; skipped: number; unresolvedJumps?: number }>(
+          cmd,
+          { path: path ?? null },
+        );
+        await get().loadSessions();
+        let msg = `导入 ${r.imported} 条会话`;
+        if (r.skipped) msg += `，跳过 ${r.skipped}`;
+        if (r.unresolvedJumps) msg += `，${r.unresolvedJumps} 个跳板引用待手工补链`;
+        get().notify(msg);
+      } catch (e) {
+        get().notify(`导入失败: ${String(e)}`);
+      }
+    },
+
+    exportConfig: async (encrypted, passphrase) => {
+      try {
+        const r = await invoke<{ path: string }>('config_export', {
+          encrypted,
+          passphrase: passphrase ?? null,
+        });
+        get().notify(`已导出: ${r.path}`);
+      } catch (e) {
+        get().notify(`导出失败: ${String(e)}`);
+      }
+    },
+
+    importConfigFile: async (path, passphrase) => {
+      try {
+        const r = await invoke<{ sessions: number; tunnels: number; credentials: number }>(
+          'config_import',
+          { path, passphrase: passphrase ?? null },
+        );
+        await get().loadSessions();
+        await get().loadTunnelDefs();
+        get().notify(`导入完成: ${r.sessions} 会话 / ${r.tunnels} 隧道 / ${r.credentials} 凭据`);
+      } catch (e) {
+        get().notify(`导入失败: ${String(e)}`);
+      }
+    },
 
     connect: (spec) => {
       openTabWithTarget({ kind: 'spec', spec }, `${spec.user}@${spec.host}`);

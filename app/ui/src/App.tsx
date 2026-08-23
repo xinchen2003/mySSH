@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Sidebar } from './components/Sidebar';
 import { TabBar } from './components/TabBar';
 import { TunnelPanel } from './components/TunnelPanel';
+import { CommandPalette } from './components/CommandPalette';
 import { ConnectDialog } from './components/ConnectDialog';
 import { HostKeyDialog } from './components/HostKeyDialog';
 import { KiDialog } from './components/KiDialog';
@@ -17,10 +18,25 @@ export function App() {
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const toggleTunnelPanel = useAppStore((s) => s.toggleTunnelPanel);
   const subscribeTunnels = useAppStore((s) => s.subscribeTunnels);
+  const togglePalette = useAppStore((s) => s.togglePalette);
+  const paletteOpen = useAppStore((s) => s.paletteOpen);
+  const notice = useAppStore((s) => s.notice);
 
   useEffect(() => {
     subscribeTunnels();
   }, [subscribeTunnels]);
+
+  // 全局命令面板快捷键（xterm 焦点下 window keydown 仍可收到）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'P' || e.key === 'p')) {
+        e.preventDefault();
+        togglePalette();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [togglePalette]);
 
   useEffect(() => {
     // 纯浏览器（vite 诊断）下 invoke 不可用
@@ -83,6 +99,12 @@ export function App() {
       <ConnectDialog />
       <HostKeyDialog />
       <KiDialog />
+      {paletteOpen && <CommandPalette />}
+      {notice && (
+        <div className="fixed bottom-10 left-1/2 z-40 -translate-x-1/2 rounded bg-neutral-800 px-4 py-2 text-xs text-neutral-200 shadow-lg">
+          {notice}
+        </div>
+      )}
     </div>
   );
 }
