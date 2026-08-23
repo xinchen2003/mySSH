@@ -16,6 +16,8 @@ export interface SessionRecord {
   username: string;
   authType: 'password' | 'publickey' | 'keyboard-interactive' | 'agent';
   keyPath?: string | null;
+  /** ProxyJump 链：session id 数组（就近→最远）；空 = 直连 */
+  jumpChain: string[];
   groupPath: string;
   tags: string[];
   command?: string | null;

@@ -34,7 +34,7 @@ const CREDIT_HIGH: u32 = 8 * 1024 * 1024;
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// 前端传入的认证材料（secret 只在内存停留，Zeroizing 落 core-ssh）
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum AuthSpec {
     Password {
@@ -49,6 +49,16 @@ pub enum AuthSpec {
     Agent,
 }
 
+/// 一跳跳板（已解析的认证材料；由 sessions.rs 从档案+保险库解析注入）
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JumpHopSpec {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub auth: AuthSpec,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TermOpenSpec {
@@ -56,10 +66,42 @@ pub struct TermOpenSpec {
     pub port: u16,
     pub user: String,
     pub auth: AuthSpec,
+    /// ProxyJump 链（就近→最远）；空 = 直连
+    #[serde(default)]
+    pub jump_chain: Vec<JumpHopSpec>,
     /// 终端类型，默认 xterm-256color
     pub term: Option<String>,
     /// 启动命令；None = 登录 shell
     pub command: Option<String>,
+}
+
+/// AuthSpec → core-ssh 认证材料（Zeroizing 包裹秘密）
+pub(crate) fn auth_method_from(auth: &AuthSpec) -> AuthMethod {
+    match auth {
+        AuthSpec::Password { password } => AuthMethod::Password(Zeroizing::new(password.clone())),
+        AuthSpec::PublicKey {
+            key_pem,
+            passphrase,
+        } => AuthMethod::PublicKey {
+            key_pem: Zeroizing::new(key_pem.clone()),
+            passphrase: passphrase.clone().map(Zeroizing::new),
+        },
+        AuthSpec::KeyboardInteractive => AuthMethod::KeyboardInteractive,
+        AuthSpec::Agent => AuthMethod::Agent,
+    }
+}
+
+/// 跳板链 → core-ssh（KI 在跳板上同样弹窗——复用同一决策桥）
+pub(crate) fn jump_chain_from(chain: &[JumpHopSpec]) -> Vec<core_ssh::JumpHop> {
+    chain
+        .iter()
+        .map(|h| core_ssh::JumpHop {
+            host: h.host.clone(),
+            port: h.port,
+            user: h.user.clone(),
+            auth: auth_method_from(&h.auth),
+        })
+        .collect()
 }
 
 struct TermSession {
@@ -128,18 +170,8 @@ pub async fn term_open(
         _ => return Err("term_open 需要且仅需 spec 或 sessionId 之一".into()),
     };
 
-    let auth = match spec.auth {
-        AuthSpec::Password { password } => AuthMethod::Password(Zeroizing::new(password)),
-        AuthSpec::PublicKey {
-            key_pem,
-            passphrase,
-        } => AuthMethod::PublicKey {
-            key_pem: Zeroizing::new(key_pem),
-            passphrase: passphrase.map(Zeroizing::new),
-        },
-        AuthSpec::KeyboardInteractive => AuthMethod::KeyboardInteractive,
-        AuthSpec::Agent => AuthMethod::Agent,
-    };
+    let auth = auth_method_from(&spec.auth);
+    let jump_chain = jump_chain_from(&spec.jump_chain);
 
     // hostkey 决策桥：prompter 经 events 发弹窗帧，oneshot 等 hostkey_confirm 命令
     let hk_events = events.clone();
@@ -209,6 +241,7 @@ pub async fn term_open(
         port: spec.port,
         user: spec.user.clone(),
         auth,
+        jump_chain,
         class: ConnClass::Interactive,
         window_size: 4 * 1024 * 1024,
         max_packet_size: 32768,

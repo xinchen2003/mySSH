@@ -29,6 +29,29 @@ impl Handler for TestHandler {
         Ok(Auth::Accept)
     }
 
+    /// 跳板测试需要：direct-tcpip 真实桥接到目标（与 dev_shell 同构）
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        match tokio::net::TcpStream::connect((host_to_connect, port_to_connect as u16)).await {
+            Ok(tcp) => {
+                reply.accept().await;
+                tokio::spawn(bridge(channel, tcp));
+            }
+            Err(_) => {
+                let _ = reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            }
+        }
+        Ok(())
+    }
+
     async fn channel_open_session(
         &mut self,
         _channel: Channel<Msg>,
@@ -58,6 +81,41 @@ impl Handler for TestHandler {
         }
         Ok(())
     }
+}
+
+/// TCP <-> SSH 通道双向泵
+async fn bridge(ch: Channel<Msg>, tcp: tokio::net::TcpStream) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let chan = ch.into_stream();
+    let (mut cr, mut cw) = tokio::io::split(chan);
+    let (mut tr, mut tw) = tcp.into_split();
+    let up = tokio::spawn(async move {
+        let mut buf = vec![0u8; 32768];
+        loop {
+            match tr.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if cw.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let down = tokio::spawn(async move {
+        let mut buf = vec![0u8; 32768];
+        loop {
+            match cr.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tw.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let _ = tokio::join!(up, down);
 }
 
 async fn start_server() -> u16 {
@@ -91,6 +149,7 @@ async fn connect_and_echo() {
         window_size: 4 * 1024 * 1024,
         max_packet_size: 32768,
         keepalive: KeepaliveConfig::default(),
+        jump_chain: vec![],
         host_key_check: HostKeyCheck::AcceptAll,
         ki_prompter: None,
     })
@@ -114,6 +173,7 @@ async fn auth_failure_is_coded() {
         window_size: 4 * 1024 * 1024,
         max_packet_size: 32768,
         keepalive: KeepaliveConfig::default(),
+        jump_chain: vec![],
         host_key_check: HostKeyCheck::AcceptAll,
         ki_prompter: None,
     };
@@ -123,4 +183,33 @@ async fn auth_failure_is_coded() {
     };
     let msg = err.to_string();
     assert!(msg.starts_with("E2"), "error must carry E2 code: {msg}");
+}
+
+/// ProxyJump：目标 B 仅经跳板 A 的 direct-tcpip 到达（双跳握手 + exec 回显）
+#[tokio::test]
+async fn jump_chain_connect() {
+    let target_port = start_server().await;
+    let hop_port = start_server().await; // 同一 TestServer 带 direct-tcpip 桥
+    let conn = SshConnection::connect(ConnectOptions {
+        host: "127.0.0.1".into(),
+        port: target_port,
+        user: "test".into(),
+        auth: AuthMethod::None,
+        class: ConnClass::Interactive,
+        window_size: 4 * 1024 * 1024,
+        max_packet_size: 32768,
+        keepalive: KeepaliveConfig::default(),
+        jump_chain: vec![core_ssh::JumpHop {
+            host: "127.0.0.1".into(),
+            port: hop_port,
+            user: "hop".into(),
+            auth: AuthMethod::None,
+        }],
+        host_key_check: HostKeyCheck::AcceptAll,
+        ki_prompter: None,
+    })
+    .await
+    .expect("connect via jump");
+    let out = conn.exec_collect("echo-test").await.expect("exec");
+    assert_eq!(out, b"pong");
 }

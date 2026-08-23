@@ -32,6 +32,7 @@ function ConnectForm({ initial }: { initial: SessionRecord | null }) {
         : (initial?.authType ?? 'password'),
   );
   const [password, setPassword] = useState('');
+  const [jumpChain, setJumpChain] = useState<string[]>(initial?.jumpChain ?? []);
   const [keyPath, setKeyPath] = useState(initial?.keyPath ?? '');
   const [passphrase, setPassphrase] = useState('');
   const [save, setSave] = useState(initial !== null);
@@ -72,6 +73,7 @@ function ConnectForm({ initial }: { initial: SessionRecord | null }) {
               ? 'keyboard-interactive'
               : kind,
         keyPath: kind === 'publicKey' ? keyPath.trim() : null,
+        jumpChain,
         groupPath: groupPath.trim(),
         tags: initial?.tags ?? [],
         command: initial?.command ?? null,
@@ -204,6 +206,13 @@ function ConnectForm({ initial }: { initial: SessionRecord | null }) {
             />
             保存会话（密码/passphrase 存加密保险库）
           </label>
+          {save && (
+            <JumpChainEditor
+              chain={jumpChain}
+              onChange={setJumpChain}
+              excludeId={initial?.id ?? null}
+            />
+          )}
           {error && <p className="text-xs text-red-400">{error}</p>}
           <div className="mt-2 flex justify-end gap-2">
             <button
@@ -222,6 +231,53 @@ function ConnectForm({ initial }: { initial: SessionRecord | null }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+/** 跳板链编辑：从已存会话中按序挑选（就近→最远）；排除自身与已选 */
+function JumpChainEditor({
+  chain,
+  onChange,
+  excludeId,
+}: {
+  chain: string[];
+  onChange: (next: string[]) => void;
+  excludeId: string | null;
+}) {
+  const sessions = useAppStore((s) => s.sessions);
+  const candidates = sessions.filter((s) => s.id !== excludeId && !chain.includes(s.id));
+  const nameOf = (id: string) => sessions.find((s) => s.id === id)?.name ?? id;
+  return (
+    <div className="mt-1 rounded border border-neutral-800 p-2">
+      <div className="mb-1 text-xs text-neutral-400">跳板链（ProxyJump，就近→最远）</div>
+      {chain.map((id, i) => (
+        <div key={id} className="mb-1 flex items-center gap-2 text-xs">
+          <span className="text-neutral-500">{i + 1}.</span>
+          <span className="flex-1 truncate">{nameOf(id)}</span>
+          <button
+            className="text-neutral-500 hover:text-red-400"
+            onClick={() => onChange(chain.filter((x) => x !== id))}
+          >
+            移除
+          </button>
+        </div>
+      ))}
+      {candidates.length > 0 && (
+        <select
+          className="w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs"
+          value=""
+          onChange={(e) => {
+            if (e.target.value) onChange([...chain, e.target.value]);
+          }}
+        >
+          <option value="">+ 添加跳板…</option>
+          {candidates.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}（{s.username}@{s.host}:{s.port}）
+            </option>
+          ))}
+        </select>
+      )}
     </div>
   );
 }

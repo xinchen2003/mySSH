@@ -45,25 +45,19 @@ fn make_connect_fn(store: Arc<Store>, session_id: String) -> core_tunnel::Connec
             let spec = crate::sessions::resolve_session_spec(&store, &session_id)
                 .await
                 .map_err(core_ssh::SshError::Internal)?;
-            // 认证材料移出，host/port/user 留用
-            let auth = match &spec.auth {
-                crate::terminal::AuthSpec::Password { password } => {
-                    core_ssh::AuthMethod::Password(zeroize::Zeroizing::new(password.clone()))
-                }
-                crate::terminal::AuthSpec::PublicKey {
-                    key_pem,
-                    passphrase,
-                } => core_ssh::AuthMethod::PublicKey {
-                    key_pem: zeroize::Zeroizing::new(key_pem.clone()),
-                    passphrase: passphrase.clone().map(zeroize::Zeroizing::new),
-                },
-                crate::terminal::AuthSpec::KeyboardInteractive => {
-                    return Err(core_ssh::SshError::UnsupportedAuth(
-                        "keyboard-interactive（隧道请改用密钥/agent）",
-                    ));
-                }
-                crate::terminal::AuthSpec::Agent => core_ssh::AuthMethod::Agent,
-            };
+            // 认证材料移出，host/port/user 留用；跳板链同理（KI 一律拒绝：
+            // 后台流量无交互上下文，跳板也一样）
+            if matches!(spec.auth, crate::terminal::AuthSpec::KeyboardInteractive)
+                || spec
+                    .jump_chain
+                    .iter()
+                    .any(|h| matches!(h.auth, crate::terminal::AuthSpec::KeyboardInteractive))
+            {
+                return Err(core_ssh::SshError::UnsupportedAuth(
+                    "keyboard-interactive（隧道请改用密钥/agent）",
+                ));
+            }
+            let auth = crate::terminal::auth_method_from(&spec.auth);
             connect_for_tunnel(auth, &spec).await
         })
     })
@@ -80,6 +74,7 @@ async fn connect_for_tunnel(
         port: spec.port,
         user: spec.user.clone(),
         auth,
+        jump_chain: crate::terminal::jump_chain_from(&spec.jump_chain),
         class: ConnClass::Bulk,
         // 窗口=16MB（与 spike 验证配置对齐）；07 文档 4MB 基线系 50ms RTT 推算，
         // 2026-08-23 环境回归期间实测非瓶颈（见 10-risks），保守取验证值

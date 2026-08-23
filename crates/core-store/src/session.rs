@@ -48,6 +48,9 @@ pub struct SessionRecord {
     pub user: String,
     pub auth_type: AuthType,
     pub key_path: Option<String>,
+    /// ProxyJump 链：session id 数组（就近→最远）；空 = 直连
+    #[serde(default)]
+    pub jump_chain: Vec<String>,
     pub group_path: String,
     pub tags: Vec<String>,
     pub command: Option<String>,
@@ -59,32 +62,29 @@ pub struct SessionRepo {
     pool: SqlitePool,
 }
 
+const LIST_SQL: &str = "SELECT id,name,host,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at FROM sessions ORDER BY group_path, name";
+const GET_SQL: &str = "SELECT id,name,host,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at FROM sessions WHERE id = ?";
+
 impl SessionRepo {
     pub(crate) fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
 
     pub async fn list(&self) -> Result<Vec<SessionRecord>, StoreError> {
-        let rows = sqlx::query(
-            "SELECT id,name,host,port,username,auth_type,key_path,group_path,tags,command,created_at,updated_at
-             FROM sessions ORDER BY group_path, name",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
+        let rows = sqlx::query(LIST_SQL)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
         rows.iter().map(row_to_record).collect()
     }
 
     pub async fn get(&self, id: &str) -> Result<SessionRecord, StoreError> {
-        let row = sqlx::query(
-            "SELECT id,name,host,port,username,auth_type,key_path,group_path,tags,command,created_at,updated_at
-             FROM sessions WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db)?
-        .ok_or_else(|| StoreError::NotFound(format!("session {id}")))?;
+        let row = sqlx::query(GET_SQL)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?
+            .ok_or_else(|| StoreError::NotFound(format!("session {id}")))?;
         row_to_record(&row)
     }
 
@@ -92,14 +92,17 @@ impl SessionRepo {
     pub async fn upsert(&self, rec: &SessionRecord) -> Result<SessionRecord, StoreError> {
         let tags =
             serde_json::to_string(&rec.tags).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        let jump_chain = serde_json::to_string(&rec.jump_chain)
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?;
         sqlx::query(
-            "INSERT INTO sessions (id,name,host,port,username,auth_type,key_path,group_path,tags,command,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
+            "INSERT INTO sessions (id,name,host,port,username,auth_type,key_path,group_path,tags,command,jump_chain,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
              ON CONFLICT(id) DO UPDATE SET
                name=excluded.name, host=excluded.host, port=excluded.port,
                username=excluded.username, auth_type=excluded.auth_type,
                key_path=excluded.key_path, group_path=excluded.group_path,
-               tags=excluded.tags, command=excluded.command, updated_at=datetime('now')",
+               tags=excluded.tags, command=excluded.command,
+               jump_chain=excluded.jump_chain, updated_at=datetime('now')",
         )
         .bind(&rec.id)
         .bind(&rec.name)
@@ -111,6 +114,7 @@ impl SessionRepo {
         .bind(&rec.group_path)
         .bind(tags)
         .bind(&rec.command)
+        .bind(jump_chain)
         .execute(&self.pool)
         .await
         .map_err(db)?;
@@ -132,6 +136,7 @@ impl SessionRepo {
 
 fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<SessionRecord, StoreError> {
     let tags_raw: String = row.get("tags");
+    let jump_raw: String = row.get("jump_chain");
     Ok(SessionRecord {
         id: row.get("id"),
         name: row.get("name"),
@@ -142,6 +147,8 @@ fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<SessionRecord, StoreEr
         key_path: row.get("key_path"),
         group_path: row.get("group_path"),
         tags: serde_json::from_str(&tags_raw).map_err(|e| StoreError::Corrupt(e.to_string()))?,
+        jump_chain: serde_json::from_str(&jump_raw)
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?,
         command: row.get("command"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),

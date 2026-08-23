@@ -38,6 +38,7 @@ async fn main() {
                 window_size: 16 * 1024 * 1024,
                 max_packet_size: 32768,
                 keepalive: KeepaliveConfig::default(),
+                jump_chain: vec![],
                 host_key_check: HostKeyCheck::AcceptAll,
                 ki_prompter: None,
             })

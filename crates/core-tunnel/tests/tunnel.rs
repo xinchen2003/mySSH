@@ -210,6 +210,7 @@ fn connect_fn(port: u16) -> ConnectFn {
                 window_size: 4 * 1024 * 1024,
                 max_packet_size: 32768,
                 keepalive: KeepaliveConfig::default(),
+                jump_chain: vec![],
                 host_key_check: HostKeyCheck::AcceptAll,
                 ki_prompter: None,
             })

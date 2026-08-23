@@ -24,6 +24,7 @@ async fn main() {
         window_size: 4 * 1024 * 1024,
         max_packet_size: 32768,
         keepalive: KeepaliveConfig::default(),
+        jump_chain: vec![],
         ki_prompter: None,
     };
     let conn = SshConnection::connect(opts)

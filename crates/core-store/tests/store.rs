@@ -20,6 +20,7 @@ fn sample(id: &str, name: &str) -> SessionRecord {
         key_path: None,
         group_path: "生产/华东".into(),
         tags: vec!["prod".into(), "web".into()],
+        jump_chain: vec![],
         command: None,
         created_at: String::new(),
         updated_at: String::new(),

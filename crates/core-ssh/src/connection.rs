@@ -1,8 +1,8 @@
 //! 连接建立与生命周期。
 //!
 //! M1 范围：认证族（password / publickey 含 .ppk / keyboard-interactive / agent）、
-//! known_hosts 校验（首连与变更交互决策）、PTY 通道打开。
-//! ProxyJump 尚未实现（M2 欠项，见 docs/项目实现情况总结.md 差距清单）。
+//! known_hosts 校验（首连与变更交互决策）、PTY 通道打开、ProxyJump 多级跳板
+//! （链式：每跳经上一跳的 direct-tcpip 通道做 SSH 握手）。
 
 use std::borrow::Cow;
 use std::fmt;
@@ -45,12 +45,23 @@ impl Default for KeepaliveConfig {
     }
 }
 
+/// 一跳跳板（就近→最远有序）。认证材料由上层（store 档案+保险库）解析注入。
+#[derive(Debug, Clone)]
+pub struct JumpHop {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub auth: AuthMethod,
+}
+
 #[derive(Clone)]
 pub struct ConnectOptions {
     pub host: String,
     pub port: u16,
     pub user: String,
     pub auth: AuthMethod,
+    /// ProxyJump 链；空 = 直连。每跳复用本 struct 的 host_key_check / ki_prompter
+    pub jump_chain: Vec<JumpHop>,
     pub class: ConnClass,
     /// 通道接收窗口；隧道默认 4MB、终端默认 4MB（内存账见 05/07 设计文档）
     pub window_size: u32,
@@ -69,6 +80,7 @@ impl fmt::Debug for ConnectOptions {
             .field("port", &self.port)
             .field("user", &self.user)
             .field("auth", &self.auth)
+            .field("jump_chain", &self.jump_chain.len())
             .field("class", &self.class)
             .field("window_size", &self.window_size)
             .field("max_packet_size", &self.max_packet_size)
@@ -88,31 +100,103 @@ pub struct SshConnection {
     handle: Arc<client::Handle<ClientHandler>>,
     class: ConnClass,
     forward_routes: ForwardRoutes,
+    /// 跳板链的各跳连接句柄（下划线前缀：刻意只持有不读）：必须保活，drop 会连带关闭承载内层会话的 direct-tcpip 通道
+    _hop_handles: Vec<client::Handle<ClientHandler>>,
 }
 
 impl SshConnection {
     pub async fn connect(opts: ConnectOptions) -> Result<Self, SshError> {
-        let config = client_config(&opts);
-        let target = (opts.host.as_str(), opts.port);
         let forward_routes: ForwardRoutes = Default::default();
-        let handler = ClientHandler {
+
+        // 逐跳建连：hop[i] 的传输是 hop[i-1] 上打开的 direct-tcpip 通道。
+        // 跳板只承载内层 SSH 流量，窗口沿用 opts（隧道走 Bulk 时同样生效）。
+        let mut hop_handles: Vec<client::Handle<ClientHandler>> = Vec::new();
+        let mut next_stream: Option<ChannelStream<client::Msg>> = None;
+        for (i, hop) in opts.jump_chain.iter().enumerate() {
+            let hop_opts = ConnectOptions {
+                host: hop.host.clone(),
+                port: hop.port,
+                user: hop.user.clone(),
+                auth: hop.auth.clone(),
+                jump_chain: vec![],
+                class: opts.class,
+                window_size: opts.window_size,
+                max_packet_size: opts.max_packet_size,
+                keepalive: opts.keepalive.clone(),
+                host_key_check: opts.host_key_check.clone(),
+                ki_prompter: opts.ki_prompter.clone(),
+            };
+            let config = client_config(&hop_opts);
+            let handler = ClientHandler {
+                check: hop_opts.host_key_check.clone(),
+                host: hop.host.clone(),
+                port: hop.port,
+                routes: Default::default(),
+            };
+            let hop_target = format!("跳板#{} {}:{}", i + 1, hop.host, hop.port);
+            let mut handle = match next_stream.take() {
+                None => client::connect(Arc::new(config), (hop.host.as_str(), hop.port), handler)
+                    .await
+                    .map_err(|e| SshError::Connect {
+                        target: hop_target.clone(),
+                        source: std::io::Error::other(e.to_string()),
+                    })?,
+                Some(s) => client::connect_stream(Arc::new(config), s, handler)
+                    .await
+                    .map_err(|e| SshError::Connect {
+                        target: hop_target.clone(),
+                        source: std::io::Error::other(e.to_string()),
+                    })?,
+            };
+            authenticate(&mut handle, &hop_opts).await?;
+            // 到下一跳（或最终目标）的通道
+            let (nh, np) = match opts.jump_chain.get(i + 1) {
+                Some(next) => (next.host.clone(), next.port as u32),
+                None => (opts.host.clone(), opts.port as u32),
+            };
+            let ch = handle
+                .channel_open_direct_tcpip(nh.clone(), np, "127.0.0.1", 0)
+                .await
+                .map_err(|e| SshError::ChannelOpen {
+                    kind: "direct-tcpip(跳板)",
+                    reason: format!("{}:{np} via 跳板#{}: {e}", nh, i + 1),
+                })?;
+            next_stream = Some(ch.into_stream());
+            hop_handles.push(handle);
+        }
+
+        let config = client_config(&opts);
+        let forward_handler = ClientHandler {
             check: opts.host_key_check.clone(),
             host: opts.host.clone(),
             port: opts.port,
             routes: forward_routes.clone(),
         };
-        let mut handle = client::connect(Arc::new(config), target, handler)
+        let mut handle = match next_stream {
+            None => client::connect(
+                Arc::new(config),
+                (opts.host.as_str(), opts.port),
+                forward_handler,
+            )
             .await
             .map_err(|e| SshError::Connect {
                 target: format!("{}:{}", opts.host, opts.port),
                 source: std::io::Error::other(e.to_string()),
-            })?;
+            })?,
+            Some(s) => client::connect_stream(Arc::new(config), s, forward_handler)
+                .await
+                .map_err(|e| SshError::Connect {
+                    target: format!("{}:{}（经 {} 跳）", opts.host, opts.port, hop_handles.len()),
+                    source: std::io::Error::other(e.to_string()),
+                })?,
+        };
 
         authenticate(&mut handle, &opts).await?;
         Ok(Self {
             handle: Arc::new(handle),
             class: opts.class,
             forward_routes,
+            _hop_handles: hop_handles,
         })
     }
 

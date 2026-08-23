@@ -165,17 +165,49 @@ pub async fn resolve_session_spec(
     store: &Store,
     session_id: &str,
 ) -> Result<crate::terminal::TermOpenSpec, String> {
+    let mut visited = std::collections::HashSet::new();
+    resolve_spec_inner(store, session_id, &mut visited).await
+}
+
+/// 单跳深度上限：防环兜底（visited 集已严格防环，此为异常防御）
+const MAX_JUMP_DEPTH: usize = 8;
+
+async fn resolve_spec_inner(
+    store: &Store,
+    session_id: &str,
+    visited: &mut std::collections::HashSet<String>,
+) -> Result<crate::terminal::TermOpenSpec, String> {
+    if !visited.insert(session_id.to_string()) {
+        return Err(format!("跳板链存在环：{session_id} 重复出现"));
+    }
+    if visited.len() > MAX_JUMP_DEPTH {
+        return Err(format!("跳板链超过 {MAX_JUMP_DEPTH} 跳上限"));
+    }
     let rec = store
         .sessions()
         .get(session_id)
         .await
         .map_err(|e| e.to_string())?;
     let auth = resolve_auth(store, &rec).await?;
+    // 逐跳解析（就近→最远）；跳板的跳板递归展开拍平——
+    // 若跳 A 自身配了跳板 B，则链为 B..A（B 更靠近本机）
+    let mut jump_chain = Vec::new();
+    for hop_id in &rec.jump_chain {
+        let hop = Box::pin(resolve_spec_inner(store, hop_id, visited)).await?;
+        jump_chain.extend(hop.jump_chain);
+        jump_chain.push(crate::terminal::JumpHopSpec {
+            host: hop.host,
+            port: hop.port,
+            user: hop.user,
+            auth: hop.auth,
+        });
+    }
     Ok(crate::terminal::TermOpenSpec {
         host: rec.host.clone(),
         port: rec.port,
         user: rec.user.clone(),
         auth,
+        jump_chain,
         term: None,
         command: rec.command.clone(),
     })

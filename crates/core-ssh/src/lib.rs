@@ -13,7 +13,7 @@ mod hostkey;
 mod pty;
 
 pub use auth::{AuthMethod, KeyboardInteractivePrompt, KiChallenge, KiPrompter, SharedKiPrompter};
-pub use connection::{ConnClass, ConnectOptions, KeepaliveConfig, SshConnection};
+pub use connection::{ConnClass, ConnectOptions, JumpHop, KeepaliveConfig, SshConnection};
 pub use error::SshError;
 pub use hostkey::{
     HostKeyCheck, HostKeyDecision, HostKeyPrompt, HostKeyPrompter, HostKeyStatus, KnownHostsPolicy,

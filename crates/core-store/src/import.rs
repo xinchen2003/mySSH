@@ -12,6 +12,8 @@ use crate::Store;
 pub struct ImportOutcome {
     pub imported: usize,
     pub skipped: usize,
+    /// ProxyJump 别名未匹配到任何已存会话（引用被剔除，需用户手工补链）
+    pub unresolved_jumps: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +75,15 @@ pub fn parse_openssh_config(text: &str, home: &str) -> ParseOutcome {
             "port" => d.port = value.parse().ok(),
             "user" => d.user = value.to_string(),
             "identityfile" => d.identity_file = Some(value.to_string()),
-            _ => {} // 其余指令（ProxyJump/ForwardAgent/…）M2 不映射
+            // ProxyJump 别名 → 暂存 ssh-<别名> 形式的跳板引用；命令层落库后
+            // 校验存在性，悬空引用剔除并计入 unresolved_jumps
+            "proxyjump" => {
+                let alias = value.trim();
+                if !alias.is_empty() && alias != "none" {
+                    d.proxy_jump = Some(alias.to_string());
+                }
+            }
+            _ => {} // 其余指令（ForwardAgent/…）不映射
         }
     }
     if let Some(d) = cur.take() {
@@ -98,6 +108,7 @@ struct Draft {
     port: Option<u16>,
     user: String,
     identity_file: Option<String>,
+    proxy_jump: Option<String>,
 }
 
 impl Draft {
@@ -124,6 +135,10 @@ impl Draft {
                 AuthType::Agent
             },
             key_path,
+            jump_chain: self
+                .proxy_jump
+                .map(|a| vec![format!("ssh-{a}")])
+                .unwrap_or_default(),
             group_path: String::new(),
             tags: vec!["imported".into()],
             command: None,
@@ -143,7 +158,8 @@ fn expand_home(path: &str, home: &str) -> String {
     }
 }
 
-/// 导入到库：幂等 upsert（重复导入更新同名记录）；返回 {imported, skipped}
+/// 导入到库：幂等 upsert（重复导入更新同名记录）。
+/// ProxyJump 别名在所有记录落库后解析：存在的保留，悬空的剔除并计数。
 pub async fn import_openssh(
     store: &Store,
     text: &str,
@@ -151,8 +167,31 @@ pub async fn import_openssh(
 ) -> Result<ImportOutcome, StoreError> {
     let ParseOutcome { records, skipped } = parse_openssh_config(text, home);
     let imported = records.len();
-    for rec in records {
-        store.sessions().upsert(&rec).await?;
+    for rec in &records {
+        store.sessions().upsert(rec).await?;
     }
-    Ok(ImportOutcome { imported, skipped })
+    // 二遍：剔除悬空跳板引用（目标别名未导入且库中也不存在）
+    let mut unresolved_jumps = 0usize;
+    for rec in records {
+        if rec.jump_chain.is_empty() {
+            continue;
+        }
+        let mut resolved = Vec::with_capacity(rec.jump_chain.len());
+        for hop in &rec.jump_chain {
+            match store.sessions().get(hop).await {
+                Ok(_) => resolved.push(hop.clone()),
+                Err(_) => unresolved_jumps += 1,
+            }
+        }
+        if resolved.len() != rec.jump_chain.len() {
+            let mut fixed = rec.clone();
+            fixed.jump_chain = resolved;
+            store.sessions().upsert(&fixed).await?;
+        }
+    }
+    Ok(ImportOutcome {
+        imported,
+        skipped,
+        unresolved_jumps,
+    })
 }
