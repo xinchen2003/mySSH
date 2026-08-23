@@ -1,13 +1,17 @@
 //! core-sftp：SFTP 客户端封装（russh-sftp）与队列化传输。
 //!
-//! 设计契约见 docs/design/02-core-api.md。M0 为空壳：错误码 + 类型面。
+//! 设计契约见 docs/design/02-core-api.md。
 //! 传输走 Bulk 连接池（规格书第 6 条：不占用交互式连接）。
 //!
 //! 错误码段：E5xxx。
 
+mod client;
 mod error;
+mod transfer;
 
+pub use client::{DirEntry, EntryKind, SftpClient};
 pub use error::SftpError;
+pub use transfer::{ProgressFn, TransferId, TransferInfo, TransferQueue, TransferState};
 
 /// 传输方向
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

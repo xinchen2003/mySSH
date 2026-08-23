@@ -307,6 +307,19 @@ impl SshConnection {
         Ok(PtyChannel::new(read, write))
     }
 
+    /// 打开原始 session 通道（SFTP 子系统等批量用途；core-sftp 负责 request_subsystem）。
+    pub async fn open_session_channel(
+        &self,
+    ) -> Result<russh::Channel<russh::client::Msg>, SshError> {
+        self.handle
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::ChannelOpen {
+                kind: "session",
+                reason: e.to_string(),
+            })
+    }
+
     /// M0 测试辅助：打开会话通道执行命令，收集 stdout 到 EOF。
     pub async fn exec_collect(&self, command: &str) -> Result<Vec<u8>, SshError> {
         let mut ch =
