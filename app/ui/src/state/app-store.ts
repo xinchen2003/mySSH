@@ -1,6 +1,8 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { create } from 'zustand';
 import { TerminalSession } from '../term/terminal-session';
+import { GROUP_KEYS, readFailedList, readStringList, type FailedEntry } from './groups';
 import {
   firstLeaf,
   leaf,
@@ -106,6 +108,23 @@ interface AppStore {
   importConfigFile(path: string, passphrase?: string): Promise<void>;
   connect(spec: TermOpenSpec): void;
   connectBySession(sessionId: string, title: string): void;
+  /** 连接语义：已有该会话标签则激活，否则新标签 */
+  connectOrActivate(sessionId: string, title: string): void;
+  /** 标签分离：新窗口连接（TabBar ⧉ 与右键菜单共用） */
+  connectInNewWindow(sessionId: string, title: string): void;
+  /** 连接（或激活）并打开 SFTP 面板 */
+  connectAndOpenSftp(sessionId: string, title: string): void;
+  /** 复制服务器档案（新 id + 「副本」后缀） */
+  duplicateSession(rec: SessionRecord): Promise<void>;
+  /** 收藏切换（KV: sessions.favorites） */
+  toggleFavorite(sessionId: string): void;
+  /** 最近连接记录（KV: sessions.recent，cap 20，新→旧） */
+  recordRecent(sessionId: string): void;
+  /** 连接失败记录（KV: sessions.failed，cap 20）；成功连接时清除 */
+  recordConnectFailure(sessionId: string, message: string): void;
+  clearConnectFailure(sessionId: string): void;
+  /** 分组 KV 集合更新（extras/collapsed 共用改写入口） */
+  setGroupList(key: 'groups.extra' | 'groups.collapsed', list: string[]): void;
   /** 会话档案 CRUD（秘密经 cred_set 单独进保险库） */
   loadSessions(): Promise<void>;
   deleteSession(id: string): Promise<void>;
@@ -178,7 +197,14 @@ export const useAppStore = create<AppStore>((set, get) => {
       if (ev.type === 'hostkey_prompt')
         set((s) => ({ pendingHostKeys: [...s.pendingHostKeys, ev] }));
       else if (ev.type === 'ki_challenge') set((s) => ({ pendingKis: [...s.pendingKis, ev] }));
-      else handleSessionState(set, tabId, id, ev);
+      else {
+        handleSessionState(set, tabId, id, ev);
+        // 连接成功（含重连成功）→ 清掉该会话的「最近失败」记录
+        if (ev.type === 'session_state' && ev.state === 'connected') {
+          const tab = get().tabs.find((t) => t.id === tabId);
+          if (tab && tab.target.kind === 'session') get().clearConnectFailure(tab.target.sessionId);
+        }
+      }
     };
     return { id, session: new TerminalSession(onEvent), state: 'connecting' };
   };
@@ -298,7 +324,84 @@ export const useAppStore = create<AppStore>((set, get) => {
 
     connectBySession: (sessionId, title) => {
       openTabWithTarget({ kind: 'session', sessionId }, title);
+      get().recordRecent(sessionId);
     },
+    connectOrActivate: (sessionId, title) => {
+      const existing = get().tabs.find(
+        (t) => t.target.kind === 'session' && t.target.sessionId === sessionId,
+      );
+      if (existing) set({ activeId: existing.id });
+      else get().connectBySession(sessionId, title);
+    },
+
+    connectInNewWindow: (sessionId, title) => {
+      const label = `det-${sessionId}`.replace(/[^a-zA-Z0-9-]/g, '-');
+      const win = new WebviewWindow(label, {
+        url: `index.html?detach=${encodeURIComponent(sessionId)}`,
+        title: `${title} · mySSH`,
+        width: 1200,
+        height: 800,
+      });
+      void win.once('tauri://error', () => undefined);
+    },
+
+    connectAndOpenSftp: (sessionId, title) => {
+      get().connectOrActivate(sessionId, title);
+      const id = get().activeId;
+      if (id && !get().sftpOpen[id]) get().toggleSftp(id);
+    },
+
+    duplicateSession: async (rec) => {
+      const copy: SessionRecord = {
+        ...rec,
+        id: crypto.randomUUID(),
+        name: `${rec.name} 副本`,
+        jumpChain: [...rec.jumpChain],
+        tags: [...rec.tags],
+      };
+      try {
+        await invoke('session_upsert', { record: copy });
+        await get().loadSessions();
+        get().notify(`已复制为「${copy.name}」（凭据不随档案复制）`, 'success');
+      } catch (e) {
+        get().notify(`复制服务器失败: ${String(e)}`, 'error');
+      }
+    },
+
+    toggleFavorite: (sessionId) => {
+      const cur = new Set(readStringList(get().settings[GROUP_KEYS.favorites]));
+      const had = cur.has(sessionId);
+      if (had) cur.delete(sessionId);
+      else cur.add(sessionId);
+      get().setSetting(GROUP_KEYS.favorites, [...cur]);
+      get().notify(had ? '已取消收藏' : '已收藏', 'success');
+    },
+
+    recordRecent: (sessionId) => {
+      const cur = readStringList(get().settings[GROUP_KEYS.recent]);
+      const next = [sessionId, ...cur.filter((id) => id !== sessionId)].slice(0, 20);
+      get().setSetting(GROUP_KEYS.recent, next);
+    },
+
+    recordConnectFailure: (sessionId, message) => {
+      const cur = readFailedList(get().settings[GROUP_KEYS.failed]);
+      const next: FailedEntry[] = [
+        { id: sessionId, message, ts: Date.now() },
+        ...cur.filter((f) => f.id !== sessionId),
+      ].slice(0, 20);
+      get().setSetting(GROUP_KEYS.failed, next);
+    },
+
+    clearConnectFailure: (sessionId) => {
+      const cur = readFailedList(get().settings[GROUP_KEYS.failed]);
+      if (cur.some((f) => f.id === sessionId))
+        get().setSetting(
+          GROUP_KEYS.failed,
+          cur.filter((f) => f.id !== sessionId),
+        );
+    },
+
+    setGroupList: (key, list) => get().setSetting(key, [...new Set(list)]),
 
     openConnect: (editTarget) => set({ showConnect: true, editing: editTarget ?? null }),
     closeConnect: () => set({ showConnect: false, editing: null }),

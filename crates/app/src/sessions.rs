@@ -78,6 +78,87 @@ pub async fn session_delete(
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+/// 分组重命名/移动（含子树；事务性前缀改写；目标在源子树内拒绝）
+#[tauri::command]
+pub async fn group_rename(
+    old_path: String,
+    new_path: String,
+    state: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let affected = state
+        .store
+        .sessions()
+        .group_rename(&old_path, &new_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .audit()
+        .append(
+            Actor::Gui,
+            None,
+            "group_rename",
+            &json!({ "oldPath": old_path, "newPath": new_path, "affected": affected }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "affected": affected }))
+}
+
+/// 分组删除：with_sessions=false 保留会话（直属移未分组、子分组上移父级）；
+/// true 删除子树全部会话（凭据与隧道由 FK 级联）
+#[tauri::command]
+pub async fn group_delete(
+    path: String,
+    with_sessions: bool,
+    state: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let affected = state
+        .store
+        .sessions()
+        .group_delete(&path, with_sessions)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .audit()
+        .append(
+            Actor::Gui,
+            None,
+            "group_delete",
+            &json!({ "path": path, "withSessions": with_sessions, "affected": affected }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "affected": affected }))
+}
+
+/// 批量移动会话到分组（'' = 未分组）
+#[tauri::command]
+pub async fn session_move(
+    session_ids: Vec<String>,
+    group_path: String,
+    state: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let moved = state
+        .store
+        .sessions()
+        .move_to_group(&session_ids, &group_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .audit()
+        .append(
+            Actor::Gui,
+            None,
+            "session_move",
+            &json!({ "count": session_ids.len(), "groupPath": group_path, "moved": moved }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "moved": moved }))
+}
 
 /// 秘密直进保险库（密码或私钥 passphrase）；不回读、不回显
 #[tauri::command]

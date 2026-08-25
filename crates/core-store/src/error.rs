@@ -18,4 +18,6 @@ pub enum StoreError {
     Query(String),
     #[error("E7008 数据损坏: {0}")]
     Corrupt(String),
+    #[error("E7009 无效输入: {0}")]
+    Validation(String),
 }

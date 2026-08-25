@@ -132,6 +132,132 @@ impl SessionRepo {
         }
         Ok(())
     }
+    /// 分组重命名/移动（含子树）：事务性前缀改写。
+    /// 循环防护：目标不得落在源子树内（如 a/b → a/b/c）；new='' 表示移到未分组。
+    /// 返回受影响会话数。
+    pub async fn group_rename(&self, old: &str, new: &str) -> Result<u64, StoreError> {
+        validate_group_path(old)?;
+        validate_group_path(new)?;
+        if old.is_empty() {
+            return Err(StoreError::Validation("不能重命名未分组根".into()));
+        }
+        if old == new {
+            return Ok(0);
+        }
+        if new.starts_with(old) && new.as_bytes().get(old.len()) == Some(&b'/') {
+            return Err(StoreError::Validation(format!(
+                "不能把分组移动到它自己的子分组内: {old} → {new}"
+            )));
+        }
+        // SQLite substr 按字符计：中文路径必须用字符数而非字节数
+        let old_chars = old.chars().count() as i64;
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let res = sqlx::query(
+            "UPDATE sessions
+             SET group_path = CASE WHEN ?1 = '' THEN substr(group_path, ?3)
+                                   ELSE ?1 || substr(group_path, ?2) END,
+                 updated_at = datetime('now')
+             WHERE group_path = ?4
+                OR (substr(group_path, 1, ?5) = ?4 AND substr(group_path, ?2, 1) = '/')",
+        )
+        .bind(new) // ?1
+        .bind(old_chars + 1) // ?2 跳过 old 本身（保留 '/…' 后缀）
+        .bind(old_chars + 2) // ?3 new='' 时连同 '/' 一起跳过
+        .bind(old) // ?4
+        .bind(old_chars) // ?5
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(res.rows_affected())
+    }
+
+    /// 分组删除。with_sessions=false：直属成员移未分组、子分组上移父级；
+    /// true：删除子树全部会话（凭据/隧道由 FK ON DELETE CASCADE 级联）。
+    /// 事务执行；返回受影响（移动或删除）的会话数。
+    pub async fn group_delete(&self, path: &str, with_sessions: bool) -> Result<u64, StoreError> {
+        validate_group_path(path)?;
+        if path.is_empty() {
+            return Err(StoreError::Validation("不能删除未分组根".into()));
+        }
+        let path_chars = path.chars().count() as i64;
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        if with_sessions {
+            let res = sqlx::query(
+                "DELETE FROM sessions
+                 WHERE group_path = ?1
+                    OR (substr(group_path, 1, ?2) = ?1 AND substr(group_path, ?2 + 1, 1) = '/')",
+            )
+            .bind(path)
+            .bind(path_chars)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+            tx.commit().await.map_err(db)?;
+            return Ok(res.rows_affected());
+        }
+        // 保留会话：直属成员 → 未分组；子树成员 → 父级（父为根则去掉顶层段）
+        let parent = path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+        let direct = sqlx::query(
+            "UPDATE sessions SET group_path = '', updated_at = datetime('now')
+             WHERE group_path = ?1",
+        )
+        .bind(path)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        let children = sqlx::query(
+            "UPDATE sessions
+             SET group_path = CASE WHEN ?2 = '' THEN substr(group_path, ?4)
+                                   ELSE ?2 || '/' || substr(group_path, ?4) END,
+                 updated_at = datetime('now')
+             WHERE substr(group_path, 1, ?3) = ?1 AND substr(group_path, ?3 + 1, 1) = '/'",
+        )
+        .bind(path) // ?1
+        .bind(parent) // ?2
+        .bind(path_chars) // ?3
+        .bind(path_chars + 2) // ?4 跳过 path + '/'
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(direct.rows_affected() + children.rows_affected())
+    }
+
+    /// 批量移动会话到目标分组（'' = 未分组）。事务执行；返回受影响行数。
+    pub async fn move_to_group(&self, ids: &[String], group_path: &str) -> Result<u64, StoreError> {
+        validate_group_path(group_path)?;
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        let mut affected = 0u64;
+        for id in ids {
+            let res = sqlx::query(
+                "UPDATE sessions SET group_path = ?1, updated_at = datetime('now') WHERE id = ?2",
+            )
+            .bind(group_path)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+            affected += res.rows_affected();
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(affected)
+    }
+}
+/// 分组路径校验：'' 合法（未分组根）；段非空且无首尾空格；'/' 分隔
+fn validate_group_path(path: &str) -> Result<(), StoreError> {
+    if path.is_empty() {
+        return Ok(());
+    }
+    for seg in path.split('/') {
+        if seg.is_empty() || seg.trim() != seg {
+            return Err(StoreError::Validation(format!("分组路径无效: {path:?}")));
+        }
+    }
+    Ok(())
 }
 
 fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<SessionRecord, StoreError> {

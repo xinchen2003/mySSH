@@ -387,3 +387,162 @@ async fn transfer_history_crud() {
     assert_eq!(rest.len(), 1);
     assert_eq!(rest[0].id, "tr-2");
 }
+
+// ---------- 批次二：分组管理（groupPath 前缀改写，事务化） ----------
+
+fn in_group(id: &str, name: &str, group: &str) -> SessionRecord {
+    SessionRecord {
+        group_path: group.into(),
+        ..sample(id, name)
+    }
+}
+
+async fn group_of(store: &Store, id: &str) -> String {
+    store.sessions().get(id).await.expect("get").group_path
+}
+
+#[tokio::test]
+async fn group_rename_nested_and_guards() {
+    let path = temp_db("grename");
+    let store = Store::open(&path).await.expect("open");
+    let s = store.sessions();
+    s.upsert(&in_group("s1", "华东-1", "生产/华东"))
+        .await
+        .expect("u1");
+    s.upsert(&in_group("s2", "华东-子", "生产/华东/子组"))
+        .await
+        .expect("u2");
+    s.upsert(&in_group("s3", "华南-1", "生产/华南"))
+        .await
+        .expect("u3");
+
+    // 嵌套重命名：直属与子树一起改写，兄弟分组不动
+    let n = s
+        .group_rename("生产/华东", "运维/东区")
+        .await
+        .expect("rename");
+    assert_eq!(n, 2);
+    assert_eq!(group_of(&store, "s1").await, "运维/东区");
+    assert_eq!(group_of(&store, "s2").await, "运维/东区/子组");
+    assert_eq!(group_of(&store, "s3").await, "生产/华南");
+
+    // 循环防护：目标落在源子树内 → 拒绝且无改写
+    assert!(matches!(
+        s.group_rename("生产", "生产/华东").await,
+        Err(core_store::StoreError::Validation(_))
+    ));
+    assert_eq!(group_of(&store, "s3").await, "生产/华南");
+
+    // 自改名 = 空操作
+    assert_eq!(s.group_rename("生产", "生产").await.expect("noop"), 0);
+
+    // 移到未分组（new=''）：直属成员进根，子树提升为顶级
+    let n = s.group_rename("运维/东区", "").await.expect("to root");
+    assert_eq!(n, 2);
+    assert_eq!(group_of(&store, "s1").await, "");
+    assert_eq!(group_of(&store, "s2").await, "子组");
+
+    // 非法路径拒绝
+    assert!(s.group_rename("", "x").await.is_err());
+    assert!(s.group_rename("a", "b//c").await.is_err());
+    assert!(s.group_rename("a", " b").await.is_err());
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn group_delete_keep_sessions() {
+    let path = temp_db("gdelkeep");
+    let store = Store::open(&path).await.expect("open");
+    let s = store.sessions();
+    s.upsert(&in_group("s1", "直属", "生产/华东"))
+        .await
+        .expect("u1");
+    s.upsert(&in_group("s2", "子组机", "生产/华东/子组"))
+        .await
+        .expect("u2");
+    s.upsert(&in_group("s3", "生产根", "生产"))
+        .await
+        .expect("u3");
+
+    // 非空分组删除（保留会话）：直属 → 未分组；子分组上移父级
+    let n = s.group_delete("生产/华东", false).await.expect("del");
+    assert_eq!(n, 2);
+    assert_eq!(group_of(&store, "s1").await, "");
+    assert_eq!(group_of(&store, "s2").await, "生产/子组");
+    assert_eq!(group_of(&store, "s3").await, "生产");
+
+    // 删顶级分组：子树提升到根
+    let n = s.group_delete("生产", false).await.expect("del root");
+    assert_eq!(n, 2);
+    assert_eq!(group_of(&store, "s2").await, "子组");
+    assert_eq!(group_of(&store, "s3").await, "");
+
+    assert!(s.group_delete("", false).await.is_err());
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn group_delete_with_sessions_cascades_credentials() {
+    let path = temp_db("gdelcascade");
+    let store = Store::open(&path).await.expect("open");
+    let s = store.sessions();
+    s.upsert(&in_group("s1", "连带删", "生产/华东"))
+        .await
+        .expect("u1");
+    s.upsert(&in_group("s2", "保留", "生产/华南"))
+        .await
+        .expect("u2");
+    store
+        .credentials()
+        .put("s1", CredentialKind::Password, &Secret::new(b"pw".to_vec()))
+        .await
+        .expect("cred");
+
+    let n = s.group_delete("生产/华东", true).await.expect("del");
+    assert_eq!(n, 1);
+    // 会话与凭据级联删除
+    assert!(matches!(
+        s.get("s1").await,
+        Err(core_store::StoreError::NotFound(_))
+    ));
+    assert!(matches!(
+        store.credentials().get("s1").await,
+        Err(core_store::StoreError::NotFound(_))
+    ));
+    // 兄弟分组不受影响
+    assert_eq!(group_of(&store, "s2").await, "生产/华南");
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn move_to_group_batch() {
+    let path = temp_db("gmove");
+    let store = Store::open(&path).await.expect("open");
+    let s = store.sessions();
+    s.upsert(&in_group("s1", "a", "生产")).await.expect("u1");
+    s.upsert(&in_group("s2", "b", "生产")).await.expect("u2");
+    s.upsert(&in_group("s3", "c", "测试")).await.expect("u3");
+
+    let n = s
+        .move_to_group(&["s1".into(), "s2".into(), "不存在".into()], "归档/2026")
+        .await
+        .expect("move");
+    assert_eq!(n, 2, "不存在的 id 不计入");
+    assert_eq!(group_of(&store, "s1").await, "归档/2026");
+    assert_eq!(group_of(&store, "s2").await, "归档/2026");
+    assert_eq!(group_of(&store, "s3").await, "测试");
+
+    // 移到未分组 + 空列表 + 非法路径
+    assert_eq!(
+        s.move_to_group(&["s1".into()], "").await.expect("to root"),
+        1
+    );
+    assert_eq!(group_of(&store, "s1").await, "");
+    assert_eq!(s.move_to_group(&[], "x").await.expect("empty"), 0);
+    assert!(s.move_to_group(&["s1".into()], "a//b").await.is_err());
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}

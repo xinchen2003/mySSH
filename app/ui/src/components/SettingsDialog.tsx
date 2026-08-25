@@ -133,6 +133,21 @@ export function SettingsDialog() {
           </div>
         </section>
 
+        <section className="mb-4">
+          <h3 className="mb-1.5 font-semibold text-neutral-200">会话侧栏</h3>
+          <label className="flex items-center gap-2" htmlFor="set-click-connect">
+            <input
+              id="set-click-connect"
+              type="checkbox"
+              checked={settings['sidebar.clickToConnect'] === true}
+              onChange={(e) => setSetting('sidebar.clickToConnect', e.target.checked)}
+            />
+            <span className="text-neutral-500">
+              单击服务器时立即连接（默认关闭：单击选中，双击或 Enter 连接）
+            </span>
+          </label>
+        </section>
+
         <section>
           <h3 className="mb-1.5 font-semibold text-neutral-200">快捷键</h3>
           <div className="mb-2 flex items-center gap-2">

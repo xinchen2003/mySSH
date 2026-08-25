@@ -119,7 +119,12 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       } else if (ev.state === 'closed') {
         term.write('\r\n\x1b[2m[连接已关闭]\x1b[0m\r\n');
         // 重连耗尽（后端发 closed 终态）→ 原位操作层；用户主动 exit 的关闭不打扰
-        if (sawReconnectRef.current) setDead('连接中断，自动重连已耗尽（5 次尝试）');
+        if (sawReconnectRef.current) {
+          const msg = '连接中断，自动重连已耗尽（5 次尝试）';
+          setDead(msg);
+          if (tab.target.kind === 'session')
+            useAppStore.getState().recordConnectFailure(tab.target.sessionId, msg);
+        }
       }
     };
 
@@ -128,6 +133,9 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
         setPaneState(tab.id, pane.id, 'error');
         const msg = `连接失败: ${String(e)}`;
         setDead(msg);
+        if (tab.target.kind === 'session')
+          useAppStore.getState().recordConnectFailure(tab.target.sessionId, msg);
+
         term.write(`\r\n\x1b[1;31m${msg}\x1b[0m\r\n`);
       });
     };
