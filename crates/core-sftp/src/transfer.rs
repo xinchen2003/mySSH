@@ -5,6 +5,7 @@
 //! - 每个传输 = 独立 tokio 任务，分块 256KB（对齐 russh-sftp max_packet_len）
 //! - 续传：下载看本地已有长度；上传先 stat 远端长度，从断点继续
 //! - 重试：失败自动重试（默认 2 次），每次从当前断点继续
+//! - 终态条目支持手动重试（retry）/移除（remove）/批量清理（clear_where）
 //! - russh-sftp 写为 fire-and-forget，完成前必须 shutdown 排空写确认
 //!   （否则最后若干包可能未落地——集成测试踩过）
 //! - 进度经回调外发（app 层接 Channel 推送 UI）；速率由调用方按采样算
@@ -41,6 +42,10 @@ impl TransferState {
             Self::Failed => "failed",
             Self::Canceled => "canceled",
         }
+    }
+    /// 终态：生命周期结束（可移除/清理/重试的判定基准）
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Done | Self::Failed | Self::Canceled)
     }
 }
 
@@ -278,6 +283,87 @@ impl TransferQueue {
             t.cancel.store(true, Ordering::Relaxed);
             t.pause.store(false, Ordering::Relaxed);
         })
+    }
+    /// 重试：仅 Failed/Canceled 可重跑。重置为 Queued 后 respawn run_transfer，
+    /// 断点由 download_once/upload_once 的既有续传逻辑自动沿用（无需显式传断点）。
+    pub fn retry(self: &Arc<Self>, id: &str) -> Result<(), SftpError> {
+        let inner = lock(&self.transfers)
+            .get(id)
+            .cloned()
+            .ok_or_else(|| SftpError::RemotePath {
+                path: id.to_string(),
+                reason: "传输不存在".into(),
+            })?;
+        {
+            let mut info = lock(&inner.info);
+            if !matches!(info.state, TransferState::Failed | TransferState::Canceled) {
+                return Err(SftpError::RemotePath {
+                    path: id.to_string(),
+                    reason: format!("仅失败/已取消的传输可重试（当前: {}）", info.state.as_str()),
+                });
+            }
+            info.state = TransferState::Queued;
+            info.retries = 0;
+            info.error = None;
+        }
+        inner.pause.store(false, Ordering::Relaxed);
+        inner.cancel.store(false, Ordering::Relaxed);
+        // 进度清零重来（断点仍在文件系统侧，开跑后由续传逻辑回填）
+        inner.bytes_done.store(0, Ordering::Relaxed);
+        self.emit(&inner);
+        let q = self.clone();
+        self.rt.spawn(async move {
+            q.run_transfer(inner).await;
+        });
+        Ok(())
+    }
+
+    /// 移除条目：仅终态可移除，进行中的一律拒绝
+    pub fn remove(&self, id: &str) -> Result<(), SftpError> {
+        let mut map = lock(&self.transfers);
+        let t = map.get(id).ok_or_else(|| SftpError::RemotePath {
+            path: id.to_string(),
+            reason: "传输不存在".into(),
+        })?;
+        let state = lock(&t.info).state;
+        if !state.is_terminal() {
+            return Err(SftpError::RemotePath {
+                path: id.to_string(),
+                reason: format!("仅终态传输可移除（当前: {}）", state.as_str()),
+            });
+        }
+        map.remove(id);
+        Ok(())
+    }
+
+    /// 批量移除满足条件的终态条目（非终态一律跳过），返回移除数
+    pub fn clear_where(&self, pred: impl Fn(TransferState) -> bool) -> u32 {
+        let mut map = lock(&self.transfers);
+        let before = map.len();
+        map.retain(|_, t| {
+            let s = lock(&t.info).state;
+            !(s.is_terminal() && pred(s))
+        });
+        (before - map.len()) as u32
+    }
+
+    /// 暂停全部 Queued/Running（终态与已暂停不受影响）
+    pub fn pause_all(&self) {
+        for t in lock(&self.transfers).values() {
+            let s = lock(&t.info).state;
+            if matches!(s, TransferState::Queued | TransferState::Running) {
+                t.pause.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// 恢复全部已暂停（语义同 resume：清暂停位并置 Running，Queued 项开跑后自校正）
+    pub fn resume_all(&self) {
+        for t in lock(&self.transfers).values() {
+            if t.pause.swap(false, Ordering::Relaxed) {
+                lock(&t.info).state = TransferState::Running;
+            }
+        }
     }
 }
 

@@ -578,6 +578,72 @@ pub async fn transfer_cancel(
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
     ctx.queue.cancel(&transfer_id).map_err(|e| e.to_string())
 }
+/// 重试失败/已取消的传输（断点续传自动沿用，无需前端传偏移）
+#[tauri::command]
+pub async fn transfer_retry(
+    session_id: String,
+    transfer_id: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<(), String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    ctx.queue.retry(&transfer_id).map_err(|e| e.to_string())
+}
+
+/// 移除单条终态传输记录（进行中拒绝）
+#[tauri::command]
+pub async fn transfer_remove(
+    session_id: String,
+    transfer_id: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<(), String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    ctx.queue.remove(&transfer_id).map_err(|e| e.to_string())
+}
+
+/// 批量清理终态传输：filter ∈ "done"|"failed"，返回移除数
+#[tauri::command]
+pub async fn transfer_clear(
+    session_id: String,
+    filter: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<u32, String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    match filter.as_str() {
+        "done" => Ok(ctx
+            .queue
+            .clear_where(|s| s == core_sftp::TransferState::Done)),
+        "failed" => Ok(ctx
+            .queue
+            .clear_where(|s| s == core_sftp::TransferState::Failed)),
+        _ => Err(format!("未知清理过滤: {filter}（仅支持 done/failed）")),
+    }
+}
+
+#[tauri::command]
+pub async fn transfer_pause_all(
+    session_id: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<(), String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    ctx.queue.pause_all();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn transfer_resume_all(
+    session_id: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<(), String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    ctx.queue.resume_all();
+    Ok(())
+}
+
 
 /// 进度订阅：500ms 快照推送（前端差分算速率；与 tunnel_subscribe 同构）
 #[tauri::command]

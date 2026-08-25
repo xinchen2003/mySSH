@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../state/app-store';
 import type { MetricsEvent, MetricsSnapshot } from '../term/types';
+import { usePanelHeight } from './panel-height';
 
 /** 环形缓冲长度（2s 间隔 ≈ 4 分钟窗口） */
 const CAP = 120;
@@ -178,6 +179,7 @@ export function MetricsPanel({ tabId }: { tabId: string }) {
     };
   }, [sessionId, intervalMs]);
 
+  const { height, handle } = usePanelHeight('metrics.height', 256);
   if (!sessionId) return null;
   const latest = buf.length > 0 ? buf[buf.length - 1] : null;
   const memUsedGb = latest ? (latest.memTotalKb - latest.memAvailKb) / 1048576 : 0;
@@ -185,7 +187,11 @@ export function MetricsPanel({ tabId }: { tabId: string }) {
   const swapUsedGb = latest ? (latest.swapTotalKb - latest.swapFreeKb) / 1048576 : 0;
 
   return (
-    <div className="flex h-64 flex-col border-t border-neutral-700 bg-neutral-900 text-xs text-neutral-300">
+    <div
+      className="flex shrink-0 flex-col border-t border-neutral-700 bg-neutral-900 text-xs text-neutral-300"
+      style={{ height }}
+    >
+      {handle}
       <div className="flex items-center gap-3 border-b border-neutral-800 px-2 py-1">
         <span className="font-semibold text-neutral-200">监控</span>
         {latest && (

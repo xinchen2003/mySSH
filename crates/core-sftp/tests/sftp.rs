@@ -657,3 +657,170 @@ async fn wait_state(
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 }
+
+// ---------- 批次五：重试/移除/清理/批量暂停 ----------
+
+#[tokio::test]
+async fn retry_rejects_non_terminal_then_reruns() {
+    let root = temp_root("retry");
+    let port = start_sftp_server(root).await;
+    let conn = connect(port).await;
+    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        sftp,
+        2,
+        tokio::runtime::Handle::current(),
+    ));
+
+    let local = temp_root("retry-local").join("big.SLOW.bin");
+    std::fs::write(&local, pattern(2 * 1024 * 1024)).unwrap();
+    let id = q
+        .enqueue_upload(local, "/big.SLOW.bin".into(), 2 * 1024 * 1024)
+        .await;
+
+    // 非终态（Queued/Running）重试 → 拒绝
+    assert!(q.retry(&id).is_err(), "进行中重试应报错");
+    // 不存在的 id → 拒绝
+    assert!(q.retry("tr-9999").is_err());
+
+    // 取消 → 终态后重试应成功重跑至 Done（断点由远端 stat 自动沿用）
+    q.cancel(&id).unwrap();
+    let canceled = wait_done(&q, &id).await;
+    assert_eq!(canceled.state, core_sftp::TransferState::Canceled);
+
+    q.retry(&id).unwrap();
+    let info = q.get(&id).unwrap();
+    assert_eq!(info.state, core_sftp::TransferState::Queued);
+    assert_eq!(info.retries, 0);
+    assert!(info.error.is_none());
+
+    let done = wait_done(&q, &id).await;
+    assert_eq!(done.state, core_sftp::TransferState::Done, "{:?}", done.error);
+    assert_eq!(done.bytes_done, 2 * 1024 * 1024);
+}
+
+#[tokio::test]
+async fn remove_rejects_non_terminal() {
+    let root = temp_root("rm");
+    let port = start_sftp_server(root).await;
+    let conn = connect(port).await;
+    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        sftp,
+        2,
+        tokio::runtime::Handle::current(),
+    ));
+
+    let local = temp_root("rm-local").join("big.SLOW.bin");
+    std::fs::write(&local, pattern(2 * 1024 * 1024)).unwrap();
+    let id = q
+        .enqueue_upload(local, "/big.SLOW.bin".into(), 2 * 1024 * 1024)
+        .await;
+
+    // 进行中移除 → 拒绝
+    assert!(q.remove(&id).is_err(), "进行中移除应报错");
+
+    // 取消（终态）后可移除；再删报不存在
+    q.cancel(&id).unwrap();
+    wait_done(&q, &id).await;
+    q.remove(&id).unwrap();
+    assert!(q.get(&id).is_none());
+    assert!(q.remove(&id).is_err(), "重复移除应报错");
+}
+
+#[tokio::test]
+async fn clear_where_only_removes_matching_terminal() {
+    use core_sftp::TransferState;
+    let root = temp_root("clear");
+    let port = start_sftp_server(root.clone()).await;
+    let conn = connect(port).await;
+    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        sftp,
+        2,
+        tokio::runtime::Handle::current(),
+    ));
+
+    // 一条快速上传 → Done
+    let local_ok = temp_root("clear-local").join("ok.bin");
+    std::fs::write(&local_ok, pattern(1024)).unwrap();
+    let id_done = q
+        .enqueue_upload(local_ok, "/ok.bin".into(), 1024)
+        .await;
+    wait_done(&q, &id_done).await;
+
+    // 一条慢速上传 → 取消 → Canceled
+    let local_slow = temp_root("clear-local").join("big.SLOW.bin");
+    std::fs::write(&local_slow, pattern(2 * 1024 * 1024)).unwrap();
+    let id_canceled = q
+        .enqueue_upload(local_slow, "/big.SLOW.bin".into(), 2 * 1024 * 1024)
+        .await;
+    q.cancel(&id_canceled).unwrap();
+    wait_done(&q, &id_canceled).await;
+
+    // failed 过滤：无匹配 → 0
+    assert_eq!(q.clear_where(|s| s == TransferState::Failed), 0);
+    // done 过滤：仅清 Done，Canceled 保留
+    assert_eq!(q.clear_where(|s| s == TransferState::Done), 1);
+    assert!(q.get(&id_done).is_none());
+    assert!(q.get(&id_canceled).is_some());
+
+    // 进行中的传输不被清理（跳过而非报错）
+    let local_slow2 = temp_root("clear-local").join("big2.SLOW.bin");
+    std::fs::write(&local_slow2, pattern(2 * 1024 * 1024)).unwrap();
+    let id_running = q
+        .enqueue_upload(local_slow2, "/big2.SLOW.bin".into(), 2 * 1024 * 1024)
+        .await;
+    assert_eq!(q.clear_where(|_| true), 1, "只应清掉 Canceled 一条");
+    assert!(q.get(&id_running).is_some(), "进行中条目不得被清理");
+
+    q.cancel(&id_running).unwrap();
+    wait_done(&q, &id_running).await;
+    assert_eq!(q.clear_where(|s| s.is_terminal()), 1);
+}
+
+#[tokio::test]
+async fn pause_all_resume_all_flip_states() {
+    let root = temp_root("pauseall");
+    let port = start_sftp_server(root).await;
+    let conn = connect(port).await;
+    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        sftp,
+        2,
+        tokio::runtime::Handle::current(),
+    ));
+
+    let local = temp_root("pauseall-local");
+    let mut ids = Vec::new();
+    for name in ["a.SLOW.bin", "b.SLOW.bin"] {
+        let p = local.join(name);
+        std::fs::write(&p, pattern(2 * 1024 * 1024)).unwrap();
+        ids.push(
+            q.enqueue_upload(p, format!("/{name}"), 2 * 1024 * 1024)
+                .await,
+        );
+    }
+    for id in &ids {
+        wait_state(&q, id, core_sftp::TransferState::Running).await;
+    }
+
+    // 全部暂停 → Paused 且字节冻结
+    q.pause_all();
+    let mut frozen = Vec::new();
+    for id in &ids {
+        let info = wait_state(&q, id, core_sftp::TransferState::Paused).await;
+        frozen.push(info.bytes_done);
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    for (i, id) in ids.iter().enumerate() {
+        assert_eq!(q.get(id).unwrap().bytes_done, frozen[i], "暂停后应冻结");
+    }
+
+    // 全部恢复 → 回到 Running 并最终 Done
+    q.resume_all();
+    for id in &ids {
+        let done = wait_done(&q, id).await;
+        assert_eq!(done.state, core_sftp::TransferState::Done, "{:?}", done.error);
+    }
+}

@@ -57,3 +57,55 @@ pub async fn open_local(path: String) -> Result<(), String> {
 pub async fn local_mkdir(path: String) -> Result<(), String> {
     std::fs::create_dir_all(&path).map_err(|e| format!("创建 {path} 失败: {e}"))
 }
+/// io 错误可读化：权限/占用给中文提示，其余保留原始错误
+fn io_humanize(e: &std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        format!("权限不足: {e}")
+    } else if e.raw_os_error() == Some(32) {
+        // Windows ERROR_SHARING_VIOLATION：文件被其他进程占用
+        format!("文件被占用: {e}")
+    } else {
+        e.to_string()
+    }
+}
+
+/// 本地重命名/移动（SFTP 面板本地栏）；目标已存在则拒绝，避免静默覆盖
+#[tauri::command]
+pub async fn local_rename(from: String, to: String) -> Result<(), String> {
+    if std::path::Path::new(&to).exists() {
+        return Err(format!("目标已存在: {to}"));
+    }
+    std::fs::rename(&from, &to).map_err(|e| io_humanize(&e))
+}
+
+/// 本地删除：文件 remove_file / 目录 remove_dir_all（递归）
+#[tauri::command]
+pub async fn local_delete(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    let meta = std::fs::metadata(p).map_err(|e| io_humanize(&e))?;
+    let r = if meta.is_dir() {
+        std::fs::remove_dir_all(p)
+    } else {
+        std::fs::remove_file(p)
+    };
+    r.map_err(|e| io_humanize(&e))
+}
+
+/// 在资源管理器中定位：文件 → /select 高亮；目录 → 直接打开。
+/// 注意 explorer 的退出码语义非常规（选中文件时常返回非零），spawn 成功即视为成功。
+#[tauri::command]
+pub async fn open_in_explorer(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("路径不存在: {path}"));
+    }
+    let mut cmd = std::process::Command::new("explorer");
+    if p.is_dir() {
+        cmd.arg(&path);
+    } else {
+        cmd.arg(format!("/select,{path}"));
+    }
+    cmd.spawn().map_err(|e| format!("打开资源管理器失败: {e}"))?;
+    Ok(())
+}
+
