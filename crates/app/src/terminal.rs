@@ -107,6 +107,8 @@ pub(crate) fn jump_chain_from(chain: &[JumpHopSpec]) -> Vec<core_ssh::JumpHop> {
 struct TermSession {
     /// 重连时整枚替换（sessions 锁内 swap）
     writer: Arc<PtyWriter>,
+    /// 来源会话档案 id（内联 spec 连接为 None）：随会话隧道的归属键
+    session_id: Option<String>,
     credits: Arc<Semaphore>,
     outstanding: Arc<AtomicI64>,
     /// 最新终端尺寸：重连开 PTY 用（resize 命令实时更新）
@@ -259,11 +261,12 @@ pub async fn term_open(
         .await
         .map_err(|e| e.to_string())?;
     // 随会话自动建立的隧道（规格书 M2）；fire-and-forget，失败仅日志
-    if let Some(sid) = via_session {
+    if let Some(sid) = via_session.clone() {
         let tmgr = tunnels_state.mgr.clone();
         let store = sessions.store.clone();
+        let tunnel_events = events.clone();
         tauri::async_runtime::spawn(async move {
-            crate::tunnels::start_session_tunnels(tmgr, store, sid).await;
+            crate::tunnels::start_session_tunnels(tmgr, store, sid, tunnel_events).await;
         });
     }
     let term = spec.term.clone().unwrap_or_else(|| "xterm-256color".into());
@@ -278,6 +281,9 @@ pub async fn term_open(
     let task = tauri::async_runtime::spawn(supervise(SuperviseCtx {
         tab_id: tab_id.clone(),
         mgr: mgr.clone(),
+        session_id: via_session.clone(),
+        tunnel_mgr: tunnels_state.mgr.clone(),
+        store: sessions.store.clone(),
         opts,
         term,
         command: spec.command.clone(),
@@ -292,6 +298,7 @@ pub async fn term_open(
         tab_id.clone(),
         TermSession {
             writer: Arc::new(writer),
+            session_id: via_session,
             credits,
             outstanding,
             cols: AtomicU64::new(cols as u64),
@@ -307,11 +314,36 @@ pub async fn term_open(
     Ok(json!({ "tabId": tab_id }))
 }
 
+/// 同会话最后一个终端消失时停止其随会话隧道（§9.2：服务器断开后停止）
+fn stop_session_tunnels_if_last(ctx: &SuperviseCtx) {
+    let Some(sid) = ctx.session_id.clone() else {
+        return;
+    };
+    let still_open = ctx
+        .mgr
+        .sessions
+        .lock()
+        .values()
+        .any(|s| s.session_id.as_deref() == Some(sid.as_str()));
+    if still_open {
+        return;
+    }
+    let tmgr = ctx.tunnel_mgr.clone();
+    let store = ctx.store.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::tunnels::stop_session_tunnels(tmgr, store, sid).await;
+    });
+}
+
 /// 会话监督器：读循环 → 意外断开则指数退避重连（同 events 决策桥仍可用）。
 /// 用户 term_close（表项摘除）或重连 5 次皆败 → 终态 closed。
 struct SuperviseCtx {
     tab_id: String,
     mgr: Arc<TerminalManager>,
+    /// 随会话隧道停止所需的归属与句柄（session_id 为 None 时短路）
+    session_id: Option<String>,
+    tunnel_mgr: Arc<core_tunnel::TunnelManager>,
+    store: Arc<core_store::Store>,
     opts: ConnectOptions,
     term: String,
     command: Option<String>,
@@ -340,6 +372,7 @@ async fn supervise(mut ctx: SuperviseCtx) {
                     "tabId": ctx.tab_id, "state": "closed",
                 }));
                 ctx.mgr.sessions.lock().remove(&ctx.tab_id);
+                stop_session_tunnels_if_last(&ctx);
                 return;
             }
         };
@@ -457,11 +490,27 @@ pub async fn term_resize(
 pub async fn term_close(
     tab_id: String,
     state: tauri::State<'_, Arc<TerminalManager>>,
+    tunnels_state: tauri::State<'_, Arc<crate::tunnels::TunnelManagerState>>,
+    sessions_state: tauri::State<'_, Arc<crate::sessions::SessionManagerState>>,
 ) -> Result<(), String> {
     let session = state.sessions.lock().remove(&tab_id);
     if let Some(session) = session {
         let _ = session.writer.close().await;
         session.task.abort();
+        if let Some(sid) = session.session_id {
+            let still_open = state
+                .sessions
+                .lock()
+                .values()
+                .any(|s| s.session_id.as_deref() == Some(sid.as_str()));
+            if !still_open {
+                let tmgr = tunnels_state.mgr.clone();
+                let store = sessions_state.store.clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::tunnels::stop_session_tunnels(tmgr, store, sid).await;
+                });
+            }
+        }
     }
     Ok(())
 }

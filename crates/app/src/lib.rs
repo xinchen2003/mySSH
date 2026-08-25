@@ -100,6 +100,7 @@ pub fn run() {
             tunnels::tunnel_list,
             tunnels::tunnel_subscribe,
             tunnels::tunnel_save,
+            tunnels::tunnel_check_port,
             tunnels::tunnel_delete,
             tunnels::tunnel_defs,
             sftp::sftp_list,

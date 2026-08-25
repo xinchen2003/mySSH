@@ -21,9 +21,10 @@ import type {
   TermEvent,
   TermOpenSpec,
   TunnelDef,
-  TunnelForm,
   TunnelInfo,
+  SessionTunnelResult,
 } from '../term/types';
+import { tunnelDisplayName, tunnelFeedback } from './tunnel-utils';
 
 export type PaneState = 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'error';
 /** 通知分级（批次一 7.7）：success/info 短时自动消失，warning 较长，error 常驻手动关 */
@@ -159,12 +160,15 @@ interface AppStore {
   toggleTunnelPanel(): void;
   /** 1Hz 订阅（App 挂载时调用一次；重复调用幂等） */
   subscribeTunnels(): void;
-  startTunnel(form: TunnelForm): Promise<string>;
   stopTunnel(id: string): Promise<void>;
   loadTunnelDefs(): Promise<void>;
   /** 保存定义；start=true 时立即建立 */
   saveTunnel(def: TunnelDef, start: boolean): Promise<void>;
   deleteTunnel(id: string): Promise<void>;
+  /** 复制定义（新 id，名称加「副本」，不启动） */
+  duplicateTunnel(def: TunnelDef): Promise<void>;
+  /** §9.6 连接反馈：随会话隧道启动结果汇总成通知 */
+  notifySessionTunnels(sessionId: string, results: SessionTunnelResult[]): void;
   splitActive(dir: 'row' | 'col'): void;
   closePane(tabId: string, paneId: string): void;
   setActive(id: string): void;
@@ -197,6 +201,7 @@ export const useAppStore = create<AppStore>((set, get) => {
       if (ev.type === 'hostkey_prompt')
         set((s) => ({ pendingHostKeys: [...s.pendingHostKeys, ev] }));
       else if (ev.type === 'ki_challenge') set((s) => ({ pendingKis: [...s.pendingKis, ev] }));
+      else if (ev.type === 'session_tunnels') get().notifySessionTunnels(ev.sessionId, ev.results);
       else {
         handleSessionState(set, tabId, id, ev);
         // 连接成功（含重连成功）→ 清掉该会话的「最近失败」记录
@@ -276,21 +281,6 @@ export const useAppStore = create<AppStore>((set, get) => {
       void invoke('tunnel_subscribe', { events });
     },
 
-    startTunnel: async (form) => {
-      const res = await invoke<{ tunnelId: string }>('tunnel_start', {
-        spec: {
-          sessionId: form.sessionId,
-          kind: form.kind,
-          bindHost: form.bindHost,
-          bindPort: form.bindPort,
-          targetHost: form.targetHost ?? null,
-          targetPort: form.targetPort ?? null,
-          failFast: false,
-        },
-      });
-      return res.tunnelId;
-    },
-
     stopTunnel: async (id) => {
       await invoke('tunnel_stop', { tunnelId: id });
     },
@@ -308,6 +298,19 @@ export const useAppStore = create<AppStore>((set, get) => {
     deleteTunnel: async (id) => {
       await invoke('tunnel_delete', { tunnelId: id });
       await get().loadTunnelDefs();
+    },
+    duplicateTunnel: async (def) => {
+      await get().saveTunnel(
+        { ...def, id: `td-${crypto.randomUUID()}`, name: `${tunnelDisplayName(def)} 副本` },
+        false,
+      );
+      get().notify('隧道已复制（未启动）', 'success');
+    },
+
+    notifySessionTunnels: (sessionId, results) => {
+      const name = get().sessions.find((s) => s.id === sessionId)?.name ?? sessionId;
+      const fb = tunnelFeedback(name, results);
+      if (fb) get().notify(fb.message, fb.level);
     },
 
     toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),

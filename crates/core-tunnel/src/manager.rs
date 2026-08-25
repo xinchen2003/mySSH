@@ -118,11 +118,14 @@ pub struct TunnelInfo {
     pub target: Option<String>,
     pub status: TunnelStatus,
     pub stats: TunnelStats,
+    /// 最近一次连接/运行错误文本（无错误为 None）
+    pub last_error: Option<String>,
 }
 
 struct TunnelEntry {
     status: Arc<Mutex<TunnelStatus>>,
     stats: Arc<StatsAtomic>,
+    last_error: Arc<Mutex<Option<String>>>,
     shutdown: watch::Sender<bool>,
     kind_label: &'static str,
     bind: String,
@@ -206,6 +209,7 @@ impl TunnelManager {
         let entry = Arc::new(TunnelEntry {
             status: Arc::new(Mutex::new(TunnelStatus::Starting)),
             stats: stats.clone(),
+            last_error: Arc::new(Mutex::new(None)),
             shutdown: shutdown_tx,
             kind_label: spec.kind.label(),
             bind: bind_label,
@@ -214,6 +218,7 @@ impl TunnelManager {
 
         let task_spec = spec.clone();
         let task_entry = entry.clone();
+        let done_entry = entry.clone();
         self.rt.spawn(async move {
             let result = match task_spec.kind.clone() {
                 TunnelKind::Local { .. } | TunnelKind::DynamicSocks5 { .. } => match listener {
@@ -228,6 +233,9 @@ impl TunnelManager {
                 }
             };
             if let Err(e) = result {
+                // 致命退出：Failed 终态 + 记录错误文本（此前状态滞留为 Starting/Reconnecting）
+                *done_entry.status.lock() = TunnelStatus::Failed;
+                *done_entry.last_error.lock() = Some(e.to_string());
                 tracing::warn!(error = %e, "tunnel task exited with error");
             }
         });
@@ -261,6 +269,7 @@ impl TunnelManager {
                     target: e.target.clone(),
                     status,
                     stats: snapshot(&e.stats),
+                    last_error: e.last_error.lock().clone(),
                 }
             })
             .collect()
@@ -297,6 +306,9 @@ fn bind_listener(bind: &(String, u16)) -> Result<std::net::TcpListener, TunnelEr
     socket
         .set_nonblocking(true)
         .map_err(|e| bind_err(e.to_string()))?;
+    // 注意：Windows 上 SO_REUSEADDR 允许同端口双绑（与 Unix 语义不同），
+    // 会吞掉端口冲突——隧道监听不设；accepted 连接的 TIME_WAIT 与监听 socket 无关
+    #[cfg(not(target_os = "windows"))]
     socket
         .set_reuse_address(true)
         .map_err(|e| bind_err(e.to_string()))?;
@@ -314,6 +326,7 @@ async fn supervise_conn(
     notify: Arc<Notify>,
     status: Arc<Mutex<TunnelStatus>>,
     stats: Arc<StatsAtomic>,
+    last_error: Arc<Mutex<Option<String>>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut attempt = 0u32;
@@ -326,6 +339,7 @@ async fn supervise_conn(
                 attempt = 0;
                 let conn = Arc::new(conn);
                 *status.lock() = TunnelStatus::Listening;
+                *last_error.lock() = None;
                 let _ = slot.send(Slot::Connected(conn.clone()));
                 // 活到死
                 loop {
@@ -343,6 +357,7 @@ async fn supervise_conn(
             }
             Err(e) => {
                 attempt += 1;
+                *last_error.lock() = Some(e.to_string());
                 tracing::warn!(attempt, error = %e, "tunnel connect failed, backing off");
                 let backoff = Duration::from_secs((1u64 << attempt.min(4)).min(15));
                 tokio::select! {
@@ -401,6 +416,7 @@ async fn run_listener(
         notify.clone(),
         entry.status.clone(),
         entry.stats.clone(),
+        entry.last_error.clone(),
         shutdown.clone(),
     ));
 
@@ -562,6 +578,7 @@ async fn run_remote(
         notify,
         entry.status.clone(),
         entry.stats.clone(),
+        entry.last_error.clone(),
         shutdown.clone(),
     ));
 

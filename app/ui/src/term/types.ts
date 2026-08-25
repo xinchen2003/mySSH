@@ -32,6 +32,8 @@ export interface TunnelDef {
   id: string;
   sessionId: string;
   kind: TunnelKind;
+  /** 显示名（模板预填；空串 → 面板回退绑定地址） */
+  name: string;
   bindHost: string;
   bindPort: number;
   targetHost?: string | null;
@@ -57,15 +59,19 @@ export interface TunnelInfo {
   rateDown: number;
   errors: number;
   reconnects: number;
+  /** 最近一次连接/运行错误文本 */
+  lastError?: string | null;
 }
 
-export interface TunnelForm {
-  sessionId: string;
-  kind: TunnelKind;
-  bindHost: string;
-  bindPort: number;
-  targetHost?: string;
-  targetPort?: number;
+export type TunnelStartMode = 'withSession' | 'autostart' | 'manual';
+
+/** §9.6 会话连接后的随会话隧道结果帧（app start_session_tunnels 对齐） */
+export interface SessionTunnelResult {
+  id: string;
+  name: string;
+  bind: string;
+  ok: boolean;
+  error?: string | null;
 }
 
 /** SFTP/本地目录条目（app sftp_list/local_list 对齐） */
@@ -145,7 +151,16 @@ export interface SessionStateFrame {
   reconnected?: boolean;
 }
 
-export type TermEvent = HostKeyPromptFrame | KiChallengeFrame | SessionStateFrame;
+export type TermEvent =
+  HostKeyPromptFrame | KiChallengeFrame | SessionStateFrame | SessionTunnelsFrame;
+
+/** §9.6 随会话隧道启动结果（连接成功后由 start_session_tunnels 推入同通道） */
+export interface SessionTunnelsFrame {
+  v: 1;
+  type: 'session_tunnels';
+  sessionId: string;
+  results: SessionTunnelResult[];
+}
 
 /** 监控快照（core-monitor camelCase 直推） */
 export interface MetricsSnapshot {

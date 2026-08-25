@@ -235,6 +235,7 @@ async fn tunnel_defs_crud_and_jump_chain() {
         id: "td-1".into(),
         session_id: "s1".into(),
         kind: "local".into(),
+        name: "MySQL".into(),
         bind_host: "127.0.0.1".into(),
         bind_port: 13306,
         target_host: Some("10.0.0.8".into()),
@@ -248,6 +249,7 @@ async fn tunnel_defs_crud_and_jump_chain() {
     assert_eq!(all.len(), 1);
     assert!(all[0].autostart);
     assert!(!all[0].with_session);
+    assert_eq!(all[0].name, "MySQL");
     let for_s = store
         .tunnels()
         .for_session("s1")
@@ -258,6 +260,124 @@ async fn tunnel_defs_crud_and_jump_chain() {
     // 会话删除级联隧道定义（FK ON DELETE CASCADE）
     store.sessions().delete("s1").await.expect("delete session");
     assert!(store.tunnels().list().await.expect("list").is_empty());
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+/// §9.3 真正编辑：upsert 即更新路径——id/created_at 保留，其余字段被替换（单语句原子）
+#[tokio::test]
+async fn tunnel_update_preserves_id_and_created_at() {
+    let path = temp_db("tunnel-update");
+    let store = Store::open(&path).await.expect("open");
+    store
+        .sessions()
+        .upsert(&sample("s1", "目标机"))
+        .await
+        .expect("session");
+
+    let def = core_store::TunnelRecord {
+        id: "td-1".into(),
+        session_id: "s1".into(),
+        kind: "local".into(),
+        name: "MySQL".into(),
+        bind_host: "127.0.0.1".into(),
+        bind_port: 13306,
+        target_host: Some("10.0.0.8".into()),
+        target_port: Some(3306),
+        autostart: true,
+        with_session: false,
+        created_at: String::new(),
+    };
+    store.tunnels().upsert(&def).await.expect("insert");
+    let created = store.tunnels().list().await.expect("list")[0]
+        .created_at
+        .clone();
+    assert!(!created.is_empty());
+
+    // 编辑：换端口/目标/启动标记/名称——同一 id
+    let edited = core_store::TunnelRecord {
+        name: "MySQL-只读".into(),
+        bind_port: 13307,
+        target_port: Some(3307),
+        autostart: false,
+        with_session: true,
+        ..def
+    };
+    store.tunnels().upsert(&edited).await.expect("update");
+    let all = store.tunnels().list().await.expect("list");
+    assert_eq!(all.len(), 1, "编辑不得产生第二条记录");
+    assert_eq!(all[0].id, "td-1");
+    assert_eq!(all[0].created_at, created, "created_at 必须保留");
+    assert_eq!(all[0].name, "MySQL-只读");
+    assert_eq!(all[0].bind_port, 13307);
+    assert!(all[0].with_session);
+    assert!(!all[0].autostart);
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// §9.3/§9.4 写入口径校验：非法定义在 upsert 处拒绝（面板保存与配置导入共用此路径）
+#[tokio::test]
+async fn tunnel_validation_rejects_bad_defs() {
+    let path = temp_db("tunnel-validate");
+    let store = Store::open(&path).await.expect("open");
+    store
+        .sessions()
+        .upsert(&sample("s1", "目标机"))
+        .await
+        .expect("session");
+
+    let base = core_store::TunnelRecord {
+        id: "td-1".into(),
+        session_id: "s1".into(),
+        kind: "local".into(),
+        name: String::new(),
+        bind_host: "127.0.0.1".into(),
+        bind_port: 13306,
+        target_host: Some("10.0.0.8".into()),
+        target_port: Some(3306),
+        autostart: false,
+        with_session: false,
+        created_at: String::new(),
+    };
+    store.tunnels().upsert(&base).await.expect("合法定义应通过");
+
+    let cases = [
+        core_store::TunnelRecord {
+            kind: "bogus".into(),
+            ..base.clone()
+        },
+        core_store::TunnelRecord {
+            bind_port: 0,
+            ..base.clone()
+        },
+        core_store::TunnelRecord {
+            bind_host: " ".into(),
+            ..base.clone()
+        },
+        core_store::TunnelRecord {
+            target_host: None,
+            ..base.clone()
+        },
+        core_store::TunnelRecord {
+            target_port: Some(0),
+            ..base.clone()
+        },
+    ];
+    for bad in cases {
+        let err = store
+            .tunnels()
+            .upsert(&bad)
+            .await
+            .expect_err("非法定义必须拒绝");
+        assert!(
+            matches!(err, core_store::StoreError::Validation(_)),
+            "应为 E7009 Validation，实得 {err:?}"
+        );
+    }
+    // 全部被拒后，合法定义保持原样（无部分写入）
+    let all = store.tunnels().list().await.expect("list");
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].bind_port, 13306);
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
@@ -284,6 +404,7 @@ async fn config_export_import_roundtrip() {
             id: "td-1".into(),
             session_id: "s1".into(),
             kind: "local".into(),
+            name: "MySQL".into(),
             bind_host: "127.0.0.1".into(),
             bind_port: 13306,
             target_host: Some("10.0.0.8".into()),

@@ -63,7 +63,15 @@ pub async fn session_upsert(
 pub async fn session_delete(
     session_id: String,
     state: tauri::State<'_, Arc<SessionManagerState>>,
+    tunnels_state: tauri::State<'_, Arc<crate::tunnels::TunnelManagerState>>,
 ) -> Result<(), String> {
+    // 先停运行中隧道（定义还在库中可查），再删会话（FK 级联删定义）
+    crate::tunnels::stop_all_session_tunnels(
+        tunnels_state.mgr.clone(),
+        state.store.clone(),
+        session_id.clone(),
+    )
+    .await;
     state
         .store
         .sessions()
@@ -112,7 +120,31 @@ pub async fn group_delete(
     path: String,
     with_sessions: bool,
     state: tauri::State<'_, Arc<SessionManagerState>>,
+    tunnels_state: tauri::State<'_, Arc<crate::tunnels::TunnelManagerState>>,
 ) -> Result<Value, String> {
+    // 级联删除前收集受影响会话，删库后停止其运行中隧道（理由同 session_delete）
+    let doomed: Vec<String> = if with_sessions {
+        state
+            .store
+            .sessions()
+            .list()
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|s| s.group_path == path || s.group_path.starts_with(&format!("{path}/")))
+            .map(|s| s.id)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    for sid in doomed {
+        crate::tunnels::stop_all_session_tunnels(
+            tunnels_state.mgr.clone(),
+            state.store.clone(),
+            sid,
+        )
+        .await;
+    }
     let affected = state
         .store
         .sessions()

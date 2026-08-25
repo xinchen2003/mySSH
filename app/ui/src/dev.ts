@@ -62,6 +62,11 @@ export function installDevHooks(): void {
     pendingCloseTab: () => useAppStore.getState().pendingCloseTab,
     /** 待确认删除的会话（删除确认冒烟断言用） */
     pendingDeleteSession: () => useAppStore.getState().pendingDeleteSession,
+    /** 隧道运行态 / 定义（批次三冒烟断言用） */
+    tunnels: () => useAppStore.getState().tunnels,
+    tunnelDefs: () => useAppStore.getState().tunnelDefs,
+    loadTunnelDefs: () => useAppStore.getState().loadTunnelDefs(),
+    toggleTunnelPanel: () => useAppStore.getState().toggleTunnelPanel(),
     /** 应答 hostkey 弹窗（与点按钮同路径） */
     answerHostKey: async (accept: boolean, remember: boolean) => {
       const p = useAppStore.getState().pendingHostKeys[0] ?? null;

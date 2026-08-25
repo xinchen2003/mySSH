@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use tauri::ipc::Channel;
 
 use core_ssh::{ConnClass, ConnectOptions, KeepaliveConfig};
-use core_store::Store;
+use core_store::{Store, StoreError};
 use core_tunnel::{DisconnectPolicy, TunnelKind, TunnelManager, TunnelSpec};
 
 use crate::sessions::SessionManagerState;
@@ -103,6 +103,8 @@ pub struct TunnelDefWire {
     pub id: String,
     pub session_id: String,
     pub kind: String,
+    #[serde(default)]
+    pub name: String,
     pub bind_host: String,
     pub bind_port: u16,
     pub target_host: Option<String>,
@@ -228,6 +230,7 @@ pub async fn tunnel_save(
             id: def.id.clone(),
             session_id: def.session_id.clone(),
             kind: def.kind.clone(),
+            name: def.name.clone(),
             bind_host: def.bind_host.clone(),
             bind_port: def.bind_port,
             target_host: def.target_host.clone(),
@@ -341,6 +344,7 @@ pub async fn start_session_tunnels(
     mgr: Arc<core_tunnel::TunnelManager>,
     store: Arc<Store>,
     session_id: String,
+    events: Channel<Value>,
 ) {
     let defs = match store.tunnels().for_session(&session_id).await {
         Ok(d) => d,
@@ -349,6 +353,7 @@ pub async fn start_session_tunnels(
             return;
         }
     };
+    let mut results: Vec<Value> = Vec::new();
     for d in defs.into_iter().filter(|d| d.with_session) {
         let r = start_tunnel(
             &mgr,
@@ -363,8 +368,74 @@ pub async fn start_session_tunnels(
             false,
         )
         .await;
-        if let Err(e) = r {
+        if let Err(e) = &r {
             tracing::warn!(tunnel = %d.id, error = %e, "随会话隧道建立失败");
+        }
+        // 幂等跳过（已在运行）视为成功——重连场景下重复拉起不算失败
+        let already = mgr.list().into_iter().any(|t| {
+            t.id == d.id
+                && matches!(
+                    t.status,
+                    core_tunnel::TunnelStatus::Starting
+                        | core_tunnel::TunnelStatus::Listening
+                        | core_tunnel::TunnelStatus::Reconnecting
+                )
+        });
+        results.push(json!({
+            "id": d.id,
+            "name": d.name,
+            "bind": format!("{}:{}", d.bind_host, d.bind_port),
+            "ok": r.is_ok() || already,
+            "error": if already { None } else { r.err() },
+        }));
+    }
+    if !results.is_empty() {
+        let _ = events.send(json!({
+            "v": 1, "type": "session_tunnels",
+            "sessionId": session_id,
+            "results": results,
+        }));
+    }
+}
+/// 会话断开（终端关闭/重连耗尽）：停止该会话 with_session 的运行中隧道。
+/// 仅当同会话无其他存活终端标签时调用（调用方负责判定）。
+pub async fn stop_session_tunnels(
+    mgr: Arc<core_tunnel::TunnelManager>,
+    store: Arc<Store>,
+    session_id: String,
+) {
+    let defs = match store.tunnels().for_session(&session_id).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = %e, "随会话隧道定义读取失败（停止侧）");
+            return;
+        }
+    };
+    for d in defs.into_iter().filter(|d| d.with_session) {
+        match mgr.stop(&d.id).await {
+            Ok(()) | Err(core_tunnel::TunnelError::NotFound(_)) => {}
+            Err(e) => tracing::warn!(tunnel = %d.id, error = %e, "随会话隧道停止失败"),
+        }
+    }
+}
+/// 会话删除前调用：停止该会话全部运行中隧道（不论启动方式）。
+/// 必须在定义仍可读时调用——FK 级联后 for_session 已查不到。
+pub async fn stop_all_session_tunnels(
+    mgr: Arc<core_tunnel::TunnelManager>,
+    store: Arc<Store>,
+    session_id: String,
+) {
+    let defs = match store.tunnels().for_session(&session_id).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = %e, "隧道定义读取失败（删除前停止）");
+            return;
+        }
+    };
+    for d in defs {
+        match mgr.stop(&d.id).await {
+            Ok(()) | Err(core_tunnel::TunnelError::NotFound(_)) => {}
+            Err(e) => tracing::warn!(tunnel = %d.id, error = %e, "删除会话前停止隧道失败"),
         }
     }
 }
@@ -447,5 +518,54 @@ fn info_to_json(st: &TunnelManagerState, t: &core_tunnel::TunnelInfo) -> Value {
         "rateDown": rate_down,
         "errors": t.stats.errors,
         "reconnects": t.stats.reconnects,
+        "lastError": t.last_error,
+    })
+}
+/// 本地端口预检（§9.4）：创建/编辑本地或动态隧道前调用。
+/// - 占用者为本隧道管理器中的其他定义 → 报占用来源；为 exclude_tunnel_id 自身 → 视为可用；
+/// - 占用时为可用建议端口（向上探测至多 100 个）；绝不静默修改用户端口。
+#[tauri::command]
+pub async fn tunnel_check_port(
+    host: String,
+    port: u16,
+    exclude_tunnel_id: Option<String>,
+    state: tauri::State<'_, Arc<TunnelManagerState>>,
+) -> Result<Value, String> {
+    if port == 0 {
+        return Err(StoreError::Validation("端口必须在 1-65535".into()).to_string());
+    }
+    let bind_label = format!("{host}:{port}");
+    // 先查自家运行中隧道（它们持监听 socket，探测必撞）
+    if let Some(holder) = state.mgr.list().into_iter().find(|t| t.bind == bind_label) {
+        if exclude_tunnel_id.as_deref() == Some(holder.id.as_str()) {
+            return Ok(json!({ "available": true, "selfOccupied": true }));
+        }
+        return Ok(json!({
+            "available": false,
+            "holder": holder.id,
+            "suggestedPort": suggest_free_port(&host, port),
+        }));
+    }
+    // 再实际探测（不带 SO_REUSEADDR，真实占用语义）
+    match std::net::TcpListener::bind((host.as_str(), port)) {
+        Ok(l) => {
+            drop(l);
+            Ok(json!({ "available": true }))
+        }
+        Err(_) => Ok(json!({
+            "available": false,
+            "suggestedPort": suggest_free_port(&host, port),
+        })),
+    }
+}
+
+/// 从 port+1 起向上探测至多 100 个端口，返回第一个可绑定的；找不到返回 None
+fn suggest_free_port(host: &str, port: u16) -> Option<u16> {
+    (1..=100u16).find_map(|off| {
+        let p = port.checked_add(off)?;
+        std::net::TcpListener::bind((host, p)).ok().map(|l| {
+            drop(l);
+            p
+        })
     })
 }

@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useAppStore } from '../state/app-store';
-import type { TunnelDef, TunnelInfo, TunnelKind } from '../term/types';
+import { TunnelEditor } from './TunnelEditor';
+import { ConfirmDialog } from './ConfirmDialog';
+import { START_MODE_LABEL, fmtRate, startModeOf, tunnelDisplayName } from '../state/tunnel-utils';
+import type { TunnelDef, TunnelInfo } from '../term/types';
 
 const STATUS_LABEL: Record<string, string> = {
   starting: '启动中',
@@ -10,13 +13,16 @@ const STATUS_LABEL: Record<string, string> = {
   failed: '失败',
 };
 
-function fmtRate(bytesPerSec: number): string {
-  if (bytesPerSec >= 1 << 20) return `${(bytesPerSec / (1 << 20)).toFixed(1)} MB/s`;
-  if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
-  return `${bytesPerSec} B/s`;
-}
+const KIND_LABEL: Record<string, string> = {
+  local: '本地 -L',
+  remote: '远程 -R',
+  dynamic: 'SOCKS5 -D',
+};
 
-/** 隧道面板（底部抽屉）：持久化定义与运行态（1Hz 订阅）按 id 合并 */
+/**
+ * 全局隧道中心（§9.1 双入口之二）：按服务器分组的定义 × 1Hz 运行态合并视图。
+ * 行操作：启动/停止/编辑/复制/删除；新建经 TunnelEditor（含端口预检与模板）。
+ */
 export function TunnelPanel() {
   const open = useAppStore((s) => s.tunnelPanelOpen);
   const tunnels = useAppStore((s) => s.tunnels);
@@ -26,18 +32,15 @@ export function TunnelPanel() {
   const saveTunnel = useAppStore((s) => s.saveTunnel);
   const deleteTunnel = useAppStore((s) => s.deleteTunnel);
   const loadTunnelDefs = useAppStore((s) => s.loadTunnelDefs);
+  const notify = useAppStore((s) => s.notify);
+  const duplicateTunnel = useAppStore((s) => s.duplicateTunnel);
 
-  const [sessionId, setSessionId] = useState('');
-  const [kind, setKind] = useState<TunnelKind>('local');
-  const [bindHost, setBindHost] = useState('127.0.0.1');
-  const [bindPort, setBindPort] = useState(1080);
-  const [targetHost, setTargetHost] = useState('127.0.0.1');
-  const [targetPort, setTargetPort] = useState(8080);
-  const [autostart, setAutostart] = useState(false);
-  const [withSession, setWithSession] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  /** 编辑器目标：undefined=关闭；{sessionId, def} def=null 为新建 */
+  const [editor, setEditor] = useState<{ sessionId: string; def: TunnelDef | null } | undefined>(
+    undefined,
+  );
+  const [pendingDelete, setPendingDelete] = useState<TunnelDef | null>(null);
 
-  // 打开面板时拉取定义（运行态由 App 级 1Hz 订阅提供）
   useEffect(() => {
     if (open) void loadTunnelDefs();
   }, [open, loadTunnelDefs]);
@@ -45,224 +48,215 @@ export function TunnelPanel() {
   if (!open) return null;
 
   const runtimeById = new Map<string, TunnelInfo>(tunnels.map((t) => [t.tunnelId, t]));
-  // 行 = 定义 ∪ 仅运行态（ad-hoc，tn-N 序号 id 不在定义表）
   const defIds = new Set(tunnelDefs.map((d) => d.id));
   const adhoc = tunnels.filter((t) => !defIds.has(t.tunnelId));
 
-  const submit = async () => {
-    setError(null);
+  // 按服务器分组（保持会话列表顺序；孤儿定义的会话已删 → 末组）
+  const grouped = new Map<string, TunnelDef[]>();
+  for (const d of tunnelDefs) {
+    const list = grouped.get(d.sessionId) ?? [];
+    list.push(d);
+    grouped.set(d.sessionId, list);
+  }
+  const orderedGroups: { sid: string; defs: TunnelDef[] }[] = [
+    ...sessions.flatMap((s) => {
+      const defs = grouped.get(s.id);
+      return defs ? [{ sid: s.id, defs }] : [];
+    }),
+    ...[...grouped.entries()]
+      .filter(([sid]) => !sessions.some((s) => s.id === sid))
+      .map(([sid, defs]) => ({ sid, defs })),
+  ];
+
+  const duplicate = async (d: TunnelDef) => {
     try {
-      if (!sessionId) throw new Error('选择会话');
-      const def: TunnelDef = {
-        id: `td-${Date.now()}`,
-        sessionId,
-        kind,
-        bindHost,
-        bindPort,
-        targetHost: kind === 'dynamic' ? null : targetHost,
-        targetPort: kind === 'dynamic' ? null : targetPort,
-        autostart,
-        withSession,
-        createdAt: '',
-      };
-      // 保存即建立（运行 id = 定义 id，行内合并）
-      await saveTunnel(def, true);
+      await duplicateTunnel(d);
     } catch (e) {
-      setError(String(e));
+      notify(`复制失败: ${String(e)}`, 'error');
     }
   };
 
-  const sessionName = (id: string) => sessions.find((s) => s.id === id)?.name ?? id;
+  const startDef = async (d: TunnelDef) => {
+    try {
+      await saveTunnel(d, true);
+    } catch (e) {
+      notify(`启动失败: ${String(e)}`, 'error');
+    }
+  };
+
+  const sessionLabel = (sid: string) => {
+    const s = sessions.find((x) => x.id === sid);
+    if (!s) return `（会话已删除 ${sid}）`;
+    return s.groupPath ? `${s.groupPath} / ${s.name}` : s.name;
+  };
 
   return (
-    <div className="shrink-0 border-t border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-300">
+    <div className="max-h-72 shrink-0 overflow-y-auto border-t border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-300">
       <div className="mb-1 flex items-center gap-3 text-neutral-500">
         <span className="font-semibold text-neutral-300">隧道</span>
-        <span>本地 -L · 远程 -R · 动态 SOCKS5 -D · 定义持久化，独立于终端标签存活</span>
+        <span>按服务器分组 · 编辑即生效（运行中需重启）· 独立于终端标签存活</span>
+        <span className="flex-1" />
+        <button
+          className="rounded border border-neutral-700 px-2 py-0.5 hover:bg-neutral-800 disabled:opacity-40"
+          disabled={sessions.length === 0}
+          onClick={() => sessions.length > 0 && setEditor({ sessionId: sessions[0].id, def: null })}
+        >
+          ＋ 新建隧道
+        </button>
       </div>
 
-      {(tunnelDefs.length > 0 || adhoc.length > 0) && (
-        <table className="mb-2 w-full border-collapse">
-          <thead>
-            <tr className="text-left text-neutral-500">
-              <th className="pr-3 font-normal">类型</th>
-              <th className="pr-3 font-normal">会话</th>
-              <th className="pr-3 font-normal">绑定</th>
-              <th className="pr-3 font-normal">目标</th>
-              <th className="pr-3 font-normal">状态</th>
-              <th className="pr-3 font-normal">上行/下行</th>
-              <th className="pr-3 font-normal">自启</th>
-              <th className="pr-3 font-normal">随会话</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {tunnelDefs.map((d) => {
-              const rt = runtimeById.get(d.id);
-              return (
-                <tr key={d.id} className="border-t border-neutral-800">
-                  <td className="py-1 pr-3">{d.kind}</td>
-                  <td className="pr-3">{sessionName(d.sessionId)}</td>
-                  <td className="pr-3 font-mono">
-                    {d.bindHost}:{d.bindPort}
-                  </td>
-                  <td className="pr-3 font-mono">
-                    {d.targetHost ? `${d.targetHost}:${d.targetPort}` : '—'}
-                  </td>
-                  <td className="pr-3">{rt ? (STATUS_LABEL[rt.status] ?? rt.status) : '未运行'}</td>
-                  <td className="pr-3">
-                    {rt ? `↑${fmtRate(rt.rateUp)} ↓${fmtRate(rt.rateDown)}` : '—'}
-                  </td>
-                  <td className="pr-3">
-                    <input
-                      type="checkbox"
-                      checked={d.autostart}
-                      onChange={(e) =>
-                        void saveTunnel({ ...d, autostart: e.target.checked }, false)
-                      }
-                    />
-                  </td>
-                  <td className="pr-3">
-                    <input
-                      type="checkbox"
-                      checked={d.withSession}
-                      onChange={(e) =>
-                        void saveTunnel({ ...d, withSession: e.target.checked }, false)
-                      }
-                    />
-                  </td>
-                  <td className="whitespace-nowrap">
-                    {rt ? (
-                      <button
-                        className="rounded px-1.5 text-neutral-500 hover:text-red-400"
-                        onClick={() => void stopTunnel(d.id)}
+      {orderedGroups.length === 0 && adhoc.length === 0 && (
+        <p className="py-2 text-neutral-500">
+          还没有隧道。点「＋ 新建隧道」，或在服务器编辑器的「隧道」页添加。
+        </p>
+      )}
+
+      {orderedGroups.map(({ sid, defs }) => {
+        return (
+          <div key={sid} className="mb-2">
+            <div className="mt-1 mb-0.5 font-semibold text-neutral-400">{sessionLabel(sid)}</div>
+            <table className="w-full border-collapse">
+              <tbody>
+                {defs.map((d) => {
+                  const rt = runtimeById.get(d.id);
+                  return (
+                    <tr key={d.id} className="border-t border-neutral-800/60">
+                      <td className="py-1 pr-3">{tunnelDisplayName(d)}</td>
+                      <td className="pr-3 text-neutral-500">{KIND_LABEL[d.kind] ?? d.kind}</td>
+                      <td className="pr-3 font-mono">
+                        {d.bindHost}:{d.bindPort}
+                        {d.targetHost ? ` → ${d.targetHost}:${d.targetPort}` : ''}
+                      </td>
+                      <td className="pr-3">
+                        {rt ? (
+                          <span
+                            className={
+                              rt.status === 'listening'
+                                ? 'text-green-400'
+                                : rt.status === 'failed'
+                                  ? 'text-red-400'
+                                  : 'text-yellow-400'
+                            }
+                          >
+                            {STATUS_LABEL[rt.status] ?? rt.status}
+                          </span>
+                        ) : (
+                          <span className="text-neutral-600">未运行</span>
+                        )}
+                      </td>
+                      <td className="pr-3 text-neutral-500">{START_MODE_LABEL[startModeOf(d)]}</td>
+                      <td className="pr-3">
+                        {rt ? `↑${fmtRate(rt.rateUp)} ↓${fmtRate(rt.rateDown)}` : '—'}
+                      </td>
+                      <td className="pr-3">{rt ? `${rt.activeConns} 连接` : '—'}</td>
+                      <td
+                        className="max-w-48 truncate pr-3 text-red-400/80"
+                        title={rt?.lastError ?? undefined}
                       >
-                        停止
-                      </button>
-                    ) : (
-                      <button
-                        className="rounded px-1.5 text-neutral-500 hover:text-green-400"
-                        onClick={() => void saveTunnel(d, true)}
-                      >
-                        启动
-                      </button>
-                    )}
+                        {rt?.lastError ?? ''}
+                      </td>
+                      <td className="whitespace-nowrap">
+                        {rt ? (
+                          <button
+                            className="rounded px-1.5 text-neutral-500 hover:text-red-400"
+                            onClick={() => void stopTunnel(d.id)}
+                          >
+                            停止
+                          </button>
+                        ) : (
+                          <button
+                            className="rounded px-1.5 text-neutral-500 hover:text-green-400"
+                            onClick={() => void startDef(d)}
+                          >
+                            启动
+                          </button>
+                        )}
+                        <button
+                          className="rounded px-1.5 text-neutral-500 hover:text-neutral-200"
+                          onClick={() => setEditor({ sessionId: d.sessionId, def: d })}
+                        >
+                          编辑
+                        </button>
+                        <button
+                          className="rounded px-1.5 text-neutral-500 hover:text-neutral-200"
+                          onClick={() => void duplicate(d)}
+                        >
+                          复制
+                        </button>
+                        <button
+                          className="rounded px-1.5 text-neutral-500 hover:text-red-400"
+                          onClick={() => setPendingDelete(d)}
+                        >
+                          删除
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
+
+      {adhoc.length > 0 && (
+        <div className="mb-1">
+          <div className="mt-1 mb-0.5 font-semibold text-neutral-500">临时（未持久化）</div>
+          <table className="w-full border-collapse">
+            <tbody>
+              {adhoc.map((t) => (
+                <tr key={t.tunnelId} className="border-t border-neutral-800/60 text-neutral-500">
+                  <td className="py-1 pr-3">{KIND_LABEL[t.kind] ?? t.kind}</td>
+                  <td className="pr-3 font-mono">
+                    {t.bind}
+                    {t.target ? ` → ${t.target}` : ''}
+                  </td>
+                  <td className="pr-3">{STATUS_LABEL[t.status] ?? t.status}</td>
+                  <td className="pr-3">
+                    ↑{fmtRate(t.rateUp)} ↓{fmtRate(t.rateDown)}
+                  </td>
+                  <td>
                     <button
                       className="rounded px-1.5 text-neutral-500 hover:text-red-400"
-                      onClick={() => void deleteTunnel(d.id)}
+                      onClick={() => void stopTunnel(t.tunnelId)}
                     >
-                      删除
+                      停止
                     </button>
                   </td>
                 </tr>
-              );
-            })}
-            {adhoc.map((t) => (
-              <tr key={t.tunnelId} className="border-t border-neutral-800 text-neutral-500">
-                <td className="py-1 pr-3">{t.kind}</td>
-                <td className="pr-3">（临时）</td>
-                <td className="pr-3 font-mono">{t.bind}</td>
-                <td className="pr-3 font-mono">{t.target ?? '—'}</td>
-                <td className="pr-3">{STATUS_LABEL[t.status] ?? t.status}</td>
-                <td className="pr-3">
-                  ↑{fmtRate(t.rateUp)} ↓{fmtRate(t.rateDown)}
-                </td>
-                <td></td>
-                <td></td>
-                <td>
-                  <button
-                    className="rounded px-1.5 text-neutral-500 hover:text-red-400"
-                    onClick={() => void stopTunnel(t.tunnelId)}
-                  >
-                    停止
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
-      <div className="flex items-center gap-2">
-        <select
-          className="rounded border border-neutral-700 bg-neutral-800 px-1.5 py-1"
-          value={sessionId}
-          onChange={(e) => setSessionId(e.target.value)}
-        >
-          <option value="">选择会话…</option>
-          {sessions.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>
-        <select
-          className="rounded border border-neutral-700 bg-neutral-800 px-1.5 py-1"
-          value={kind}
-          onChange={(e) => setKind(e.target.value as TunnelKind)}
-        >
-          <option value="local">本地 -L</option>
-          <option value="remote">远程 -R</option>
-          <option value="dynamic">动态 -D</option>
-        </select>
-        <input
-          className="w-24 rounded border border-neutral-700 bg-neutral-800 px-1.5 py-1"
-          value={bindHost}
-          onChange={(e) => setBindHost(e.target.value)}
-          title="绑定地址"
+      {editor && (
+        <TunnelEditor
+          sessionId={editor.sessionId}
+          initial={editor.def}
+          running={editor.def ? runtimeById.has(editor.def.id) : false}
+          onClose={() => setEditor(undefined)}
         />
-        <input
-          className="w-16 rounded border border-neutral-700 bg-neutral-800 px-1.5 py-1"
-          type="number"
-          value={bindPort}
-          onChange={(e) => setBindPort(Number(e.target.value))}
-          title="绑定端口"
-        />
-        {kind !== 'dynamic' && (
-          <>
-            <span className="text-neutral-600">→</span>
-            <input
-              className="w-24 rounded border border-neutral-700 bg-neutral-800 px-1.5 py-1"
-              value={targetHost}
-              onChange={(e) => setTargetHost(e.target.value)}
-              title="目标地址"
-            />
-            <input
-              className="w-16 rounded border border-neutral-700 bg-neutral-800 px-1.5 py-1"
-              type="number"
-              value={targetPort}
-              onChange={(e) => setTargetPort(Number(e.target.value))}
-              title="目标端口"
-            />
-          </>
-        )}
-        <label className="flex items-center gap-1 text-neutral-400" title="app 启动即建立">
-          <input
-            type="checkbox"
-            checked={autostart}
-            onChange={(e) => setAutostart(e.target.checked)}
-          />
-          自启
-        </label>
-        <label
-          className="flex items-center gap-1 text-neutral-400"
-          title="该会话终端连接成功后自动建立"
+      )}
+      {pendingDelete && (
+        <ConfirmDialog
+          title={`删除隧道「${tunnelDisplayName(pendingDelete)}」？`}
+          confirmLabel="删除"
+          onConfirm={() => {
+            void deleteTunnel(pendingDelete.id)
+              .then(() => notify('隧道已删除', 'success'))
+              .catch((e) => notify(`删除失败: ${String(e)}`, 'error'));
+            setPendingDelete(null);
+          }}
+          onCancel={() => setPendingDelete(null)}
         >
-          <input
-            type="checkbox"
-            checked={withSession}
-            onChange={(e) => setWithSession(e.target.checked)}
-          />
-          随会话
-        </label>
-        <button
-          className="rounded bg-blue-600 px-2.5 py-1 text-white hover:bg-blue-500"
-          onClick={() => void submit()}
-        >
-          保存并启动
-        </button>
-        {error && <span className="text-red-400">{error}</span>}
-      </div>
+          {pendingDelete.bindHost}:{pendingDelete.bindPort}
+          {pendingDelete.targetHost
+            ? ` → ${pendingDelete.targetHost}:${pendingDelete.targetPort}`
+            : ''}
+          。运行中的实例将同时停止。
+        </ConfirmDialog>
+      )}
     </div>
   );
 }
