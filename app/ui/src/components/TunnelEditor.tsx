@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../state/app-store';
 import { ConfirmDialog } from './ConfirmDialog';
+import { Dialog } from './Dialog';
 import {
   TUNNEL_TEMPLATES,
   START_MODE_LABEL,
@@ -148,26 +149,15 @@ export function TunnelEditor({
     'w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-sm text-neutral-200';
 
   return (
-    <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60"
-      role="dialog"
-      aria-modal="true"
-      aria-label={initial ? '编辑隧道' : '新建隧道'}
-      onClick={onClose}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') {
-          e.stopPropagation();
-          onClose();
-        }
-      }}
+    <Dialog
+      title={initial ? '编辑隧道' : '新建隧道'}
+      onClose={onClose}
+      backdropClass="z-40"
+      panelClass="w-[26rem] rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
     >
-      <div
-        className="w-[26rem] rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 className="mb-3 text-base font-semibold text-neutral-100">
-          {initial ? '编辑隧道' : '新建隧道'}
-        </h2>
+      <h2 className="mb-3 text-base font-semibold text-neutral-100">
+        {initial ? '编辑隧道' : '新建隧道'}
+      </h2>
 
         <label className="mb-2 block">
           <span className="mb-0.5 block text-xs text-neutral-400">模板（只预填，可改）</span>
@@ -338,7 +328,6 @@ export function TunnelEditor({
             保存
           </button>
         </div>
-      </div>
 
       {pendingRestart && (
         <ConfirmDialog
@@ -351,9 +340,9 @@ export function TunnelEditor({
           }}
         >
           隧道「{pendingRestart.name || `${pendingRestart.bindHost}:${pendingRestart.bindPort}`}
-          」当前正在运行，新配置已保存。 立即重启将中断该隧道上的现有连接。
+          」当前正在运行，新配置已保存。           立即重启将中断该隧道上的现有连接。
         </ConfirmDialog>
       )}
-    </div>
+    </Dialog>
   );
 }

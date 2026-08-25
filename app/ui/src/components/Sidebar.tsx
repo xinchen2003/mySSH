@@ -6,6 +6,7 @@ import { fuzzyMatchAny } from '../term/fuzzy';
 import type { SessionRecord } from '../term/types';
 import { ContextMenu, type MenuItem } from './ContextMenu';
 import { ConfirmDialog } from './ConfirmDialog';
+import { Dialog } from './Dialog';
 import {
   buildGroupTree,
   canMoveGroup,
@@ -455,6 +456,10 @@ export function Sidebar() {
     </button>
   );
 
+  /** §10.4：键盘打开右键菜单（ContextMenu 键或 Shift+F10），位置取行矩形 */
+  const menuKeyHit = (e: React.KeyboardEvent) =>
+    e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
+
   const sessionRow = (rec: SessionRecord, depth: number) => {
     const selected = sel.ids.includes(rec.id);
     return (
@@ -481,6 +486,16 @@ export function Sidebar() {
             const i = visibleSessionIds.indexOf(rec.id);
             const next = visibleSessionIds[i + (e.key === 'ArrowDown' ? 1 : -1)];
             if (next) setSel({ anchor: next, ids: [next] });
+          } else if (menuKeyHit(e)) {
+            e.preventDefault();
+            selectForMenu(rec);
+            const ids = sel.ids.includes(rec.id) && sel.ids.length > 1 ? sel.ids : [rec.id];
+            const r = e.currentTarget.getBoundingClientRect();
+            setMenu({
+              x: r.left + 16,
+              y: r.bottom,
+              items: ids.length > 1 ? batchMenu(ids) : sessionMenu(rec),
+            });
           }
         }}
         onContextMenu={(e) => {
@@ -565,6 +580,7 @@ export function Sidebar() {
     return (
       <div
         key={path}
+        tabIndex={0}
         draggable
         onDragStart={(e) => e.dataTransfer.setData('application/x-myssh-group', path)}
         onDragOver={(e) => {
@@ -577,6 +593,13 @@ export function Sidebar() {
         onContextMenu={(e) => {
           e.preventDefault();
           setMenu({ x: e.clientX, y: e.clientY, items: groupMenu(path, count) });
+        }}
+        onKeyDown={(e) => {
+          if (menuKeyHit(e)) {
+            e.preventDefault();
+            const r = e.currentTarget.getBoundingClientRect();
+            setMenu({ x: r.left + 16, y: r.bottom, items: groupMenu(path, count) });
+          }
         }}
         className={`group flex cursor-pointer select-none items-center rounded px-1 py-0.5 text-xs text-neutral-500 hover:bg-neutral-800 ${
           dropTarget === path ? 'ring-1 ring-blue-500' : ''
@@ -748,51 +771,49 @@ export function Sidebar() {
         <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />
       )}
 
-      {/* 非空分组删除三选 */}
+      {/* 非空分组删除三选（统一 Dialog 基座：Esc=取消，默认焦点在安全选项） */}
       {groupDel && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="删除分组"
-            className="w-96 rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
-          >
-            <h2 className="mb-2 text-base font-semibold text-neutral-100">
-              删除分组“{groupDel.path}”？
-            </h2>
-            <p className="mb-4 text-xs leading-5 text-neutral-400">
-              该分组及其子分组共包含 {groupDel.count} 台服务器。请选择处理方式：
-            </p>
-            <div className="flex flex-col gap-2">
-              <button
-                className="rounded border border-neutral-600 px-3 py-1.5 text-left text-xs hover:bg-neutral-800"
-                autoFocus
-                onClick={() => {
-                  const p = groupDel.path;
-                  setGroupDel(null);
-                  void deleteGroupKeep(p);
-                }}
-              >
-                仅删除分组，服务器移到未分组（子分组上移一级）
-              </button>
-              <button
-                className="rounded border border-red-800 px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-950"
-                onClick={() => {
-                  setConfirmCascade(groupDel); // 二次确认（危险）
-                  setGroupDel(null);
-                }}
-              >
-                删除分组及其中 {groupDel.count} 台服务器（含已保存凭据）…
-              </button>
-              <button
-                className="rounded px-3 py-1.5 text-xs text-neutral-400 hover:bg-neutral-800"
-                onClick={() => setGroupDel(null)}
-              >
-                取消
-              </button>
-            </div>
+        <Dialog
+          title="删除分组"
+          onClose={() => setGroupDel(null)}
+          closeOnBackdrop={false}
+          panelClass="w-96 rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
+        >
+          <h2 className="mb-2 text-base font-semibold text-neutral-100">
+            删除分组“{groupDel.path}”？
+          </h2>
+          <p className="mb-4 text-xs leading-5 text-neutral-400">
+            该分组及其子分组共包含 {groupDel.count} 台服务器。请选择处理方式：
+          </p>
+          <div className="flex flex-col gap-2">
+            <button
+              className="rounded border border-neutral-600 px-3 py-1.5 text-left text-xs hover:bg-neutral-800"
+              data-autofocus
+              onClick={() => {
+                const p = groupDel.path;
+                setGroupDel(null);
+                void deleteGroupKeep(p);
+              }}
+            >
+              仅删除分组，服务器移到未分组（子分组上移一级）
+            </button>
+            <button
+              className="rounded border border-red-800 px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-950"
+              onClick={() => {
+                setConfirmCascade(groupDel); // 二次确认（危险）
+                setGroupDel(null);
+              }}
+            >
+              删除分组及其中 {groupDel.count} 台服务器（含已保存凭据）…
+            </button>
+            <button
+              className="rounded px-3 py-1.5 text-xs text-neutral-400 hover:bg-neutral-800"
+              onClick={() => setGroupDel(null)}
+            >
+              取消
+            </button>
           </div>
-        </div>
+        </Dialog>
       )}
 
       {/* 批量删除确认 */}

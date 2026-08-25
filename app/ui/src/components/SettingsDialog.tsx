@@ -4,6 +4,7 @@ import { useAppStore } from '../state/app-store';
 import { BUILTIN_THEMES } from '../term/themes';
 import { KEY_ACTIONS, keymapFromSettings, type KeymapScheme } from '../term/keymap';
 import { readTerminalSettings } from '../state/apply-settings';
+import { Dialog } from './Dialog';
 
 const inputCls =
   'rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-200 outline-none focus:border-blue-500';
@@ -27,17 +28,12 @@ export function SettingsDialog() {
   );
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={toggleSettings}
-      role="dialog"
-      aria-label="设置"
+    <Dialog
+      title="设置"
+      onClose={toggleSettings}
+      panelClass="max-h-[80vh] w-[560px] overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-xs text-neutral-300 shadow-xl"
     >
-      <div
-        className="max-h-[80vh] w-[560px] overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-xs text-neutral-300 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-neutral-100">设置</h2>
           <button
             className="rounded px-1 text-neutral-500 hover:text-neutral-200"
@@ -120,6 +116,18 @@ export function SettingsDialog() {
               />
               <span className="text-neutral-500">选中终端文本后自动复制（对已有终端立即生效）</span>
             </span>
+            <label htmlFor="set-rc-paste">右键直接粘贴</label>
+            <span className="flex items-center gap-2">
+              <input
+                id="set-rc-paste"
+                type="checkbox"
+                checked={settings['terminal.rightClickPaste'] === true}
+                onChange={(e) => setSetting('terminal.rightClickPaste', e.target.checked)}
+              />
+              <span className="text-neutral-500">
+                终端内右键直接粘贴，而不是打开菜单（默认关闭）
+              </span>
+            </span>
             <label htmlFor="set-confirm-close">关闭确认</label>
             <span className="flex items-center gap-2">
               <input
@@ -168,7 +176,10 @@ export function SettingsDialog() {
               {KEY_ACTIONS.map((a) => (
                 <tr key={a.id} className="border-t border-neutral-800/50">
                   <td className="py-0.5 pr-2">{a.label}</td>
-                  <td className="py-0.5 text-right font-mono text-neutral-400">{bindings[a.id]}</td>
+                  <td className="py-0.5 text-right font-mono text-neutral-400">
+                    {bindings[a.id]}
+                    {a.alias ? ` / ${a.alias}` : ''}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -202,8 +213,7 @@ export function SettingsDialog() {
           <h3 className="mb-1.5 font-semibold text-neutral-200">关于</h3>
           <AboutRow />
         </section>
-      </div>
-    </div>
+    </Dialog>
   );
 }
 

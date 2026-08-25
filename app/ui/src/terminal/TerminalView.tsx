@@ -8,20 +8,22 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { useAppStore, type Pane, type Tab } from '../state/app-store';
-import { fitRegistry, termRegistry } from '../term/registry';
+import { fitRegistry, reconnectRegistry, termRegistry } from '../term/registry';
 import { resolveTheme } from '../term/themes';
 import { readTerminalSettings } from '../state/apply-settings';
-import { keymapFromSettings, matchCombo } from '../term/keymap';
+import { keymapFromSettings, matchAction, matchCombo } from '../term/keymap';
 import type { SessionStateFrame } from '../term/types';
 import { SearchBar } from '../components/SearchBar';
+import { ContextMenu, type MenuItem } from '../components/ContextMenu';
 
 /**
  * 终端视图：xterm 生命周期 + 会话 attach。每个 pane 一份。
  * 显隐由外层 PaneFrame/tab 容器 display 控制——常驻挂载保留回滚与渲染状态；
  * ResizeObserver 在重新可见时自动 fit（0 尺寸跳过）。
  *
- * 体验项（M1）：Ctrl+Shift+F 搜索浮条；选中即复制；右键粘贴（括号粘贴模式
- * 由 xterm 内建处理）；真彩色/Unicode11 宽字符/超链接由 addon 层提供。
+ * 体验项（M1）：Ctrl+Shift+F 搜索浮条；选中即复制；真彩色/Unicode11 宽字符/超链接
+ * 由 addon 层提供。批次四：复制/粘贴快捷键（Ctrl+Shift+C/V、Ctrl/Shift+Insert，
+ * Ctrl+C 保留给 SIGINT）；右键默认开菜单（可在设置改回直接粘贴）。
  */
 export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -35,6 +37,8 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
   const sawReconnectRef = useRef(false);
   /** 挂载效应内注册的立即重连闭包（复用同一 xterm 与连接 target） */
   const reconnectRef = useRef<() => void>(() => undefined);
+  /** 右键菜单（批次四 10.2）；canCopy 在打开瞬间采样，菜单存续期间不刷新 */
+  const [menu, setMenu] = useState<{ x: number; y: number; canCopy: boolean } | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -73,11 +77,31 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       if (host.clientWidth > 0 && host.clientHeight > 0) fit.fit();
     });
 
-    // 搜索快捷键（keymap 注册表，默认 Ctrl+Shift+F）；其余按键全部放行给终端
+    // 快捷键（keymap 注册表）：搜索/复制/粘贴在此拦截，其余按键全部放行给终端。
+    // Ctrl+C 不在注册表内（保留给 SIGINT）；无选中时复制动作禁用（吞键不下发）。
     term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
       const bindings = keymapFromSettings(useAppStore.getState().settings);
-      if (e.type === 'keydown' && bindings['search'] && matchCombo(e, bindings['search'])) {
+      if (bindings['search'] && matchCombo(e, bindings['search'])) {
         setSearchOpen(true);
+        return false;
+      }
+      if (matchAction(e, bindings, 'copy')) {
+        if (term.hasSelection()) {
+          void writeText(term.getSelection()).catch((err: unknown) => {
+            console.warn('copy failed', err);
+          });
+        }
+        return false;
+      }
+      if (matchAction(e, bindings, 'paste')) {
+        void readText()
+          .then((text) => {
+            if (text) term.paste(text);
+          })
+          .catch((err: unknown) => {
+            console.warn('paste failed', err);
+          });
         return false;
       }
       return true;
@@ -95,16 +119,22 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
         });
     });
 
-    // 右键粘贴
+    // 右键（批次四 10.2）：默认开菜单；terminal.rightClickPaste=true 恢复直接粘贴
     host.oncontextmenu = (e) => {
       e.preventDefault();
-      void readText()
-        .then((text) => {
-          if (text) term.paste(text);
-        })
-        .catch((e: unknown) => {
-          console.warn('paste failed', e);
-        });
+      const s = useAppStore.getState();
+      s.setActivePane(tab.id, pane.id);
+      if (s.settings['terminal.rightClickPaste'] === true) {
+        void readText()
+          .then((text) => {
+            if (text) term.paste(text);
+          })
+          .catch((err: unknown) => {
+            console.warn('paste failed', err);
+          });
+        return;
+      }
+      setMenu({ x: e.clientX, y: e.clientY, canCopy: term.hasSelection() });
     };
 
     // 断线/重连/终态标记直接写入 xterm（同一实例续写，回滚天然保留）
@@ -147,6 +177,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       term.write('\r\n\x1b[33m[正在重新连接…]\x1b[0m\r\n');
       attachNow();
     };
+    reconnectRegistry.set(pane.id, () => reconnectRef.current());
     attachNow();
 
     const observer = new ResizeObserver(() => {
@@ -158,6 +189,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       observer.disconnect();
       termRegistry.delete(pane.id);
       fitRegistry.delete(pane.id);
+      reconnectRegistry.delete(pane.id);
       term.dispose();
       searchRef.current = null;
     };
@@ -211,6 +243,58 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
           onClose={() => setSearchOpen(false)}
         />
       )}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={termMenuItems(menu.canCopy)}
+        />
+      )}
     </div>
   );
+
+  /** 终端右键菜单（批次四 10.2）。xterm 实例经 registry 取（menu 打开时必然已挂载） */
+  function termMenuItems(canCopy: boolean): MenuItem[] {
+    const term = termRegistry.get(pane.id);
+    const s = useAppStore.getState();
+    const isSession = tab.target.kind === 'session';
+    const paste = () =>
+      void readText()
+        .then((t) => {
+          if (t) term?.paste(t);
+        })
+        .catch((e: unknown) => console.warn('paste failed', e));
+    return [
+      { label: '粘贴', onSelect: paste },
+      {
+        label: '复制',
+        disabled: !canCopy,
+        onSelect: () => {
+          const sel = term?.getSelection();
+          if (sel)
+            void writeText(sel).catch((e: unknown) => {
+              console.warn('copy failed', e);
+            });
+        },
+      },
+      { label: '全选', onSelect: () => term?.selectAll() },
+      { label: '搜索', onSelect: () => setSearchOpen(true) },
+      'separator',
+      { label: '清空屏幕', onSelect: () => term?.write('\x1b[2J\x1b[H') },
+      { label: '清空回滚', onSelect: () => term?.write('\x1b[3J') },
+      'separator',
+      { label: '向右分屏', onSelect: () => s.splitActive('row') },
+      { label: '向下分屏', onSelect: () => s.splitActive('col') },
+      'separator',
+      { label: '重新连接', onSelect: () => reconnectRef.current() },
+      {
+        label: '打开 SFTP',
+        disabled: !isSession,
+        onSelect: () => {
+          if (!s.sftpOpen[tab.id]) s.toggleSftp(tab.id);
+        },
+      },
+    ];
+  }
 }

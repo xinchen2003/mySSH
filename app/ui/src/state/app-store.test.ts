@@ -39,7 +39,7 @@ beforeEach(() => {
     tabs: [],
     activeId: null,
     notices: [],
-    pendingCloseTab: null,
+    pendingCloseTabs: null,
     pendingDeleteSession: null,
     settings: {},
     sessions: [],
@@ -77,11 +77,11 @@ describe('关标签确认守卫（7.6）', () => {
 
     s.closeTab(id);
     expect(state().tabs).toHaveLength(1);
-    expect(state().pendingCloseTab).toBe(id);
+    expect(state().pendingCloseTabs).toEqual([id]);
 
     state().confirmCloseTab();
     expect(state().tabs).toHaveLength(0);
-    expect(state().pendingCloseTab).toBeNull();
+    expect(state().pendingCloseTabs).toBeNull();
   });
 
   it('取消确认后标签保留', () => {
@@ -92,7 +92,7 @@ describe('关标签确认守卫（7.6）', () => {
     s.closeTab(id);
     state().cancelCloseTab();
     expect(state().tabs).toHaveLength(1);
-    expect(state().pendingCloseTab).toBeNull();
+    expect(state().pendingCloseTabs).toBeNull();
   });
 
   it('设置关闭（terminal.confirmCloseTab=false）时直接关闭', () => {
@@ -101,7 +101,7 @@ describe('关标签确认守卫（7.6）', () => {
     s.connect(spec);
     s.closeTab(state().tabs[0].id);
     expect(state().tabs).toHaveLength(0);
-    expect(state().pendingCloseTab).toBeNull();
+    expect(state().pendingCloseTabs).toBeNull();
   });
 
   it('全部 pane 已关闭时直接关闭（不弹确认）', () => {
@@ -112,7 +112,7 @@ describe('关标签确认守卫（7.6）', () => {
 
     s.closeTab(tab.id);
     expect(state().tabs).toHaveLength(0);
-    expect(state().pendingCloseTab).toBeNull();
+    expect(state().pendingCloseTabs).toBeNull();
   });
 
   it('closePane 关闭最后一叶也走确认守卫', () => {
@@ -122,7 +122,7 @@ describe('关标签确认守卫（7.6）', () => {
 
     s.closePane(tab.id, tab.activePaneId);
     expect(state().tabs).toHaveLength(1); // 守卫拦截，标签未关
-    expect(state().pendingCloseTab).toBe(tab.id);
+    expect(state().pendingCloseTabs).toEqual([tab.id]);
 
     state().confirmCloseTab();
     expect(state().tabs).toHaveLength(0);
@@ -142,7 +142,62 @@ describe('closePane 分屏关闭（7.3）', () => {
     const after = state().tabs[0];
     expect(Object.keys(after.panes)).toEqual([first]);
     expect(after.activePaneId).toBe(first);
-    expect(state().pendingCloseTab).toBeNull(); // 非末叶不触发关标签确认
+    expect(state().pendingCloseTabs).toBeNull(); // 非末叶不触发关标签确认
+  });
+});
+
+describe('多标签关闭（批次四 10.3）', () => {
+  it('closeOtherTabs / closeTabsToRight / closeAllTabs 各自选中正确的标签集合', () => {
+    const s = state();
+    s.connect(spec);
+    s.connect(spec);
+    s.connect(spec);
+    s.connect(spec);
+    // 全部 pane 置为已关闭 → 不触发确认，直接关闭
+    for (const t of state().tabs) s.setPaneState(t.id, t.activePaneId, 'closed');
+    const [a, b] = state().tabs.map((t) => t.id);
+
+    s.closeTabsToRight(b);
+    expect(state().tabs.map((t) => t.id)).toEqual([a, b]);
+
+    s.closeOtherTabs(a);
+    expect(state().tabs.map((t) => t.id)).toEqual([a]);
+
+    s.connect(spec);
+    s.setPaneState(state().tabs[1].id, state().tabs[1].activePaneId, 'closed');
+    s.closeAllTabs();
+    expect(state().tabs).toHaveLength(0);
+  });
+
+  it('批量关闭含活跃连接：汇总一次确认，确认后全部关闭', () => {
+    const s = state();
+    s.connect(spec); // connecting = 活跃
+    s.connect(spec);
+    const closedTab = () => {
+      s.connect(spec);
+      const t = state().tabs[2];
+      s.setPaneState(t.id, t.activePaneId, 'closed');
+    };
+    closedTab();
+
+    s.closeAllTabs();
+    expect(state().tabs).toHaveLength(3); // 守卫拦截
+    expect(state().pendingCloseTabs).toHaveLength(3);
+
+    state().confirmCloseTab();
+    expect(state().tabs).toHaveLength(0);
+    expect(state().pendingCloseTabs).toBeNull();
+  });
+
+  it('批量关闭取消后一个都不关', () => {
+    const s = state();
+    s.connect(spec);
+    s.connect(spec);
+    const ids = state().tabs.map((t) => t.id);
+
+    s.closeAllTabs();
+    state().cancelCloseTab();
+    expect(state().tabs.map((t) => t.id)).toEqual(ids);
   });
 });
 

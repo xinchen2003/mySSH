@@ -8,9 +8,13 @@ export interface KeyAction {
   default: string;
   vim?: string;
   emacs?: string;
+  /** 固定别名组合（终端行业惯例，不可改不随方案；设置/命令面板随主绑定一并展示） */
+  alias?: string;
 }
 
 export const KEY_ACTIONS: KeyAction[] = [
+  { id: 'copy', label: '复制选中', default: 'Ctrl+Shift+C', alias: 'Ctrl+Insert' },
+  { id: 'paste', label: '粘贴', default: 'Ctrl+Shift+V', alias: 'Shift+Insert' },
   { id: 'palette', label: '命令面板', default: 'Ctrl+Shift+P' },
   { id: 'search', label: '终端内搜索', default: 'Ctrl+Shift+F' },
   { id: 'newTab', label: '新建会话', default: 'Ctrl+Shift+T' },
@@ -87,11 +91,22 @@ export function matchCombo(e: KeyboardEvent, combo: string): boolean {
   const wantAlt = parts.includes('Alt');
   const wantShift = parts.includes('Shift');
   if (e.ctrlKey !== wantCtrl || e.altKey !== wantAlt || e.shiftKey !== wantShift) return false;
-  // 特殊键用 e.code 语义名（ArrowRight/PageDown/Tab），字符键大小写不敏感
-  if (/^(Arrow|Page|Tab|Enter|Escape|Home|End|Space)/.test(key)) {
+  // 特殊键用 e.code 语义名（ArrowRight/PageDown/Tab/Insert），字符键大小写不敏感
+  if (/^(Arrow|Page|Tab|Enter|Escape|Home|End|Space|Insert|Delete)/.test(key)) {
     return e.code === key || e.key === key;
   }
   return e.key.toLowerCase() === key.toLowerCase() || e.code === `Key${key.toUpperCase()}`;
+}
+
+/** 动作匹配：主绑定（可自定义）或固定别名其一命中即算 */
+export function matchAction(
+  e: KeyboardEvent,
+  bindings: Record<string, string>,
+  id: string,
+): boolean {
+  if (bindings[id] && matchCombo(e, bindings[id])) return true;
+  const alias = KEY_ACTIONS.find((a) => a.id === id)?.alias;
+  return !!alias && matchCombo(e, alias);
 }
 
 /** 从设置读 scheme 与自定义表 */

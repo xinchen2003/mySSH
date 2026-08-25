@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 
 import { fuzzyMatchAny } from '../term/fuzzy';
+import { KEY_ACTIONS, keymapFromSettings } from '../term/keymap';
 import { useAppStore } from '../state/app-store';
 
 /**
@@ -12,9 +13,20 @@ interface Action {
   id: string;
   label: string;
   hint?: string;
+  /** 关联 keymap 动作 id（有则在列表项展示生效快捷键） */
+  keyId?: string;
   /** 需要二级输入时的提示语；不缺省即直接执行 */
   input?: { placeholder: string; secret?: boolean };
   run: (input?: string) => void | Promise<void>;
+}
+
+/** 动作项的快捷键展示：生效主绑定 + 固定别名；无 keyId 落回「命令」 */
+function shortcutOf(a: Action, settings: Record<string, unknown>): string {
+  if (!a.keyId) return '命令';
+  const b = keymapFromSettings(settings)[a.keyId];
+  if (!b) return '命令';
+  const alias = KEY_ACTIONS.find((x) => x.id === a.keyId)?.alias;
+  return b + (alias ? ` / ${alias}` : '');
 }
 
 /** 由外层 {paletteOpen && <CommandPalette/>} 控制挂载——重挂载即重置态，无需 effect 重置 */
@@ -38,6 +50,7 @@ export function CommandPalette() {
   };
 
   const [query, setQuery] = useState('');
+  const settings = useAppStore((s) => s.settings);
   const [index, setIndex] = useState(0);
   /** 非空 = 二级输入态（对 pendingAction 收集口令/路径） */
   const [pending, setPending] = useState<Action | null>(null);
@@ -46,13 +59,24 @@ export function CommandPalette() {
 
   const actions = useMemo<Action[]>(
     () => [
-      { id: 'a-new', label: '新建会话', run: () => openConnect() },
-      { id: 'a-tunnel', label: '隧道面板', run: () => toggleTunnelPanel() },
-      { id: 'a-sftp', label: 'SFTP 面板开关（当前标签）', run: () => toggleSftpActive() },
-      { id: 'a-metrics', label: '监控面板开关（当前标签）', run: () => toggleMetricsActive() },
+      { id: 'a-new', label: '新建会话', keyId: 'newTab', run: () => openConnect() },
+      { id: 'a-tunnel', label: '隧道面板', keyId: 'tunnels', run: () => toggleTunnelPanel() },
+      {
+        id: 'a-sftp',
+        label: 'SFTP 面板开关（当前标签）',
+        keyId: 'sftp',
+        run: () => toggleSftpActive(),
+      },
+      {
+        id: 'a-metrics',
+        label: '监控面板开关（当前标签）',
+        keyId: 'metrics',
+        run: () => toggleMetricsActive(),
+      },
       {
         id: 'a-settings',
         label: '设置',
+        keyId: 'settings',
         run: () => useAppStore.getState().toggleSettings(),
       },
       { id: 'a-sidebar', label: '侧栏开关', run: () => toggleSidebar() },
@@ -199,7 +223,7 @@ export function CommandPalette() {
                 >
                   <span>{item.kind === 'session' ? item.label : item.action.label}</span>
                   <span className="text-xs text-neutral-500">
-                    {item.kind === 'session' ? item.hint : '命令'}
+                    {item.kind === 'session' ? item.hint : shortcutOf(item.action, settings)}
                   </span>
                 </button>
               </li>

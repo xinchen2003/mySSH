@@ -25,6 +25,7 @@ import type {
   SessionTunnelResult,
 } from '../term/types';
 import { tunnelDisplayName, tunnelFeedback } from './tunnel-utils';
+import { reconnectRegistry } from '../term/registry';
 
 export type PaneState = 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'error';
 /** 通知分级（批次一 7.7）：success/info 短时自动消失，warning 较长，error 常驻手动关 */
@@ -99,10 +100,19 @@ interface AppStore {
   requestDeleteSession(rec: SessionRecord): void;
   confirmDeleteSession(): Promise<void>;
   cancelDeleteSession(): void;
-  /** 待确认关闭的标签 id（有活跃连接时需确认） */
-  pendingCloseTab: string | null;
+  /** 待确认关闭的标签 id 列表（任一含活跃连接时汇总确认；单标签为单元素数组） */
+  pendingCloseTabs: string[] | null;
   confirmCloseTab(): void;
   cancelCloseTab(): void;
+  /** 请求关闭一组标签：确认守卫命中时汇总弹一次确认（§17.2 说明影响） */
+  requestCloseTabs(ids: string[]): void;
+  /** 断开标签全部连接但保留标签（pane 终态 closed，终端内容保留） */
+  disconnectTab(id: string): void;
+  /** 重连标签全部 pane（复用各 pane 在 TerminalView 注册的原位重连闭包） */
+  reconnectTab(id: string): void;
+  closeOtherTabs(id: string): void;
+  closeTabsToRight(id: string): void;
+  closeAllTabs(): void;
   /** 导入/导出（错误也走 notices） */
   importFrom(source: 'openssh' | 'putty' | 'xshell' | 'finalshell', path?: string): Promise<void>;
   exportConfig(encrypted: boolean, passphrase?: string): Promise<void>;
@@ -183,7 +193,14 @@ interface AppStore {
 }
 
 export const useAppStore = create<AppStore>((set, get) => {
-  /** 实际执行关标签：关闭全部 pane 会话并移除标签（确认守卫见 closeTab） */
+  /** 标签活跃连接数（connected/connecting/reconnecting 计为活跃） */
+  const countLive = (tab: Tab): number =>
+    paneIds(tab.layout).filter((pid) => {
+      const st = tab.panes[pid]?.state;
+      return st === 'connected' || st === 'connecting' || st === 'reconnecting';
+    }).length;
+
+  /** 实际执行关标签：关闭全部 pane 会话并移除标签（确认守卫见 requestCloseTabs） */
   const doCloseTab = (id: string) => {
     const { tabs, activeId } = get();
     const tab = tabs.find((t) => t.id === id);
@@ -460,13 +477,65 @@ export const useAppStore = create<AppStore>((set, get) => {
         get().notify(`删除服务器失败: ${String(e)}`, 'error');
       }
     },
-    pendingCloseTab: null,
+    pendingCloseTabs: null,
     confirmCloseTab: () => {
-      const id = get().pendingCloseTab;
-      set({ pendingCloseTab: null });
-      if (id) doCloseTab(id);
+      const ids = get().pendingCloseTabs;
+      set({ pendingCloseTabs: null });
+      if (ids) for (const id of ids) doCloseTab(id);
     },
-    cancelCloseTab: () => set({ pendingCloseTab: null }),
+    cancelCloseTab: () => set({ pendingCloseTabs: null }),
+
+    requestCloseTabs: (ids) => {
+      const { tabs, settings } = get();
+      const want = new Set(ids);
+      const targets = tabs.filter((t) => want.has(t.id));
+      if (targets.length === 0) return;
+      const live = targets.reduce((n, t) => n + countLive(t), 0);
+      if (settings['terminal.confirmCloseTab'] !== false && live > 0) {
+        set({ pendingCloseTabs: targets.map((t) => t.id) });
+        return;
+      }
+      for (const t of targets) doCloseTab(t.id);
+    },
+
+    disconnectTab: (id) => {
+      const tab = get().tabs.find((t) => t.id === id);
+      if (!tab) return;
+      for (const pid of paneIds(tab.layout)) {
+        const p = tab.panes[pid];
+        if (!p) continue;
+        if (p.state === 'connected' || p.state === 'connecting' || p.state === 'reconnecting') {
+          void p.session.close();
+          get().setPaneState(id, pid, 'closed');
+        }
+      }
+    },
+
+    reconnectTab: (id) => {
+      const tab = get().tabs.find((t) => t.id === id);
+      if (!tab) return;
+      for (const pid of paneIds(tab.layout)) reconnectRegistry.get(pid)?.();
+    },
+
+    closeOtherTabs: (id) =>
+      get().requestCloseTabs(
+        get()
+          .tabs.filter((t) => t.id !== id)
+          .map((t) => t.id),
+      ),
+
+    closeTabsToRight: (id) => {
+      const idx = get().tabs.findIndex((t) => t.id === id);
+      if (idx < 0) return;
+      get().requestCloseTabs(
+        get()
+          .tabs.slice(idx + 1)
+          .map((t) => t.id),
+      );
+    },
+
+    closeAllTabs: () =>
+      get().requestCloseTabs(get().tabs.map((t) => t.id)),
 
     importFrom: async (source, path) => {
       try {
@@ -603,21 +672,8 @@ export const useAppStore = create<AppStore>((set, get) => {
         ),
       })),
 
-    /** 关标签守卫（批次一 7.6）：设置开启且有活跃连接时先弹确认；全部已关闭则直接关 */
-    closeTab: (id) => {
-      const { tabs, settings } = get();
-      const tab = tabs.find((t) => t.id === id);
-      if (!tab) return;
-      const live = paneIds(tab.layout).filter((pid) => {
-        const st = tab.panes[pid]?.state;
-        return st === 'connected' || st === 'connecting' || st === 'reconnecting';
-      }).length;
-      if (settings['terminal.confirmCloseTab'] !== false && live > 0) {
-        set({ pendingCloseTab: id });
-        return;
-      }
-      doCloseTab(id);
-    },
+    /** 关标签守卫（批次一 7.6）：并入 requestCloseTabs（单标签即单元素数组） */
+    closeTab: (id) => get().requestCloseTabs([id]),
 
     shiftHostKey: () => set((s) => ({ pendingHostKeys: s.pendingHostKeys.slice(1) })),
     shiftKi: () => set((s) => ({ pendingKis: s.pendingKis.slice(1) })),

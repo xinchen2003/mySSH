@@ -58,8 +58,8 @@ export function installDevHooks(): void {
     pendingHostKey: () => useAppStore.getState().pendingHostKeys[0] ?? null,
     /** 当前通知堆叠（分级冒烟断言用） */
     notices: () => useAppStore.getState().notices,
-    /** 待确认关闭的标签 id（关标签确认冒烟断言用） */
-    pendingCloseTab: () => useAppStore.getState().pendingCloseTab,
+    /** 待确认关闭的标签 id 列表（关标签确认冒烟断言用） */
+    pendingCloseTabs: () => useAppStore.getState().pendingCloseTabs,
     /** 待确认删除的会话（删除确认冒烟断言用） */
     pendingDeleteSession: () => useAppStore.getState().pendingDeleteSession,
     /** 隧道运行态 / 定义（批次三冒烟断言用） */

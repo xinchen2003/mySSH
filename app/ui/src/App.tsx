@@ -34,12 +34,13 @@ export function App() {
   const metricsOpen = useAppStore((s) => s.metricsOpen);
   const paletteOpen = useAppStore((s) => s.paletteOpen);
   const pendingDeleteSession = useAppStore((s) => s.pendingDeleteSession);
-  const pendingCloseTab = useAppStore((s) => s.pendingCloseTab);
-  const pendingCloseTabData = tabs.find((t) => t.id === pendingCloseTab) ?? null;
-  // 关标签确认数据：pane 总数与即将断开的活跃连接数
-  const pendingCloseIds = pendingCloseTabData ? paneIds(pendingCloseTabData.layout) : [];
+  const pendingCloseTabs = useAppStore((s) => s.pendingCloseTabs);
+  const pendingCloseTabData = tabs.filter((t) => pendingCloseTabs?.includes(t.id));
+  // 关标签确认数据：pane 总数与即将断开的活跃连接数（多标签关闭时跨标签汇总）
+  const pendingCloseIds = pendingCloseTabData.flatMap((t) => paneIds(t.layout));
   const pendingCloseLive = pendingCloseIds.filter((pid) => {
-    const st = pendingCloseTabData?.panes[pid]?.state;
+    const t = pendingCloseTabData.find((x) => x.panes[pid]);
+    const st = t?.panes[pid]?.state;
     return st === 'connected' || st === 'connecting' || st === 'reconnecting';
   }).length;
 
@@ -202,16 +203,25 @@ export function App() {
           <p className="text-red-300">此操作无法撤销。</p>
         </ConfirmDialog>
       )}
-      {/* 批次一 7.6：关闭有活跃连接的标签前确认 */}
-      {pendingCloseTabData && (
+      {/* 批次一 7.6 / 批次四 10.3：关闭有活跃连接的标签前确认（多标签关闭汇总一次） */}
+      {pendingCloseTabData.length > 0 && (
         <ConfirmDialog
-          title={`关闭标签“${pendingCloseTabData.title}”？`}
-          confirmLabel="关闭标签"
+          title={
+            pendingCloseTabData.length === 1
+              ? `关闭标签“${pendingCloseTabData[0].title}”？`
+              : `关闭 ${pendingCloseTabData.length} 个标签？`
+          }
+          confirmLabel={
+            pendingCloseTabData.length === 1
+              ? '关闭标签'
+              : `关闭 ${pendingCloseTabData.length} 个标签`
+          }
           onCancel={() => useAppStore.getState().cancelCloseTab()}
           onConfirm={() => useAppStore.getState().confirmCloseTab()}
         >
           <p className="mb-1">
-            该标签包含 {pendingCloseIds.length} 个窗格，其中 {pendingCloseLive} 个连接仍活跃。
+            {pendingCloseTabData.length === 1 ? '该标签' : `这 ${pendingCloseTabData.length} 个标签`}
+            包含 {pendingCloseIds.length} 个窗格，其中 {pendingCloseLive} 个连接仍活跃。
           </p>
           <p className="text-red-300">关闭后，{pendingCloseLive} 个活跃连接将立即断开。</p>
         </ConfirmDialog>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../state/app-store';
 import { TunnelEditor } from './TunnelEditor';
+import { Dialog } from './Dialog';
 import { ConfirmDialog } from './ConfirmDialog';
 import { START_MODE_LABEL, startModeOf, tunnelDisplayName } from '../state/tunnel-utils';
 import type { AuthSpec, SessionRecord, TunnelDef } from '../term/types';
@@ -109,14 +110,14 @@ function ConnectForm({ initial }: { initial: SessionRecord | null }) {
   const input = 'w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1';
 
   return (
-    <div
-      className="fixed inset-0 z-10 flex items-center justify-center bg-black/60"
-      role="dialog"
-      aria-modal="true"
-      aria-label="新建/编辑会话"
+    <Dialog
+      title={initial ? '编辑会话' : '新建 SSH 连接'}
+      onClose={close}
+      closeOnBackdrop={false}
+      backdropClass="z-10"
+      panelClass="w-[26rem] rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
     >
-      <div className="w-[26rem] rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl">
-        <h2 className="mb-2 text-base font-semibold">{initial ? '编辑会话' : '新建 SSH 连接'}</h2>
+      <h2 className="mb-2 text-base font-semibold">{initial ? '编辑会话' : '新建 SSH 连接'}</h2>
 
         {/* §9.1 双入口之一：服务器编辑器标签页 */}
         <div className="mb-3 flex gap-1 border-b border-neutral-800" role="tablist">
@@ -293,8 +294,7 @@ function ConnectForm({ initial }: { initial: SessionRecord | null }) {
             {save ? '保存并连接' : '连接'}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }
 
