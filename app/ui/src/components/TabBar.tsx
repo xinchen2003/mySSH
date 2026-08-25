@@ -22,6 +22,7 @@ export function TabBar() {
   const sftpOpen = useAppStore((s) => s.sftpOpen);
   const metricsOpen = useAppStore((s) => s.metricsOpen);
   const toggleMetrics = useAppStore((s) => s.toggleMetrics);
+  const bellTabs = useAppStore((s) => s.bellTabs);
 
   const activeTab = tabs.find((t) => t.id === activeId);
   /** 标签右键菜单（批次四 10.3） */
@@ -131,6 +132,10 @@ export function TabBar() {
           >
             <span className={`h-1.5 w-1.5 rounded-full ${STATE_DOT[pane?.state ?? ''] ?? ''}`} />
             <span className="max-w-40 truncate">{t.title}</span>
+            {/* 12.6：bell 待读标记（非活跃标签收到 BEL；激活即清，静态点无动画） */}
+            {bellTabs.includes(t.id) && (
+              <span className="h-1.5 w-1.5 rounded-full bg-blue-400" title="终端响铃" />
+            )}
             <button
               className="ml-1 hidden text-neutral-500 hover:text-neutral-200 group-hover:inline"
               onClick={(e) => {

@@ -1,12 +1,17 @@
 import { useMemo, useRef, useState } from 'react';
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 
 import { fuzzyMatchAny } from '../term/fuzzy';
 import { KEY_ACTIONS, keymapFromSettings } from '../term/keymap';
+import { reconnectRegistry } from '../term/registry';
+import { BUILTIN_THEMES } from '../term/themes';
 import { useAppStore } from '../state/app-store';
+import { GROUP_KEYS, readStringList, sshCommand } from '../state/groups';
 
 /**
- * 全局命令面板（Ctrl+Shift+P）：会话模糊检索直连 + 应用动作。
+ * 全局命令面板（Ctrl+Shift+P）：会话/分组/动作三类分区检索。
  * ↑↓ 选择，Enter 执行，Esc 关闭。导出加密/配置导入需二级输入（口令/路径）。
+ * 12.4：pane/标签/服务器级动作扩展；动作项右侧展示生效快捷键。
  */
 
 interface Action {
@@ -27,6 +32,20 @@ function shortcutOf(a: Action, settings: Record<string, unknown>): string {
   if (!b) return '命令';
   const alias = KEY_ACTIONS.find((x) => x.id === a.keyId)?.alias;
   return b + (alias ? ` / ${alias}` : '');
+}
+
+/** 取活跃标签与其活跃 pane；无则 null（动作守卫共用） */
+function activeTabPane() {
+  const s = useAppStore.getState();
+  const tab = s.tabs.find((t) => t.id === s.activeId);
+  if (!tab) return null;
+  return { s, tab, paneId: tab.activePaneId };
+}
+
+/** 活跃标签的会话档案 id（session 目标才有） */
+function activeSessionId(): string | null {
+  const ctx = activeTabPane();
+  return ctx && ctx.tab.target.kind === 'session' ? ctx.tab.target.sessionId : null;
 }
 
 /** 由外层 {paletteOpen && <CommandPalette/>} 控制挂载——重挂载即重置态，无需 effect 重置 */
@@ -60,25 +79,126 @@ export function CommandPalette() {
   const actions = useMemo<Action[]>(
     () => [
       { id: 'a-new', label: '新建会话', keyId: 'newTab', run: () => openConnect() },
-      { id: 'a-tunnel', label: '隧道面板', keyId: 'tunnels', run: () => toggleTunnelPanel() },
+      {
+        id: 'a-reconnect-pane',
+        label: '重新连接当前 pane',
+        run: () => {
+          const ctx = activeTabPane();
+          if (ctx) reconnectRegistry.get(ctx.paneId)?.();
+        },
+      },
+      {
+        id: 'a-disconnect-pane',
+        label: '断开当前连接',
+        run: () => {
+          const ctx = activeTabPane();
+          if (ctx) ctx.s.disconnectPane(ctx.tab.id, ctx.paneId);
+        },
+      },
+      {
+        id: 'a-close-pane',
+        label: '关闭当前 pane',
+        run: () => {
+          const ctx = activeTabPane();
+          if (ctx) ctx.s.closePane(ctx.tab.id, ctx.paneId);
+        },
+      },
+      {
+        id: 'a-close-tab',
+        label: '关闭当前标签',
+        keyId: 'closeTab',
+        run: () => {
+          const s = useAppStore.getState();
+          if (s.activeId) s.closeTab(s.activeId);
+        },
+      },
+      {
+        id: 'a-close-other-tabs',
+        label: '关闭其他标签',
+        run: () => {
+          const s = useAppStore.getState();
+          if (s.activeId) s.closeOtherTabs(s.activeId);
+        },
+      },
+      {
+        id: 'a-split-row',
+        label: '向右分屏',
+        keyId: 'splitRow',
+        run: () => useAppStore.getState().splitActive('row'),
+      },
+      {
+        id: 'a-split-col',
+        label: '向下分屏',
+        keyId: 'splitCol',
+        run: () => useAppStore.getState().splitActive('col'),
+      },
       {
         id: 'a-sftp',
-        label: 'SFTP 面板开关（当前标签）',
+        label: '打开当前服务器 SFTP',
         keyId: 'sftp',
         run: () => toggleSftpActive(),
       },
       {
         id: 'a-metrics',
-        label: '监控面板开关（当前标签）',
+        label: '打开当前服务器监控',
         keyId: 'metrics',
         run: () => toggleMetricsActive(),
       },
       {
-        id: 'a-settings',
-        label: '设置',
-        keyId: 'settings',
-        run: () => useAppStore.getState().toggleSettings(),
+        id: 'a-tunnel',
+        label: '管理当前服务器隧道',
+        keyId: 'tunnels',
+        run: () => toggleTunnelPanel(),
       },
+      {
+        id: 'a-favorite',
+        label: '收藏当前服务器（切换）',
+        run: () => {
+          const sid = activeSessionId();
+          if (sid) useAppStore.getState().toggleFavorite(sid);
+          else useAppStore.getState().notify('当前标签不是服务器档案连接', 'warning');
+        },
+      },
+      {
+        id: 'a-detach',
+        label: '分离窗口（当前服务器）',
+        run: () => {
+          const sid = activeSessionId();
+          const ctx = activeTabPane();
+          if (sid && ctx) ctx.s.connectInNewWindow(sid, ctx.tab.title);
+          else useAppStore.getState().notify('当前标签不是服务器档案连接', 'warning');
+        },
+      },
+      {
+        id: 'a-copy-ssh',
+        label: '复制 SSH 命令（当前服务器）',
+        run: () => {
+          const sid = activeSessionId();
+          const s = useAppStore.getState();
+          const rec = sid ? s.sessions.find((x) => x.id === sid) : undefined;
+          if (!rec) {
+            s.notify('当前标签不是服务器档案连接', 'warning');
+            return;
+          }
+          void writeText(sshCommand(rec, s.sessions)).then(
+            () => s.notify('SSH 命令已复制', 'success'),
+            (e: unknown) => s.notify(`复制失败: ${String(e)}`, 'error'),
+          );
+        },
+      },
+      {
+        id: 'a-theme',
+        label: '切换主题（循环内置主题）',
+        run: () => {
+          const s = useAppStore.getState();
+          const cur = typeof s.settings['theme'] === 'string' ? s.settings['theme'] : 'one-dark';
+          const idx = BUILTIN_THEMES.findIndex((t) => t.id === cur);
+          const next = BUILTIN_THEMES[(idx + 1) % BUILTIN_THEMES.length];
+          s.setSetting('theme', next.id);
+          s.notify(`主题：${next.label}`, 'success');
+        },
+      },
+      { id: 'a-settings', label: '设置', keyId: 'settings', run: () => useAppStore.getState().toggleSettings() },
       { id: 'a-sidebar', label: '侧栏开关', run: () => toggleSidebar() },
       {
         id: 'a-imp-ssh',
@@ -107,6 +227,7 @@ export function CommandPalette() {
 
   type Item =
     | { kind: 'session'; id: string; label: string; hint: string; score: number }
+    | { kind: 'group'; path: string; score: number }
     | { kind: 'action'; action: Action; score: number };
 
   const items = useMemo<Item[]>(() => {
@@ -119,21 +240,40 @@ export function CommandPalette() {
           id: s.id,
           label: s.name,
           hint: `${s.username}@${s.host}:${s.port}`,
-          score: score + 100_000, // 会话优先于动作
+          score,
         });
+    }
+    // 分组（12.4 分区）：唯一非空 groupPath，选中即打开侧栏并展开
+    const groups = [...new Set(sessions.map((s) => s.groupPath).filter((g) => g !== ''))];
+    for (const g of groups) {
+      const score = fuzzyMatchAny(query, [g]);
+      if (score !== null) out.push({ kind: 'group', path: g, score });
     }
     for (const a of actions) {
       const score = fuzzyMatchAny(query, [a.label]);
       if (score !== null) out.push({ kind: 'action', action: a, score });
     }
-    out.sort((x, y) => y.score - x.score);
-    return out.slice(0, 12);
+    // 分区内按分数排序；区间固定 服务器 → 分组 → 操作
+    const rank = (i: Item) => (i.kind === 'session' ? 0 : i.kind === 'group' ? 1 : 2);
+    out.sort((x, y) => rank(x) - rank(y) || y.score - x.score);
+    return out.slice(0, 30);
   }, [query, sessions, actions]);
 
   const execute = (item: Item) => {
     if (item.kind === 'session') {
       const s = sessions.find((x) => x.id === item.id);
       if (s) connectBySession(s.id, s.name);
+      toggle();
+      return;
+    }
+    if (item.kind === 'group') {
+      const s = useAppStore.getState();
+      if (!s.sidebarOpen) s.toggleSidebar();
+      const collapsed = readStringList(s.settings[GROUP_KEYS.collapsed]);
+      s.setGroupList(
+        'groups.collapsed',
+        collapsed.filter((g) => g !== item.path && !g.startsWith(item.path + '/')),
+      );
       toggle();
       return;
     }
@@ -172,6 +312,10 @@ export function CommandPalette() {
     }
   };
 
+  /** 分区标题（item 与上一个 kind 不同即插入） */
+  const sectionOf = (item: Item): string | null =>
+    item.kind === 'session' ? '服务器' : item.kind === 'group' ? '分组' : '操作';
+
   return (
     <div
       className="fixed inset-0 z-30 flex items-start justify-center bg-black/50 pt-24"
@@ -200,7 +344,7 @@ export function CommandPalette() {
             ref={inputRef}
             autoFocus
             className="w-full border-b border-neutral-800 bg-neutral-900 px-4 py-3 text-sm text-neutral-200 outline-none"
-            placeholder="检索会话或命令…"
+            placeholder="检索会话、分组或命令…"
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
@@ -213,7 +357,12 @@ export function CommandPalette() {
           <ul className="max-h-80 overflow-y-auto py-1">
             {items.length === 0 && <li className="px-4 py-3 text-xs text-neutral-600">无匹配</li>}
             {items.map((item, i) => (
-              <li key={item.kind === 'session' ? item.id : item.action.id}>
+              <li key={item.kind === 'action' ? item.action.id : item.kind === 'group' ? `g:${item.path}` : item.id}>
+                {(i === 0 || sectionOf(items[i - 1] ?? item) !== sectionOf(item)) && (
+                  <div className="px-4 pt-1.5 pb-0.5 text-[10px] text-neutral-600">
+                    {sectionOf(item)}
+                  </div>
+                )}
                 <button
                   className={`flex w-full items-center justify-between px-4 py-2 text-left text-sm ${
                     i === index ? 'bg-blue-600/30 text-neutral-100' : 'text-neutral-300'
@@ -221,9 +370,19 @@ export function CommandPalette() {
                   onMouseEnter={() => setIndex(i)}
                   onClick={() => execute(item)}
                 >
-                  <span>{item.kind === 'session' ? item.label : item.action.label}</span>
+                  <span>
+                    {item.kind === 'session'
+                      ? item.label
+                      : item.kind === 'group'
+                        ? `📁 ${item.path}`
+                        : item.action.label}
+                  </span>
                   <span className="text-xs text-neutral-500">
-                    {item.kind === 'session' ? item.hint : shortcutOf(item.action, settings)}
+                    {item.kind === 'session'
+                      ? item.hint
+                      : item.kind === 'group'
+                        ? '分组'
+                        : shortcutOf(item.action, settings)}
                   </span>
                 </button>
               </li>

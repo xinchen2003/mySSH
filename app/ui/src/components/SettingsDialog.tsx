@@ -138,7 +138,32 @@ export function SettingsDialog() {
               />
               <span className="text-neutral-500">关闭有活动连接的标签前确认（默认开启）</span>
             </span>
+            <label htmlFor="set-bell">终端响铃提示</label>
+            <span className="flex items-center gap-2">
+              <input
+                id="set-bell"
+                type="checkbox"
+                checked={settings['terminal.bell'] !== false}
+                onChange={(e) => setSetting('terminal.bell', e.target.checked)}
+              />
+              <span className="text-neutral-500">
+                终端 BEL 时标记标签；窗口非活动时闪烁任务栏（默认开启）
+              </span>
+            </span>
           </div>
+        </section>
+
+        <section className="mb-4">
+          <h3 className="mb-1.5 font-semibold text-neutral-200">界面</h3>
+          <label className="flex items-center gap-2" htmlFor="set-statusbar">
+            <input
+              id="set-statusbar"
+              type="checkbox"
+              checked={settings['ui.statusBar'] !== false}
+              onChange={(e) => setSetting('ui.statusBar', e.target.checked)}
+            />
+            <span className="text-neutral-500">显示状态栏（连接数/隧道数/当前服务器，默认开启）</span>
+          </label>
         </section>
 
         <section className="mb-4">

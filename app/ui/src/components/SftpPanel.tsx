@@ -257,8 +257,23 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       void refreshLocal('');
     });
     const events = new Channel<{ transfers: TransferView[] }>();
-    events.onmessage = (f) => setTransfers(f.transfers);
+    // 12.2 状态栏：顺带发布全局活跃传输数（复用既有订阅，无新增轮询）；
+    // 只数本次运行的非终态任务，history 帧不计
+    events.onmessage = (f) => {
+      setTransfers(f.transfers);
+      useAppStore
+        .getState()
+        .setTransferActive(
+          f.transfers.filter(
+            (t) =>
+              !t.history && (t.state === 'queued' || t.state === 'running' || t.state === 'paused'),
+          ).length,
+        );
+    };
     void invoke('transfer_subscribe', { sessionId, events });
+    return () => {
+      useAppStore.getState().setTransferActive(null);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 

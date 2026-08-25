@@ -277,3 +277,61 @@ describe('通知分级生命周期（7.7）', () => {
     expect(state().notices[1].message).toBe('i2'); // 最旧的 info 先丢
   });
 });
+describe('批次六：通知动作 / bell / disconnectPane / 传输计数', () => {
+  it('notify 可携带可序列化动作（不含函数引用）', () => {
+    state().notify('已导出: /tmp/x.json', 'success', {
+      label: '打开所在目录',
+      actionId: 'open-in-explorer',
+      arg: '/tmp/x.json',
+    });
+    const n = state().notices[0];
+    expect(n.action).toEqual({
+      label: '打开所在目录',
+      actionId: 'open-in-explorer',
+      arg: '/tmp/x.json',
+    });
+    // 可序列化契约：结构化克隆不丢字段
+    expect(JSON.parse(JSON.stringify(n))).toEqual(n);
+  });
+
+  it('markBell 去重；setActive 清除该标签标记；关标签顺带清理', () => {
+    const s = state();
+    useAppStore.setState({ settings: { 'terminal.confirmCloseTab': false } });
+    s.connect(spec);
+    s.connect(spec);
+    const [t1, t2] = state().tabs.map((t) => t.id);
+
+    s.markBell(t2);
+    s.markBell(t2);
+    expect(state().bellTabs).toEqual([t2]);
+
+    s.setActive(t2);
+    expect(state().bellTabs).toEqual([]);
+
+    s.markBell(t1);
+    state().requestCloseTabs([t1]);
+    expect(state().bellTabs).toEqual([]);
+  });
+
+  it('disconnectPane 只断活跃 pane 并置 closed；closed pane 幂等', () => {
+    const s = state();
+    s.connect(spec);
+    const tab = state().tabs[0];
+    const pid = tab.activePaneId;
+    s.setPaneState(tab.id, pid, 'connected');
+
+    s.disconnectPane(tab.id, pid);
+    expect(state().tabs[0].panes[pid].state).toBe('closed');
+    // 已 closed 再调用不抛不错位
+    s.disconnectPane(tab.id, pid);
+    expect(state().tabs[0].panes[pid].state).toBe('closed');
+  });
+
+  it('setTransferActive 设置与清空', () => {
+    expect(state().transferActive).toBeNull();
+    state().setTransferActive(3);
+    expect(state().transferActive).toBe(3);
+    state().setTransferActive(null);
+    expect(state().transferActive).toBeNull();
+  });
+});

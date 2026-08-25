@@ -19,12 +19,14 @@ import { useAppStore } from './state/app-store';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { Notices } from './components/Notices';
 import { paneIds } from './term/layout';
+import { StatusBar } from './components/StatusBar';
+import { EmptyState } from './components/EmptyState';
+import { QuickConnectDialog } from './components/QuickConnectDialog';
 
 export function App() {
   const [version, setVersion] = useState('…');
   const tabs = useAppStore((s) => s.tabs);
   const activeId = useAppStore((s) => s.activeId);
-  const openConnect = useAppStore((s) => s.openConnect);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const toggleTunnelPanel = useAppStore((s) => s.toggleTunnelPanel);
   const subscribeTunnels = useAppStore((s) => s.subscribeTunnels);
@@ -118,6 +120,17 @@ export function App() {
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, []);
+  // 窗口标题（12.3）：跟随活跃标签「名称 — mySSH」，无标签时「mySSH」；
+  // detached 子窗口各跑各的 App，同样生效
+  const activeTab = tabs.find((t) => t.id === activeId);
+  const activeTitle = activeTab?.title ?? null;
+  useEffect(() => {
+    const title = activeTitle ? `${activeTitle} — mySSH` : 'mySSH';
+    document.title = title;
+    void getCurrentWindow()
+      .setTitle(title)
+      .catch(() => undefined);
+  }, [activeTitle]);
 
   return (
     <div className="flex h-full flex-col">
@@ -155,14 +168,7 @@ export function App() {
         <Sidebar />
         <div className="relative h-full min-w-0 flex-1">
           {tabs.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-neutral-500">
-              <button
-                className="rounded border border-neutral-700 px-4 py-2 hover:bg-neutral-800"
-                onClick={() => openConnect()}
-              >
-                ＋ 新建 SSH 连接
-              </button>
-            </div>
+            <EmptyState />
           ) : (
             tabs.map((t) => (
               <div
@@ -180,6 +186,7 @@ export function App() {
       {activeId && metricsOpen[activeId] && <MetricsPanel tabId={activeId} />}
       <TunnelPanel />
       <ConnectDialog />
+      <QuickConnectDialog />
       <HostKeyDialog />
       <KiDialog />
       {paletteOpen && <CommandPalette />}
@@ -226,6 +233,7 @@ export function App() {
           <p className="text-red-300">关闭后，{pendingCloseLive} 个活跃连接将立即断开。</p>
         </ConfirmDialog>
       )}
+      <StatusBar />
       <Notices />
     </div>
   );

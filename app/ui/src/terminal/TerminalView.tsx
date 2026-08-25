@@ -7,13 +7,14 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
+import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
 import { useAppStore, type Pane, type Tab } from '../state/app-store';
 import { fitRegistry, reconnectRegistry, termRegistry } from '../term/registry';
 import { resolveTheme } from '../term/themes';
 import { readTerminalSettings } from '../state/apply-settings';
 import { keymapFromSettings, matchAction, matchCombo } from '../term/keymap';
 import type { SessionStateFrame } from '../term/types';
-import { SearchBar } from '../components/SearchBar';
+import { SearchBar, type SearchOptions, type SearchResults } from '../components/SearchBar';
 import { ContextMenu, type MenuItem } from '../components/ContextMenu';
 
 /**
@@ -29,6 +30,8 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  /** 12.7：匹配计数（onDidChangeResults；decorations 开启才有全量统计） */
+  const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
   const setPaneState = useAppStore((s) => s.setPaneState);
   const closePane = useAppStore((s) => s.closePane);
   /** 终态原因（重连耗尽/连接失败）；非空时渲染非阻塞原位操作层 */
@@ -66,6 +69,22 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
     term.loadAddon(new SerializeAddon());
     term.open(host);
     fit.fit();
+
+    // 12.7：搜索结果统计（高亮 decorations 同时是计数来源）
+    search.onDidChangeResults((r) => setSearchResults({ index: r.resultIndex, count: r.resultCount }));
+
+    // 12.6 终端 bell：非活跃标签打标记（激活即清）；窗口非活动时闪任务栏。
+    // 事件驱动，无定时器无动画；terminal.bell=false 全关
+    term.onBell(() => {
+      const s = useAppStore.getState();
+      if (s.settings['terminal.bell'] === false) return;
+      if (s.activeId !== tab.id) s.markBell(tab.id);
+      if (!document.hasFocus()) {
+        void getCurrentWindow()
+          .requestUserAttention(UserAttentionType.Informational)
+          .catch(() => undefined);
+      }
+    });
 
     try {
       term.loadAddon(new WebglAddon());
@@ -235,12 +254,32 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       )}
       {searchOpen && (
         <SearchBar
-          onFind={(q, dir) => {
-            if (!q) return;
-            if (dir === 'next') searchRef.current?.findNext(q, { incremental: true });
-            else searchRef.current?.findPrevious(q);
+          results={searchResults}
+          onFind={(q, dir, opts: SearchOptions) => {
+            if (!q) {
+              searchRef.current?.clearDecorations();
+              setSearchResults(null);
+              return;
+            }
+            // decorations 是 onDidChangeResults 计数的前提；颜色取语义中性
+            const o = {
+              caseSensitive: opts.caseSensitive,
+              wholeWord: opts.wholeWord,
+              decorations: {
+                matchBackground: '#4b5563',
+                matchOverviewRuler: '#9ca3af',
+                activeMatchBackground: '#2563eb',
+                activeMatchColorOverviewRuler: '#60a5fa',
+              },
+            };
+            if (dir === 'next') searchRef.current?.findNext(q, { ...o, incremental: true });
+            else searchRef.current?.findPrevious(q, o);
           }}
-          onClose={() => setSearchOpen(false)}
+          onClose={() => {
+            setSearchOpen(false);
+            searchRef.current?.clearDecorations();
+            setSearchResults(null);
+          }}
         />
       )}
       {menu && (

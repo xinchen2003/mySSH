@@ -1,0 +1,99 @@
+import { useState } from 'react';
+import { Dialog } from './Dialog';
+import { useAppStore } from '../state/app-store';
+
+const inputCls =
+  'w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-200 outline-none focus:border-neutral-500';
+
+/**
+ * 快速连接（12.5 空态）：不保存档案的临时连接。
+ * 密码留空走 keyboard-interactive（服务端届时经 KiDialog 逐题询问）。
+ */
+export function QuickConnectDialog() {
+  const open = useAppStore((s) => s.quickConnectOpen);
+  const toggle = useAppStore((s) => s.toggleQuickConnect);
+  if (!open) return null;
+  return <QuickConnectForm onClose={toggle} />;
+}
+
+function QuickConnectForm({ onClose }: { onClose: () => void }) {
+  const [host, setHost] = useState('');
+  const [port, setPort] = useState('22');
+  const [user, setUser] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  const submit = () => {
+    const p = Number(port);
+    if (!host.trim() || !user.trim()) {
+      setError('主机和用户名必填');
+      return;
+    }
+    if (!Number.isInteger(p) || p < 1 || p > 65535) {
+      setError('端口无效');
+      return;
+    }
+    useAppStore.getState().connect({
+      host: host.trim(),
+      port: p,
+      user: user.trim(),
+      auth: password ? { type: 'password', password } : { type: 'keyboardInteractive' },
+    });
+    onClose();
+  };
+
+  return (
+    <Dialog title="快速连接" onClose={onClose} enterAction={submit} panelClass="w-96">
+      <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2 text-xs text-neutral-400">
+        <label htmlFor="qc-host">主机</label>
+        <input
+          id="qc-host"
+          data-autofocus
+          className={inputCls}
+          placeholder="192.168.1.10 或 server.example.com"
+          value={host}
+          onChange={(e) => setHost(e.target.value)}
+        />
+        <label htmlFor="qc-port">端口</label>
+        <input
+          id="qc-port"
+          className={inputCls}
+          value={port}
+          onChange={(e) => setPort(e.target.value)}
+        />
+        <label htmlFor="qc-user">用户名</label>
+        <input
+          id="qc-user"
+          className={inputCls}
+          value={user}
+          onChange={(e) => setUser(e.target.value)}
+        />
+        <label htmlFor="qc-pass">密码</label>
+        <input
+          id="qc-pass"
+          type="password"
+          className={inputCls}
+          placeholder="留空则连接时询问"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+      </div>
+      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+      <p className="mt-2 text-xs text-neutral-600">临时连接，不保存为服务器档案。</p>
+      <div className="mt-3 flex justify-end gap-2 text-xs">
+        <button
+          className="rounded px-3 py-1 text-neutral-400 hover:bg-neutral-800"
+          onClick={onClose}
+        >
+          取消
+        </button>
+        <button
+          className="rounded bg-blue-700 px-3 py-1 text-white hover:bg-blue-600"
+          onClick={submit}
+        >
+          连接
+        </button>
+      </div>
+    </Dialog>
+  );
+}

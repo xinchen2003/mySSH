@@ -35,6 +35,8 @@ export interface Notice {
   id: number;
   level: NotificationLevel;
   message: string;
+  /** 可序列化动作（12.1）：label 展示，actionId 经 notice-actions 注册表分发，arg 为上下文 */
+  action?: { label: string; actionId: string; arg?: string };
 }
 
 /** 各级别自动消失时长（ms）；null = 常驻手动关闭 */
@@ -91,10 +93,25 @@ interface AppStore {
   /** 命令面板（Ctrl+Shift+P） */
   paletteOpen: boolean;
   togglePalette(): void;
-  /** 分级通知堆叠（toast） */
+  /** 分级通知堆叠（toast）；12.1：可选可序列化动作（actionId 经 notice-actions 注册表分发） */
   notices: Notice[];
-  notify(message: string, level?: NotificationLevel): void;
+  notify(
+    message: string,
+    level?: NotificationLevel,
+    action?: { label: string; actionId: string; arg?: string },
+  ): void;
   dismissNotice(id: number): void;
+  /** 终端 bell 待读标签（12.6）：激活即清 */
+  bellTabs: string[];
+  markBell(tabId: string): void;
+  /** 全局传输活跃数（12.2 状态栏）：由 SFTP 面板现有订阅顺带发布；null=无订阅来源不显示 */
+  transferActive: number | null;
+  setTransferActive(n: number | null): void;
+  /** 快速连接对话框（12.5 空态；不保存档案的临时连接） */
+  quickConnectOpen: boolean;
+  toggleQuickConnect(): void;
+  /** 断开单个 pane（12.4 命令面板「断开当前连接」；终态 closed，终端内容保留） */
+  disconnectPane(tabId: string, paneId: string): void;
   /** 待确认删除的会话档案（删除会级联清凭据，必须确认） */
   pendingDeleteSession: SessionRecord | null;
   requestDeleteSession(rec: SessionRecord): void;
@@ -206,10 +223,11 @@ export const useAppStore = create<AppStore>((set, get) => {
     const tab = tabs.find((t) => t.id === id);
     if (tab) for (const pid of paneIds(tab.layout)) void tab.panes[pid]?.session.close();
     const next = tabs.filter((t) => t.id !== id);
-    set({
+    set((s) => ({
       tabs: next,
       activeId: activeId === id ? (next[next.length - 1]?.id ?? null) : activeId,
-    });
+      bellTabs: s.bellTabs.filter((t) => t !== id),
+    }));
   };
 
   const makePane = (tabId: string): Pane => {
@@ -428,11 +446,27 @@ export const useAppStore = create<AppStore>((set, get) => {
 
     paletteOpen: false,
     togglePalette: () => set((s) => ({ paletteOpen: !s.paletteOpen })),
+    quickConnectOpen: false,
+    toggleQuickConnect: () => set((s) => ({ quickConnectOpen: !s.quickConnectOpen })),
+    bellTabs: [],
+    markBell: (tabId) =>
+      set((s) => (s.bellTabs.includes(tabId) ? {} : { bellTabs: [...s.bellTabs, tabId] })),
+    transferActive: null,
+    setTransferActive: (n) => set({ transferActive: n }),
+    disconnectPane: (tabId, paneId) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      const pane = tab?.panes[paneId];
+      if (!tab || !pane) return;
+      if (pane.state === 'connected' || pane.state === 'connecting' || pane.state === 'reconnecting') {
+        void pane.session.close();
+        get().setPaneState(tabId, paneId, 'closed');
+      }
+    },
     notices: [],
-    notify: (message, level = 'info') => {
+    notify: (message, level = 'info', action) => {
       const id = noticeSeq++;
       set((s) => {
-        const notices = [...s.notices, { id, level, message }];
+        const notices = [...s.notices, { id, level, message, action }];
         while (notices.length > MAX_NOTICES) {
           const idx = notices.findIndex((n) => n.level !== 'error');
           const [dropped] = notices.splice(idx >= 0 ? idx : 0, 1);
@@ -565,7 +599,12 @@ export const useAppStore = create<AppStore>((set, get) => {
           encrypted,
           passphrase: passphrase ?? null,
         });
-        get().notify(`已导出: ${r.path}`, 'success');
+        // 12.1：通知附加动作（actionId 注册表分发，arg 为导出文件路径）
+        get().notify(`已导出: ${r.path}`, 'success', {
+          label: '打开所在目录',
+          actionId: 'open-in-explorer',
+          arg: r.path,
+        });
       } catch (e) {
         get().notify(`导出失败: ${String(e)}`, 'error');
       }
@@ -631,7 +670,9 @@ export const useAppStore = create<AppStore>((set, get) => {
       }));
     },
 
-    setActive: (id) => set({ activeId: id }),
+    // 激活即清 bell 待读标记（12.6）
+    setActive: (id) =>
+      set((s) => ({ activeId: id, bellTabs: s.bellTabs.filter((t) => t !== id) })),
 
     moveTab: (dragId, targetId) =>
       set((s) => {
