@@ -1,95 +1,97 @@
 # mySSH
 
-Windows 桌面 SSH 客户端，对标 Xshell / FinalShell。本地优先、无需登录、无云端依赖。
+English | [简体中文](README.zh-CN.md)
 
-Tauri 2（Rust 后端 + WebView2）+ React 前端。
+A local-first SSH client for Windows. No login, no cloud dependency.
 
-## 功能
+Built with Tauri 2 (Rust backend + WebView2) and a React frontend.
 
-- **终端**：多标签 + 任意方向分屏、标签拖拽重排/分离为独立窗口、断线自动重连、真彩色 / Unicode 宽字符 / 鼠标上报 / 括号粘贴 / 搜索 / 超链接；终端间输入广播（可选按服务器过滤）
-- **会话管理**：分组树（嵌套分组、拖拽移动）、标签、收藏、模糊搜索、命令面板（Ctrl+Shift+P）；密码 / 公钥（OpenSSH + PuTTY .ppk）/ keyboard-interactive（2FA）/ agent 认证；跳板机多级 ProxyJump；known_hosts 首次连接与密钥变更弹窗确认
-- **凭据安全**：Windows DPAPI 加密保险库，凭据永不明文落盘、不出现在日志与导出明文包中
-- **隧道**：本地 / 远程 / 动态 SOCKS5 端口转发，开机自启、随会话自动建立、断线自动恢复；独立的 SSH 连接（与交互终端传输层隔离，大流量不卡终端）
-- **SFTP**：左右分栏文件管理器，本地/远程双向拖拽、OS 文件直接拖入上传（含文件夹递归）；队列化传输（并发控制、断点续传、失败重试）、跨会话传输历史；与终端当前目录联动（OSC 7）；远程文件直编（本地编辑器打开、保存自动回传）
-- **监控**：CPU / 内存 / 磁盘 / 网络实时图表（独立采样通道，采集失败静默降级）
-- **导入导出**：OpenSSH config / PuTTY 注册表 / Xshell / FinalShell 会话导入；配置导出（明文或 Argon2id+AES-256-GCM 口令加密）
-- **主题**：多套配色（暗色/浅色/Nord 等），UI 与终端配色独立
+## Features
 
-## 技术栈
+- **Terminal**: tabs, split panes in any direction, drag tabs out into separate windows, auto-reconnect, true color / wide Unicode / mouse reporting / bracketed paste / search / hyperlinks; optional input broadcasting across terminals (filterable by server)
+- **Sessions**: nested group tree (drag & drop), tags, favorites, fuzzy search, command palette (Ctrl+Shift+P); password / public-key (OpenSSH & .ppk) / keyboard-interactive (2FA) / agent auth; multi-hop ProxyJump; known_hosts confirmation on first connect and key change
+- **Credential safety**: Windows DPAPI vault — credentials never hit disk in plaintext, never appear in logs or plaintext exports
+- **Tunnels**: local / remote / dynamic SOCKS5 forwarding, auto-start, auto-recover on disconnect; runs on a dedicated SSH connection isolated from interactive terminals
+- **SFTP**: dual-pane file manager, bidirectional drag & drop (including OS files and folders), queued transfers (concurrency control, resume, retry), cross-session transfer history, remote file editing (open in local editor, auto-upload on save), follows the terminal's working directory (OSC 7)
+- **Monitoring**: live CPU / memory / disk / network charts on an isolated channel, silently degrades on failure
+- **Import / Export**: import sessions from common SSH client formats; export config in plaintext or passphrase-encrypted (Argon2id + AES-256-GCM)
+- **Themes**: multiple color schemes (dark / light / Nord and more), UI and terminal palettes independent
 
-| 层 | 选型 |
+## Tech Stack
+
+| Layer | Choice |
 |---|---|
-| 桌面框架 | Tauri 2.11（Rust + WebView2） |
-| 前端 | TypeScript + React 19 + Vite + zustand + Tailwind 4 |
-| 终端渲染 | xterm.js 6 + WebGL addon（canvas 降级） |
+| Desktop | Tauri 2.11 (Rust + WebView2) |
+| Frontend | TypeScript + React 19 + Vite + zustand + Tailwind 4 |
+| Terminal | xterm.js 6 + WebGL addon (canvas fallback) |
 | SSH | russh 0.62 / russh-sftp 2.4 |
-| 存储 | SQLite（sqlx）+ DPAPI 凭据保险库 |
-| 异步 | tokio |
+| Storage | SQLite (sqlx) + DPAPI credential vault |
+| Async | tokio |
 
-## 构建
+## Build
 
-依赖：Rust stable、Node.js 20+、Windows 10/11（WebView2 Runtime，Win11 预装）。
+Requirements: Rust stable, Node.js 20+, Windows 10/11 (WebView2 Runtime).
 
 ```bash
-# 前端
+# Frontend
 cd app/ui
 npm install
 npm run build
 
-# 桌面应用（release 可执行文件）
+# Desktop app (release binary)
 cargo build -p app --release
-# 产物：target/release/app.exe
+# Output: target/release/app.exe
 
-# 安装包（NSIS + MSI）
-app/ui/node_modules/.bin/tauri.cmd build   # 在仓库根执行
-# 产物：target/release/bundle/
+# Installers (NSIS + MSI) — run from repo root
+app/ui/node_modules/.bin/tauri.cmd build
+# Output: target/release/bundle/
 ```
 
-开发模式（热重载）：
+Dev mode with hot reload:
 
 ```bash
 cd app/ui && npm run dev        # Vite dev server
-cargo run -p app                # 另开终端
+cargo run -p app                # in another terminal
 ```
 
-## 测试与质量
+## Tests & Quality
 
 ```bash
-# Rust（仓库根）
+# Rust (repo root)
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
-# 前端（app/ui 下）
+# Frontend (app/ui)
 npm run lint
 npm test
 ```
 
-工程约束：非测试代码禁止 `unwrap`/`expect`（例外须附 `// SAFETY:` 注释）、禁止 `unsafe`；终端数据走 Tauri Channel 二进制流式推送（非 JSON 事件）；隧道/SFTP 使用独立 SSH 连接，与交互终端传输层隔离。
+Engineering rules: no `unwrap`/`expect` outside tests (exceptions need a `// SAFETY:` comment), no `unsafe`; terminal output streams over a Tauri IPC Channel (binary, not JSON events); tunnels/SFTP run on dedicated SSH connections isolated from interactive terminals.
 
-## 目录结构
+## Project Layout
 
 ```
 crates/
-  app/          Tauri 壳：命令层、IPC 装配
-  core-ssh/     SSH 协议核心（连接、认证、通道）
-  core-tunnel/  端口转发
-  core-sftp/    SFTP 与传输队列
-  core-monitor/ 服务器指标采集
-  core-store/   SQLite 持久化、凭据保险库、导入导出
-  core-policy/  策略
-  cli/          Agent CLI（规划中）
-app/ui/         前端（React + xterm）
+  app/          Tauri shell: command layer, IPC wiring
+  core-ssh/     SSH protocol core (connections, auth, channels)
+  core-tunnel/  Port forwarding
+  core-sftp/    SFTP & transfer queue
+  core-monitor/ Server metrics
+  core-store/   SQLite persistence, credential vault, import/export
+  core-policy/  Policy
+  cli/          Agent CLI (planned)
+app/ui/         Frontend (React + xterm)
 ```
 
-## 数据位置
+## Data Location
 
-`%LOCALAPPDATA%\myssh\`：`myssh.db`（SQLite，会话/隧道/传输历史等元数据）、凭据（DPAPI 加密，绑定当前 Windows 用户与机器）、`known_hosts`、`logs/`。
+`%LOCALAPPDATA%\myssh\`: `myssh.db` (SQLite: sessions, tunnels, transfer history), credentials (DPAPI-encrypted, bound to the current Windows user and machine), `known_hosts`, `logs/`.
 
-## 路线图
+## Roadmap
 
-- MCP Server / CLI：作为 AI agent 操作服务器的受控执行层（规划中）
+- MCP Server / CLI: a controlled execution layer for AI agents to operate servers
 
-## 许可证
+## License
 
 [Apache License 2.0](LICENSE)
