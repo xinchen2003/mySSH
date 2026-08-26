@@ -92,4 +92,4 @@ app/ui/         前端（React + xterm）
 
 ## 许可证
 
-暂未选择开源许可证。
+[Apache License 2.0](LICENSE)
