@@ -16,6 +16,44 @@ const TAB_LABEL: Record<EditorTab, string> = {
   jump: '跳板链',
   tunnels: '隧道',
 };
+/** session_test_connect 请求（Rust TestConnectRequest，serde camelCase） */
+interface TestConnectRequest {
+  sessionId?: string;
+  host: string;
+  port: number;
+  user: string;
+  /** 与 SessionRecord.authType 相同的 serde 形式（'publickey' / 'keyboard-interactive'） */
+  authType: SessionRecord['authType'];
+  password?: string;
+  keyPath?: string;
+  passphrase?: string;
+  jumpChain?: string[];
+}
+
+/** session_test_connect 返回（Ok 值，不 Err） */
+interface TestConnectResult {
+  ok: boolean;
+  latencyMs?: number;
+  error?: string;
+}
+
+type TestState =
+  | { phase: 'idle' }
+  | { phase: 'testing' }
+  | { phase: 'ok'; latencyMs: number | null }
+  | { phase: 'err'; message: string };
+
+/** 标签颜色预设（选「无」= null） */
+const PRESET_COLORS = [
+  '#e5484d',
+  '#e93d82',
+  '#ab4aba',
+  '#6e56cf',
+  '#3e63dd',
+  '#0090ff',
+  '#12a594',
+  '#30a46c',
+];
 
 /** 新建/编辑会话对话框。key=id 重挂载重置表单（editing 预填）。 */
 export function ConnectDialog() {
@@ -47,7 +85,8 @@ function ConnectForm({
 
   const [tab, setTab] = useState<EditorTab>('basic');
   const [name, setName] = useState(initial?.name ?? '');
-  const [groupPath, setGroupPath] = useState(initial?.groupPath ?? presetGroup ?? '');
+  const [nameTouched, setNameTouched] = useState(false);
+  const [color, setColor] = useState<string | null>(initial?.color ?? null);
   const [host, setHost] = useState(initial?.host ?? '127.0.0.1');
   const [port, setPort] = useState(initial?.port ?? 22);
   const [user, setUser] = useState(initial?.username ?? '');
@@ -65,6 +104,50 @@ function ConnectForm({
   const [save, setSave] = useState(initial !== null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [test, setTest] = useState<TestState>({ phase: 'idle' });
+
+  // 新建时名称跟随 用户@主机；用户手动改过后停止跟随（编辑已有会话不跟随）。
+  // 在 host/user 的 onChange 里同步推导，避免 effect 里同步 setState（react-hooks v6）
+  const followName = (u: string, h: string) => {
+    if (initial || nameTouched) return;
+    const ut = u.trim();
+    const ht = h.trim();
+    setName(ut && ht ? `${ut}@${ht}` : '');
+  };
+
+  /** 按表单当前值测试连接；不改表单状态，结果内联显示 */
+  const testConnect = async () => {
+    setTest({ phase: 'testing' });
+    try {
+      const req: TestConnectRequest = {
+        host: host.trim(),
+        port,
+        user: user.trim(),
+        authType:
+          kind === 'publicKey'
+            ? 'publickey'
+            : kind === 'keyboardInteractive'
+              ? 'keyboard-interactive'
+              : kind,
+      };
+      // 编辑已有会话且密码留空时，后端按 sessionId 回退保险库
+      if (initial) req.sessionId = initial.id;
+      if (kind === 'password' && password) req.password = password;
+      if (kind === 'publicKey') {
+        if (keyPath.trim()) req.keyPath = keyPath.trim();
+        if (passphrase) req.passphrase = passphrase;
+      }
+      if (jumpChain.length > 0) req.jumpChain = jumpChain;
+      const r = await invoke<TestConnectResult>('session_test_connect', { req });
+      setTest(
+        r.ok
+          ? { phase: 'ok', latencyMs: r.latencyMs ?? null }
+          : { phase: 'err', message: r.error ?? '连接失败' },
+      );
+    } catch (e) {
+      setTest({ phase: 'err', message: String(e) });
+    }
+  };
 
   const submit = async () => {
     setError(null);
@@ -101,7 +184,9 @@ function ConnectForm({
               : kind,
         keyPath: kind === 'publicKey' ? keyPath.trim() : null,
         jumpChain,
-        groupPath: groupPath.trim(),
+        // 分组不再表单编辑：静默保留 preset（分组菜单新建）或原值
+        groupPath: presetGroup ?? initial?.groupPath ?? '',
+        color,
         tags: initial?.tags ?? [],
         command: initial?.command ?? null,
         createdAt: initial?.createdAt ?? '',
@@ -156,25 +241,52 @@ function ConnectForm({
         {tab === 'basic' && (
           <>
             {save && (
-              <div className="flex gap-2">
-                <label className="flex-1">
-                  <span className="mb-0.5 block text-xs text-neutral-400">名称</span>
-                  <input
-                    className={input}
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="缺省取 用户@主机"
-                  />
-                </label>
-                <label className="w-28">
-                  <span className="mb-0.5 block text-xs text-neutral-400">分组</span>
-                  <input
-                    className={input}
-                    value={groupPath}
-                    onChange={(e) => setGroupPath(e.target.value)}
-                    placeholder="生产/华东"
-                  />
-                </label>
+              <label>
+                <span className="mb-0.5 block text-xs text-neutral-400">名称</span>
+                <input
+                  className={input}
+                  value={name}
+                  onChange={(e) => {
+                    setNameTouched(true);
+                    setName(e.target.value);
+                  }}
+                  placeholder="缺省取 用户@主机"
+                />
+              </label>
+            )}
+            {save && (
+              <div>
+                <span className="mb-0.5 block text-xs text-neutral-400">标签颜色</span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    title="无"
+                    aria-label="无颜色"
+                    className={`flex h-5 w-5 items-center justify-center rounded-full border border-neutral-600 text-[10px] leading-none text-neutral-500 ${
+                      color === null
+                        ? 'ring-2 ring-neutral-200 ring-offset-1 ring-offset-neutral-900'
+                        : ''
+                    }`}
+                    onClick={() => setColor(null)}
+                  >
+                    ∅
+                  </button>
+                  {PRESET_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      title={c}
+                      aria-label={`颜色 ${c}`}
+                      style={{ backgroundColor: c }}
+                      className={`h-5 w-5 rounded-full ${
+                        color === c
+                          ? 'ring-2 ring-neutral-200 ring-offset-1 ring-offset-neutral-900'
+                          : ''
+                      }`}
+                      onClick={() => setColor(c)}
+                    />
+                  ))}
+                </div>
               </div>
             )}
             <div className="flex gap-2">
@@ -183,7 +295,10 @@ function ConnectForm({
                 <input
                   className={input}
                   value={host}
-                  onChange={(e) => setHost(e.target.value)}
+                  onChange={(e) => {
+                    setHost(e.target.value);
+                    followName(user, e.target.value);
+                  }}
                   autoFocus
                 />
               </label>
@@ -199,7 +314,14 @@ function ConnectForm({
             </div>
             <label>
               <span className="mb-0.5 block text-xs text-neutral-400">用户名</span>
-              <input className={input} value={user} onChange={(e) => setUser(e.target.value)} />
+              <input
+                className={input}
+                value={user}
+                onChange={(e) => {
+                  setUser(e.target.value);
+                  followName(e.target.value, host);
+                }}
+              />
             </label>
             <label className="mt-1 flex items-center gap-2 text-xs text-neutral-400">
               <input
@@ -291,17 +413,41 @@ function ConnectForm({
         {error && <p className="text-xs text-red-400">{error}</p>}
       </div>
 
-      <div className="mt-2 flex justify-end gap-2">
-        <button className="rounded px-3 py-1 text-neutral-400 hover:bg-neutral-800" onClick={close}>
-          取消
-        </button>
-        <button
-          className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500 disabled:opacity-50"
-          onClick={() => void submit()}
-          disabled={busy || !host.trim() || !user.trim()}
-        >
-          {save ? '保存并连接' : '连接'}
-        </button>
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <button
+            className="shrink-0 rounded border border-neutral-700 px-3 py-1 text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+            onClick={() => void testConnect()}
+            disabled={busy || test.phase === 'testing' || !host.trim() || !user.trim()}
+          >
+            {test.phase === 'testing' ? '测试中…' : '测试连接'}
+          </button>
+          {test.phase === 'ok' && (
+            <span className="truncate text-xs text-green-400">
+              ✓ 连接成功{test.latencyMs !== null ? `（${test.latencyMs}ms）` : ''}
+            </span>
+          )}
+          {test.phase === 'err' && (
+            <span className="truncate text-xs text-red-400" title={test.message}>
+              ✗ {test.message}
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <button
+            className="rounded px-3 py-1 text-neutral-400 hover:bg-neutral-800"
+            onClick={close}
+          >
+            取消
+          </button>
+          <button
+            className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500 disabled:opacity-50"
+            onClick={() => void submit()}
+            disabled={busy || !host.trim() || !user.trim()}
+          >
+            {save ? '保存并连接' : '连接'}
+          </button>
+        </div>
       </div>
     </Dialog>
   );

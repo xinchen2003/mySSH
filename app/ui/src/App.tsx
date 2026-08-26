@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { applyTerminalSettings, applyTheme } from './state/apply-settings';
+import { applyMenuSettings, applyTerminalSettings, applyTheme } from './state/apply-settings';
 import { keymapFromSettings, matchCombo } from './term/keymap';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { initIdPrefix } from './state/app-store';
@@ -108,7 +108,24 @@ export function App() {
     }
     applyTheme(settings);
     applyTerminalSettings(settings);
+    applyMenuSettings(settings);
   }, [settings, settingsLoaded, loadSettings]);
+
+  // 全局禁用原生右键菜单；输入类控件内放行（保留文本编辑菜单）
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent) => {
+      const target = e.target;
+      if (
+        target instanceof HTMLElement &&
+        target.closest('input, textarea, [contenteditable="true"], [contenteditable=""]')
+      ) {
+        return;
+      }
+      e.preventDefault();
+    };
+    window.addEventListener('contextmenu', onContextMenu);
+    return () => window.removeEventListener('contextmenu', onContextMenu);
+  }, []);
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const onChange = () => {

@@ -811,7 +811,6 @@ dependencies = [
  "tokio",
  "tracing",
  "windows-dpapi",
- "winreg",
  "zeroize",
 ]
 

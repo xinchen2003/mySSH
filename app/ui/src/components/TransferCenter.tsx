@@ -44,23 +44,23 @@ function HistoryRow({ h, serverName }: { h: TransferHistoryView; serverName: str
       ? 'text-green-500'
       : h.state === 'failed'
         ? 'text-red-400'
-        : 'text-neutral-500';
+        : 'text-neutral-400';
   return (
     <div
-      className="flex items-center gap-2 py-0.5 text-neutral-500"
+      className="flex items-center gap-2 py-0.5 text-neutral-400"
       title={`${src}\n→ ${dst}\n${serverName}${h.error ? `\n${h.error}` : ''}`}
     >
       <span title={h.direction === 'upload' ? '上传' : '下载'}>
         {h.direction === 'upload' ? '⬆' : '⬇'}
       </span>
-      <span className="min-w-0 flex-1 truncate text-neutral-400">
+      <span className="min-w-0 flex-1 truncate text-neutral-200">
         {baseName(src)} → {baseName(dst)}
       </span>
-      <span className="max-w-20 shrink-0 truncate text-neutral-600" title={serverName}>
+      <span className="max-w-20 shrink-0 truncate text-neutral-400" title={serverName}>
         {serverName}
       </span>
       <span className={`shrink-0 ${color}`}>{STATE_LABEL[h.state] ?? h.state}</span>
-      <span className="w-20 shrink-0 text-right text-neutral-600">{time}</span>
+      <span className="w-20 shrink-0 text-right text-neutral-400">{time}</span>
     </div>
   );
 }
@@ -72,14 +72,14 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
   const src = t.direction === 'upload' ? t.local : t.remote;
   const dst = t.direction === 'upload' ? t.remote : t.local;
   const terminal = t.state === 'done' || t.state === 'failed' || t.state === 'canceled';
-  const btn = 'rounded px-1 hover:bg-neutral-800';
+  const btn = 'rounded px-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200';
   return (
     <div>
       <div className="flex items-center gap-2 py-0.5 text-neutral-400">
         <span title={t.direction === 'upload' ? '上传' : '下载'}>
           {t.direction === 'upload' ? '⬆' : '⬇'}
         </span>
-        <span className="min-w-0 flex-1 truncate" title={`${src}\n→ ${dst}`}>
+        <span className="min-w-0 flex-1 truncate text-neutral-200" title={`${src}\n→ ${dst}`}>
           {baseName(src)} → {baseName(dst)}
         </span>
         <div className="h-1.5 w-24 shrink-0 overflow-hidden rounded bg-neutral-800">
@@ -89,7 +89,7 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
           />
         </div>
         <span className="w-10 shrink-0 text-right">{pct.toFixed(0)}%</span>
-        <span className="w-16 shrink-0 text-right text-neutral-500">
+        <span className="w-16 shrink-0 text-right text-neutral-400">
           {t.state === 'running' ? `${fmtSize(t.rate ?? 0)}/s` : STATE_LABEL[t.state]}
         </span>
         {!t.history && t.state === 'running' && (
@@ -142,7 +142,7 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
             🗑
           </button>
         )}
-        {t.history && <span className="shrink-0 text-neutral-600">上次</span>}
+        {t.history && <span className="shrink-0 text-neutral-400">上次</span>}
       </div>
       {showErr && t.error && <div className="ml-6 break-all py-0.5 text-red-400">{t.error}</div>}
     </div>
@@ -186,12 +186,13 @@ export function TransferCenter() {
   const forEachSession = (cmd: string, extra: Record<string, unknown> = {}) => {
     for (const sid of sessionIds) void transferCmd(sid, cmd, extra);
   };
-  const qbtn = 'rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-800 disabled:opacity-40';
+  const qbtn =
+    'rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-40';
 
   return (
-    <div className="fixed inset-y-0 right-0 z-40 flex w-[420px] flex-col border-l border-neutral-700 bg-neutral-900 text-xs shadow-2xl">
-      <div className="flex items-center gap-2 border-b border-neutral-800 px-3 py-1.5">
-        <span className="font-medium text-neutral-300">传输管理</span>
+    <div className="fixed inset-y-0 right-0 z-40 flex w-[480px] flex-col border-l border-neutral-700 bg-neutral-900 text-xs text-neutral-200 shadow-xl">
+      <div className="flex items-center gap-2 border-b border-neutral-700 px-4 py-2">
+        <span className="text-sm font-semibold text-neutral-100">传输管理</span>
         <button
           className={qbtn}
           disabled={sessionIds.length === 0}
@@ -221,20 +222,20 @@ export function TransferCenter() {
           清除失败
         </button>
         <button
-          className="ml-auto rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-800"
+          className="ml-auto rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
           onClick={() => setOpen(false)}
           aria-label="关闭传输管理"
         >
-          ×
+          ✕
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-1">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-2">
         {sessionIds.length === 0 && (
-          <div className="px-1 py-4 text-neutral-600">（暂无传输任务）</div>
+          <div className="px-1 py-4 text-neutral-400">（暂无传输任务）</div>
         )}
         {sessionIds.map((sid) => (
           <div key={sid} className="mb-2">
-            <div className="border-b border-neutral-800 py-1 font-medium text-neutral-400">
+            <div className="border-b border-neutral-800 py-1 font-medium text-neutral-300">
               {titleOf(sid)}
             </div>
             {bySession[sid]?.map((t) => (
@@ -242,7 +243,7 @@ export function TransferCenter() {
             ))}
           </div>
         ))}
-        <div className="mt-2 flex items-center gap-2 border-t border-neutral-800 py-1 font-medium text-neutral-400">
+        <div className="mt-2 flex items-center gap-2 border-t border-neutral-800 py-1 font-medium text-neutral-300">
           历史记录
           <button
             className={qbtn}
@@ -253,7 +254,7 @@ export function TransferCenter() {
           </button>
         </div>
         {hist.length === 0 ? (
-          <div className="px-1 py-2 text-neutral-600">（暂无历史记录）</div>
+          <div className="px-1 py-2 text-neutral-400">（暂无历史记录）</div>
         ) : (
           hist.map((h) => <HistoryRow key={h.id} h={h} serverName={serverName(h.sessionId)} />)
         )}

@@ -808,12 +808,9 @@ pub async fn sftp_edit_open(
                     Ok(d) => d,
                     Err(_) => continue, // 编辑器持锁瞬间，下轮再试
                 };
-                if let Ok(mut f) = client.open_write_at(&remote_w, 0).await {
-                    use tokio::io::AsyncWriteExt;
-                    if f.write_all(&data).await.is_ok() {
-                        let _ = f.shutdown().await; // 排空写确认（fire-and-forget 坑）
-                        audit(&store, &sid, "sftp_edit_save", &remote_w).await;
-                    }
+                // 整文件覆盖：显式定长，新内容短时尾部不留旧字节
+                if client.overwrite(&remote_w, &data).await.is_ok() {
+                    audit(&store, &sid, "sftp_edit_save", &remote_w).await;
                 }
             }
         }

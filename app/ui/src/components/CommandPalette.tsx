@@ -56,7 +56,6 @@ export function CommandPalette() {
   const openConnect = useAppStore((s) => s.openConnect);
   const toggleTunnelPanel = useAppStore((s) => s.toggleTunnelPanel);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
-  const importFrom = useAppStore((s) => s.importFrom);
   const exportConfig = useAppStore((s) => s.exportConfig);
   const importConfigFile = useAppStore((s) => s.importConfigFile);
   const toggleSftpActive = () => {
@@ -205,14 +204,6 @@ export function CommandPalette() {
         run: () => useAppStore.getState().toggleSettings(),
       },
       { id: 'a-sidebar', label: '侧栏开关', run: () => toggleSidebar() },
-      {
-        id: 'a-imp-ssh',
-        label: '导入 OpenSSH 配置（~/.ssh/config）',
-        run: () => importFrom('openssh'),
-      },
-      { id: 'a-imp-putty', label: '导入 PuTTY 会话（注册表）', run: () => importFrom('putty') },
-      { id: 'a-imp-xs', label: '导入 Xshell 会话', run: () => importFrom('xshell') },
-      { id: 'a-imp-fs', label: '导入 FinalShell 会话', run: () => importFrom('finalshell') },
       { id: 'a-exp-plain', label: '导出配置（明文，不含凭据）', run: () => exportConfig(false) },
       {
         id: 'a-exp-enc',
@@ -227,7 +218,7 @@ export function CommandPalette() {
         run: (p) => importConfigFile(p ?? ''),
       },
     ],
-    [openConnect, toggleTunnelPanel, toggleSidebar, importFrom, exportConfig, importConfigFile],
+    [openConnect, toggleTunnelPanel, toggleSidebar, exportConfig, importConfigFile],
   );
 
   type Item =

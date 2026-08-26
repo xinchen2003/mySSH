@@ -17,6 +17,10 @@ export const DEFAULT_TERMINAL: TerminalSettings = {
   scrollback: 10_000,
 };
 
+/** 右键菜单外观默认值（px） */
+export const DEFAULT_MENU_FONT = 12;
+export const DEFAULT_MENU_ICON = 14;
+
 const num = (v: unknown, dflt: number, min: number, max: number): number =>
   typeof v === 'number' && v >= min && v <= max ? v : dflt;
 const str = (v: unknown, dflt: string): string =>
@@ -54,4 +58,12 @@ export function applyTerminalSettings(settings: Record<string, unknown>): void {
     term.options.fontSize = t.fontSize;
     fitRegistry.get(paneId)?.();
   }
+}
+
+/** 右键菜单字号/图标尺寸：写根节点 CSS 变量，ContextMenu 经 var() 消费。 */
+export function applyMenuSettings(settings: Record<string, unknown>): void {
+  const font = num(settings['ui.menuFontSize'], DEFAULT_MENU_FONT, 11, 14);
+  const icon = num(settings['ui.menuIconSize'], DEFAULT_MENU_ICON, 12, 18);
+  document.documentElement.style.setProperty('--myssh-menu-font', `${font}px`);
+  document.documentElement.style.setProperty('--myssh-menu-icon', `${icon}px`);
 }

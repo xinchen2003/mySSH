@@ -22,9 +22,5 @@ aes-gcm = "0.11.0"
 base64 = "0.22.1"
 rand = "0.10"
 
-[target.'cfg(windows)'.dependencies]
-# PuTTY 注册表导入
-winreg = "0.55.0"
-
 [dev-dependencies]
 anyhow.workspace = true

@@ -3,7 +3,11 @@ import { check } from '@tauri-apps/plugin-updater';
 import { useAppStore } from '../state/app-store';
 import { BUILTIN_THEMES } from '../term/themes';
 import { KEY_ACTIONS, keymapFromSettings, type KeymapScheme } from '../term/keymap';
-import { readTerminalSettings } from '../state/apply-settings';
+import {
+  DEFAULT_MENU_FONT,
+  DEFAULT_MENU_ICON,
+  readTerminalSettings,
+} from '../state/apply-settings';
 import { Dialog } from './Dialog';
 
 const inputCls =
@@ -18,6 +22,16 @@ export function SettingsDialog() {
   const customJson =
     typeof settings['theme.customJson'] === 'string' ? settings['theme.customJson'] : '';
   const term = readTerminalSettings(settings);
+  const menuFontRaw = settings['ui.menuFontSize'];
+  const menuFont =
+    typeof menuFontRaw === 'number' && [11, 12, 13, 14].includes(menuFontRaw)
+      ? menuFontRaw
+      : DEFAULT_MENU_FONT;
+  const menuIconRaw = settings['ui.menuIconSize'];
+  const menuIcon =
+    typeof menuIconRaw === 'number' && [12, 14, 16, 18].includes(menuIconRaw)
+      ? menuIconRaw
+      : DEFAULT_MENU_ICON;
   const schemeRaw = settings['keymap.scheme'];
   const scheme: KeymapScheme = schemeRaw === 'vim' || schemeRaw === 'emacs' ? schemeRaw : 'default';
   const bindings = keymapFromSettings(settings);
@@ -162,6 +176,40 @@ export function SettingsDialog() {
           />
           <span className="text-neutral-500">显示状态栏（连接数/隧道数/当前服务器，默认开启）</span>
         </label>
+        <div className="mt-2 grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
+          <label htmlFor="set-menu-font">菜单字体大小</label>
+          <span className="flex items-center gap-2">
+            <select
+              id="set-menu-font"
+              className={`${inputCls} w-20`}
+              value={menuFont}
+              onChange={(e) => setSetting('ui.menuFontSize', Number(e.target.value))}
+            >
+              {[11, 12, 13, 14].map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+            <span className="text-neutral-500">右键菜单文字大小（px，默认 12）</span>
+          </span>
+          <label htmlFor="set-menu-icon">菜单图标大小</label>
+          <span className="flex items-center gap-2">
+            <select
+              id="set-menu-icon"
+              className={`${inputCls} w-20`}
+              value={menuIcon}
+              onChange={(e) => setSetting('ui.menuIconSize', Number(e.target.value))}
+            >
+              {[12, 14, 16, 18].map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+            <span className="text-neutral-500">右键菜单图标尺寸（px，默认 14）</span>
+          </span>
+        </div>
       </section>
 
       <section className="mb-4">

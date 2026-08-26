@@ -161,7 +161,6 @@ interface AppStore {
   closeTabsToRight(id: string): void;
   closeAllTabs(): void;
   /** 导入/导出（错误也走 notices） */
-  importFrom(source: 'openssh' | 'putty' | 'xshell' | 'finalshell', path?: string): Promise<void>;
   exportConfig(encrypted: boolean, passphrase?: string): Promise<void>;
   importConfigFile(path: string, passphrase?: string): Promise<void>;
   connect(spec: TermOpenSpec): void;
@@ -655,28 +654,6 @@ export const useAppStore = create<AppStore>((set, get) => {
     },
 
     closeAllTabs: () => get().requestCloseTabs(get().tabs.map((t) => t.id)),
-
-    importFrom: async (source, path) => {
-      try {
-        const cmd = {
-          openssh: 'import_openssh',
-          putty: 'import_putty',
-          xshell: 'import_xshell',
-          finalshell: 'import_finalshell',
-        }[source];
-        const r = await invoke<{ imported: number; skipped: number; unresolvedJumps?: number }>(
-          cmd,
-          { path: path ?? null },
-        );
-        await get().loadSessions();
-        let msg = `导入 ${r.imported} 条会话`;
-        if (r.skipped) msg += `，跳过 ${r.skipped}`;
-        if (r.unresolvedJumps) msg += `，${r.unresolvedJumps} 个跳板引用待手工补链`;
-        get().notify(msg, r.unresolvedJumps ? 'warning' : 'success');
-      } catch (e) {
-        get().notify(`导入失败: ${String(e)}`, 'error');
-      }
-    },
 
     exportConfig: async (encrypted, passphrase) => {
       try {

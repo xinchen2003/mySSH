@@ -109,20 +109,11 @@ describe('可见序列与 Shift 连选', () => {
 
 describe('虚拟分组过滤', () => {
   const sessions = [rec('1', 'g'), rec('2', ''), rec('3', 'g')];
-  const ctx = {
-    favorites: new Set(['1']),
-    recent: ['3', '1', '已被删的'],
-    online: new Set(['2']),
-    failed: new Map([['3', '超时']]),
-  };
+  const ctx = { favorites: new Set(['1']) };
 
-  it('收藏/最近/在线/未分组/失败', () => {
+  it('收藏/默认', () => {
     expect(filterVirtual('favorites', sessions, ctx).map((s) => s.id)).toEqual(['1']);
-    // 最近连接：按记录顺序，已删档案跳过
-    expect(filterVirtual('recent', sessions, ctx).map((s) => s.id)).toEqual(['3', '1']);
-    expect(filterVirtual('online', sessions, ctx).map((s) => s.id)).toEqual(['2']);
     expect(filterVirtual('ungrouped', sessions, ctx).map((s) => s.id)).toEqual(['2']);
-    expect(filterVirtual('failed', sessions, ctx).map((s) => s.id)).toEqual(['3']);
   });
   it('「默认」过滤：仅 groupPath 为空串的会话；嵌套分组不混入', () => {
     const list = [rec('a', '生产'), rec('b', ''), rec('c', '生产/华东'), rec('d', '')];

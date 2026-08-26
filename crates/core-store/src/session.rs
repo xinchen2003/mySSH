@@ -52,6 +52,9 @@ pub struct SessionRecord {
     #[serde(default)]
     pub jump_chain: Vec<String>,
     pub group_path: String,
+    /// 侧栏色点（hex，如 '#e5484d'）；None = 无色
+    #[serde(default)]
+    pub color: Option<String>,
     pub tags: Vec<String>,
     pub command: Option<String>,
     pub created_at: String,
@@ -62,8 +65,8 @@ pub struct SessionRepo {
     pool: SqlitePool,
 }
 
-const LIST_SQL: &str = "SELECT id,name,host,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at FROM sessions ORDER BY group_path, name";
-const GET_SQL: &str = "SELECT id,name,host,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at FROM sessions WHERE id = ?";
+const LIST_SQL: &str = "SELECT id,name,host,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color FROM sessions ORDER BY group_path, name";
+const GET_SQL: &str = "SELECT id,name,host,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color FROM sessions WHERE id = ?";
 
 impl SessionRepo {
     pub(crate) fn new(pool: SqlitePool) -> Self {
@@ -95,12 +98,13 @@ impl SessionRepo {
         let jump_chain = serde_json::to_string(&rec.jump_chain)
             .map_err(|e| StoreError::Corrupt(e.to_string()))?;
         sqlx::query(
-            "INSERT INTO sessions (id,name,host,port,username,auth_type,key_path,group_path,tags,command,jump_chain,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+            "INSERT INTO sessions (id,name,host,port,username,auth_type,key_path,group_path,color,tags,command,jump_chain,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
              ON CONFLICT(id) DO UPDATE SET
                name=excluded.name, host=excluded.host, port=excluded.port,
                username=excluded.username, auth_type=excluded.auth_type,
                key_path=excluded.key_path, group_path=excluded.group_path,
+               color=excluded.color,
                tags=excluded.tags, command=excluded.command,
                jump_chain=excluded.jump_chain, updated_at=datetime('now')",
         )
@@ -112,6 +116,7 @@ impl SessionRepo {
         .bind(rec.auth_type.as_str())
         .bind(&rec.key_path)
         .bind(&rec.group_path)
+        .bind(&rec.color)
         .bind(tags)
         .bind(&rec.command)
         .bind(jump_chain)
@@ -272,6 +277,7 @@ fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<SessionRecord, StoreEr
         auth_type: AuthType::parse(row.get("auth_type"))?,
         key_path: row.get("key_path"),
         group_path: row.get("group_path"),
+        color: row.get("color"),
         tags: serde_json::from_str(&tags_raw).map_err(|e| StoreError::Corrupt(e.to_string()))?,
         jump_chain: serde_json::from_str(&jump_raw)
             .map_err(|e| StoreError::Corrupt(e.to_string()))?,

@@ -180,17 +180,11 @@ export function collectGroupPaths(root: GroupTree): string[] {
 // ---------- 虚拟分组（8.5）：纯过滤，不改真实归属 ----------
 
 /** ungrouped 即「默认」过滤项：仅显示未分组（groupPath 为空串）的会话 */
-export type VirtualView = 'favorites' | 'recent' | 'online' | 'ungrouped' | 'failed';
+export type VirtualView = 'favorites' | 'ungrouped';
 
 export interface VirtualCtx {
   /** 收藏会话 id */
   favorites: ReadonlySet<string>;
-  /** 最近连接会话 id（新→旧） */
-  recent: string[];
-  /** 当前在线会话 id（有活跃 pane 的标签目标） */
-  online: ReadonlySet<string>;
-  /** 最近失败：id → 错误信息 */
-  failed: ReadonlyMap<string, string>;
 }
 
 export function virtualCount(
@@ -220,19 +214,10 @@ export function filterVirtual(
   sessions: SessionRecord[],
   ctx: VirtualCtx,
 ): SessionRecord[] {
-  const byId = new Map(sessions.map((s) => [s.id, s]));
   switch (view) {
     case 'favorites':
       return sessions.filter((s) => ctx.favorites.has(s.id));
-    case 'recent':
-      return ctx.recent.map((id) => byId.get(id)).filter((s): s is SessionRecord => !!s);
-    case 'online':
-      return sessions.filter((s) => ctx.online.has(s.id));
     case 'ungrouped': // UI 显示为「默认」：未分组（或默认组）会话
       return sessions.filter((s) => s.groupPath === '');
-    case 'failed':
-      return [...ctx.failed.keys()]
-        .map((id) => byId.get(id))
-        .filter((s): s is SessionRecord => !!s);
   }
 }

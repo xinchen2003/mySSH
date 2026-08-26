@@ -5,6 +5,10 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
+use core_ssh::{
+    ConnClass, ConnectOptions, HostKeyCheck, HostKeyDecision, HostKeyPrompt, KeepaliveConfig,
+    KnownHostsPolicy, SshConnection,
+};
 use core_store::{Actor, AuthType, CredentialKind, Secret, SessionRecord, Store};
 
 use crate::terminal::AuthSpec;
@@ -240,41 +244,155 @@ pub async fn vault_status(
     Ok(json!({ "unlocked": status == core_store::VaultStatus::Unlocked }))
 }
 
-/// 导入 OpenSSH 客户端配置（缺省 ~/.ssh/config）；幂等
+/// 连通性测试入参（秘密材料只在内存经手；authType 与 SessionRecord 同 serde 形式）
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestConnectRequest {
+    /// 关联会话（保险库回退 + 审计归属）；可空 = 表单草稿未保存
+    pub session_id: Option<String>,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub auth_type: AuthType,
+    pub password: Option<String>,
+    pub key_path: Option<String>,
+    pub passphrase: Option<String>,
+    /// 跳板会话 id 链（就近→最远）；空 = 直连
+    #[serde(default)]
+    pub jump_chain: Vec<String>,
+}
+
+/// 连通性测试：8s 超时；永远返回 Ok（ok:false + error 表失败）
 #[tauri::command]
-pub async fn import_openssh(
-    path: Option<String>,
+pub async fn session_test_connect(
+    req: TestConnectRequest,
     state: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<Value, String> {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| "无法定位用户主目录".to_string())?;
-    let file = path
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| home.join(".ssh").join("config"));
-    let text =
-        std::fs::read_to_string(&file).map_err(|e| format!("读取 {} 失败: {e}", file.display()))?;
-    let home_str = home.to_string_lossy().to_string();
-    let outcome = core_store::import_openssh(&state.store, &text, &home_str)
-        .await
-        .map_err(|e| e.to_string())?;
-    state
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        test_connect_inner(&state.store, &req),
+    )
+    .await;
+    let body = match outcome {
+        Ok(Ok(latency_ms)) => json!({ "ok": true, "latencyMs": latency_ms }),
+        Ok(Err(e)) => json!({ "ok": false, "error": e }),
+        Err(_) => json!({ "ok": false, "error": "连接超时（8 秒）" }),
+    };
+    // 审计失败不影响测试结果回传
+    let _ = state
         .store
         .audit()
         .append(
             Actor::Gui,
-            None,
-            "import_openssh",
-            &json!({ "path": file.display().to_string(), "imported": outcome.imported, "skipped": outcome.skipped }),
+            req.session_id.as_deref(),
+            "session_test_connect",
+            &json!({ "host": req.host, "port": req.port, "ok": body["ok"] }),
         )
+        .await;
+    Ok(body)
+}
+
+/// 建连 → 握手完成即测延迟并立即关闭；返回毫秒数
+async fn test_connect_inner(store: &Store, req: &TestConnectRequest) -> Result<u64, String> {
+    let auth = resolve_test_auth(store, req).await?;
+    // 跳板链：复用 resolve_spec_inner 的递归展开（含环/深度防护）
+    let mut visited = std::collections::HashSet::new();
+    let mut jump_chain = Vec::new();
+    for hop_id in &req.jump_chain {
+        let hop = Box::pin(resolve_spec_inner(store, hop_id, &mut visited)).await?;
+        jump_chain.extend(hop.jump_chain);
+        jump_chain.push(crate::terminal::JumpHopSpec {
+            host: hop.host,
+            port: hop.port,
+            user: hop.user,
+            auth: hop.auth,
+        });
+    }
+    let opts = ConnectOptions {
+        host: req.host.clone(),
+        port: req.port,
+        user: req.user.clone(),
+        auth: crate::terminal::auth_method_from(&auth),
+        jump_chain: crate::terminal::jump_chain_from(&jump_chain),
+        class: ConnClass::Bulk,
+        window_size: 4 * 1024 * 1024,
+        max_packet_size: 32768,
+        keepalive: KeepaliveConfig::default(),
+        // 测试连接无弹窗通路：首连/变更一律 fail-closed 拒绝（经正式连接学入 known_hosts）
+        host_key_check: HostKeyCheck::KnownHosts(KnownHostsPolicy {
+            path: crate::terminal::known_hosts_path(),
+            prompter: Arc::new(|_: HostKeyPrompt| async { HostKeyDecision::Reject }),
+        }),
+        ki_prompter: None,
+    };
+    let started = std::time::Instant::now();
+    let conn = SshConnection::connect(opts)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(json!({
-        "imported": outcome.imported,
-        "skipped": outcome.skipped,
-        "unresolvedJumps": outcome.unresolved_jumps,
-    }))
+    let latency_ms = started.elapsed().as_millis() as u64;
+    drop(conn); // 测完即关（句柄 drop 即断连）
+    Ok(latency_ms)
+}
+
+/// 测试连接认证：payload 秘密优先；为空且带 sessionId 时回退保险库
+async fn resolve_test_auth(store: &Store, req: &TestConnectRequest) -> Result<AuthSpec, String> {
+    match req.auth_type {
+        AuthType::Password => {
+            let password = match req.password.as_deref().filter(|p| !p.is_empty()) {
+                Some(p) => p.to_string(),
+                None => {
+                    let sid = req.session_id.as_deref().ok_or("未提供密码且未关联会话")?;
+                    let secret = store
+                        .credentials()
+                        .get(sid)
+                        .await
+                        .map_err(|_| format!("会话 {sid} 未存密码（cred_set）"))?;
+                    String::from_utf8(secret.expose().to_vec())
+                        .map_err(|_| "凭据非 UTF-8".to_string())?
+                }
+            };
+            Ok(AuthSpec::Password { password })
+        }
+        AuthType::PublicKey => {
+            let key_path = match req.key_path.as_deref().filter(|p| !p.is_empty()) {
+                Some(p) => p.to_string(),
+                None => {
+                    let sid = req
+                        .session_id
+                        .as_deref()
+                        .ok_or("未提供 keyPath 且未关联会话")?;
+                    store
+                        .sessions()
+                        .get(sid)
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .key_path
+                        .ok_or_else(|| format!("会话 {sid} 未配 keyPath"))?
+                }
+            };
+            let key_pem = read_key_file(&key_path)?;
+            let passphrase = match req.passphrase.as_deref().filter(|p| !p.is_empty()) {
+                Some(p) => Some(p.to_string()),
+                None => match &req.session_id {
+                    // passphrase 可选：保险库里没有就当无
+                    Some(sid) => match store.credentials().get(sid).await {
+                        Ok(s) => Some(
+                            String::from_utf8(s.expose().to_vec())
+                                .map_err(|_| "凭据非 UTF-8".to_string())?,
+                        ),
+                        Err(_) => None,
+                    },
+                    None => None,
+                },
+            };
+            Ok(AuthSpec::PublicKey {
+                key_pem,
+                passphrase,
+            })
+        }
+        AuthType::KeyboardInteractive => Ok(AuthSpec::KeyboardInteractive),
+        AuthType::Agent => Ok(AuthSpec::Agent),
+    }
 }
 
 /// 配置导出：写 %LOCALAPPDATA%/myssh/exports/myssh-config-<ts>.json，返回路径。
@@ -320,100 +438,6 @@ pub async fn config_export(
         .await
         .map_err(|e| e.to_string())?;
     Ok(json!({ "path": file.display().to_string() }))
-}
-
-/// PuTTY 注册表导入（仅 Windows 有效；其它平台返回 0）
-#[tauri::command]
-pub async fn import_putty(
-    state: tauri::State<'_, Arc<SessionManagerState>>,
-) -> Result<Value, String> {
-    let outcome = core_store::import_ext::import_putty(&state.store)
-        .await
-        .map_err(|e| e.to_string())?;
-    state
-        .store
-        .audit()
-        .append(
-            Actor::Gui,
-            None,
-            "import_putty",
-            &json!({ "imported": outcome.imported }),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "imported": outcome.imported, "skipped": outcome.skipped }))
-}
-
-/// Xshell .xsh 目录导入（缺省扫 %USERPROFILE%\Documents\NetSarang Computer\<ver>\Xshell\Sessions）
-#[tauri::command]
-pub async fn import_xshell(
-    path: Option<String>,
-    state: tauri::State<'_, Arc<SessionManagerState>>,
-) -> Result<Value, String> {
-    let dir = match path {
-        Some(p) => std::path::PathBuf::from(p),
-        None => find_xshell_dir()
-            .ok_or_else(|| "未找到 Xshell 会话目录（请手工指定路径）".to_string())?,
-    };
-    let outcome = core_store::import_ext::import_xshell_dir(&state.store, &dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    state
-        .store
-        .audit()
-        .append(
-            Actor::Gui,
-            None,
-            "import_xshell",
-            &json!({ "dir": dir.display().to_string(), "imported": outcome.imported }),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "imported": outcome.imported, "skipped": outcome.skipped }))
-}
-
-/// FinalShell conn 目录导入（缺省 %USERPROFILE%\.finalshell\conn）
-#[tauri::command]
-pub async fn import_finalshell(
-    path: Option<String>,
-    state: tauri::State<'_, Arc<SessionManagerState>>,
-) -> Result<Value, String> {
-    let dir = match path {
-        Some(p) => std::path::PathBuf::from(p),
-        None => std::env::var_os("USERPROFILE")
-            .map(std::path::PathBuf::from)
-            .map(|h| h.join(".finalshell").join("conn"))
-            .filter(|d| d.is_dir())
-            .ok_or_else(|| "未找到 FinalShell 会话目录（请手工指定路径）".to_string())?,
-    };
-    let outcome = core_store::import_ext::import_finalshell_dir(&state.store, &dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    state
-        .store
-        .audit()
-        .append(
-            Actor::Gui,
-            None,
-            "import_finalshell",
-            &json!({ "dir": dir.display().to_string(), "imported": outcome.imported }),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "imported": outcome.imported, "skipped": outcome.skipped }))
-}
-
-/// Xshell 默认会话目录探测（NetSarang 6/7/8 版本目录）
-fn find_xshell_dir() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)?;
-    let base = home.join("Documents").join("NetSarang Computer");
-    for ver in ["8", "7", "6"] {
-        let d = base.join(ver).join("Xshell").join("Sessions");
-        if d.is_dir() {
-            return Some(d);
-        }
-    }
-    None
 }
 
 /// 配置导入（自动识别明文/加密包络；加密需口令）

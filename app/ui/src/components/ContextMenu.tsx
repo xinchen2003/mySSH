@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface MenuEntry {
   label: string;
+  /** 可选图标槽（emoji/文本图标），尺寸跟随 --myssh-menu-icon */
+  icon?: string;
   danger?: boolean;
   disabled?: boolean;
   onSelect: () => void;
@@ -100,15 +102,30 @@ export function ContextMenu({
             role="menuitem"
             aria-disabled={it.disabled || undefined}
             disabled={it.disabled}
-            className={`block w-full px-3 py-1.5 text-left text-xs ${
+            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left ${
               it.danger
                 ? 'text-red-400 hover:bg-neutral-800'
-                : 'text-neutral-300 hover:bg-neutral-800'
+                : 'text-neutral-200 hover:bg-neutral-800'
             } ${i === active ? 'bg-neutral-800' : ''} ${it.disabled ? 'opacity-40' : ''}`}
+            style={{ fontSize: 'var(--myssh-menu-font, 12px)' }}
             onMouseEnter={() => !it.disabled && setActive(i)}
             onClick={() => run(i)}
           >
-            {it.label}
+            {it.icon !== undefined && (
+              <span
+                aria-hidden
+                className="shrink-0 text-center text-neutral-400"
+                style={{
+                  width: 'var(--myssh-menu-icon, 14px)',
+                  height: 'var(--myssh-menu-icon, 14px)',
+                  fontSize: 'var(--myssh-menu-icon, 14px)',
+                  lineHeight: 'var(--myssh-menu-icon, 14px)',
+                }}
+              >
+                {it.icon}
+              </span>
+            )}
+            <span className="min-w-0 flex-1 truncate">{it.label}</span>
           </button>
         ),
       )}

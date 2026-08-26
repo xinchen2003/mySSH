@@ -27,10 +27,8 @@ import {
 /** 连接目标语义：'connect' 复用已有标签，'new-tab' 强制新标签 */
 type ConnectMode = 'connect' | 'new-tab';
 
-/** 侧栏小弹层（导入导出口令/路径、分组新建/重命名、移动到分组） */
+/** 侧栏小弹层（分组新建/重命名、移动到分组） */
 type Prompt =
-  | { mode: 'export-enc'; input: string }
-  | { mode: 'import-cfg'; input: string; pass: string }
   | { mode: 'group-new'; parent: string; input: string }
   | { mode: 'group-rename'; path: string; input: string }
   | { mode: 'rename'; id: string; input: string }
@@ -38,16 +36,13 @@ type Prompt =
 
 const VIRTUAL_LABELS: { id: VirtualView; label: string }[] = [
   { id: 'favorites', label: '收藏' },
-  { id: 'recent', label: '最近连接' },
-  { id: 'online', label: '当前在线' },
   { id: 'ungrouped', label: '默认' },
-  { id: 'failed', label: '最近失败' },
 ];
 
 /**
  * 服务器库侧栏（批次二）：
  * 单击选中/双击连接/Enter 连接（设置可恢复单击直连）；右键菜单；Ctrl/Shift 多选与批量操作；
- * 分组树（折叠持久化、计数、拖拽移动、增删改）；虚拟分组（收藏/最近/在线/未分组/失败）。
+ * 分组树（折叠持久化、计数、拖拽移动、增删改）；虚拟分组（收藏/默认）。
  */
 export function Sidebar() {
   const sessions = useAppStore((s) => s.sessions);
@@ -56,12 +51,8 @@ export function Sidebar() {
   const settings = useAppStore((s) => s.settings);
   const tabs = useAppStore((s) => s.tabs);
   const openConnect = useAppStore((s) => s.openConnect);
-  const importFrom = useAppStore((s) => s.importFrom);
-  const exportConfig = useAppStore((s) => s.exportConfig);
-  const importConfigFile = useAppStore((s) => s.importConfigFile);
 
   const [query, setQuery] = useState('');
-  const [menuOpen, setMenuOpen] = useState(false);
   const [prompt, setPrompt] = useState<Prompt | null>(null);
   /** 多选：anchor 为 Shift 连选基准 */
   const [sel, setSel] = useState<{ anchor: string | null; ids: string[] }>({
@@ -91,7 +82,6 @@ export function Sidebar() {
     () => new Set(readStringList(settings[GROUP_KEYS.favorites])),
     [settings],
   );
-  const recent = useMemo(() => readStringList(settings[GROUP_KEYS.recent]), [settings]);
   const failed = useMemo(
     () => new Map(readFailedList(settings[GROUP_KEYS.failed]).map((f) => [f.id, f.message])),
     [settings],
@@ -130,8 +120,8 @@ export function Sidebar() {
   const tree = useMemo(() => buildGroupTree(filtered, extras), [filtered, extras]);
   const flatMode = query.trim() !== '' || virt !== null;
   const virtList = useMemo(
-    () => (virt ? filterVirtual(virt, sessions, { favorites, recent, online, failed }) : []),
-    [virt, sessions, favorites, recent, online, failed],
+    () => (virt ? filterVirtual(virt, sessions, { favorites }) : []),
+    [virt, sessions, favorites],
   );
   const visibleRows = useMemo(() => flattenVisible(tree, collapsed), [tree, collapsed]);
   /** 当前模式下的可见会话 id 序（Shift 连选区间基于此） */
@@ -194,6 +184,9 @@ export function Sidebar() {
     persistExtras([...extras, path]);
     if (parent && collapsed.has(parent))
       persistCollapsed([...collapsed].filter((p) => p !== parent));
+    // 「创建即显示」修复：搜索/虚拟视图处于平铺模式时新分组不在树中渲染，须先退回树视图
+    setVirt(null);
+    setQuery('');
     s().notify(`已创建分组 ${path}`, 'success');
   };
 
@@ -425,11 +418,13 @@ export function Sidebar() {
   ];
 
   const blankMenu = (): MenuItem[] => [
-    { label: '新建服务器', onSelect: () => openConnect() },
+    { label: '新建连接…', onSelect: () => openConnect() },
     {
-      label: '新建根分组…',
+      label: '新建分组…',
       onSelect: () => setPrompt({ mode: 'group-new', parent: '', input: '' }),
     },
+    'separator',
+    { label: '刷新', onSelect: () => void load() },
   ];
 
   // ---------- 拖拽 ----------
@@ -466,18 +461,6 @@ export function Sidebar() {
   };
 
   // ---------- 渲染 ----------
-
-  const menuItem = (label: string, fn: () => void) => (
-    <button
-      className="block w-full px-3 py-1.5 text-left text-xs text-neutral-300 hover:bg-neutral-800"
-      onClick={() => {
-        setMenuOpen(false);
-        fn();
-      }}
-    >
-      {label}
-    </button>
-  );
 
   /** §10.4：键盘打开右键菜单（ContextMenu 键或 Shift+F10），位置取行矩形 */
   const menuKeyHit = (e: React.KeyboardEvent) =>
@@ -681,41 +664,9 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="flex w-56 shrink-0 flex-col border-r border-neutral-800 bg-neutral-900">
-      <div className="relative flex items-center justify-between px-3 py-2 text-xs text-neutral-400">
+    <aside className="relative flex w-56 shrink-0 flex-col border-r border-neutral-800 bg-neutral-900">
+      <div className="px-3 py-2 text-xs text-neutral-400">
         <span>会话</span>
-        <span className="flex gap-1">
-          <button
-            className="rounded px-1 hover:bg-neutral-800"
-            title="导入/导出"
-            onClick={() => setMenuOpen((v) => !v)}
-          >
-            ⋯
-          </button>
-          <button
-            className="rounded px-1 hover:bg-neutral-800"
-            title="新建会话"
-            onClick={() => openConnect()}
-          >
-            ＋
-          </button>
-        </span>
-        {menuOpen && (
-          <div className="absolute right-1 top-7 z-20 w-44 rounded border border-neutral-700 bg-neutral-900 py-1 shadow-xl">
-            {menuItem('新建根分组…', () => setPrompt({ mode: 'group-new', parent: '', input: '' }))}
-            <div className="my-1 border-t border-neutral-800" />
-            {menuItem('导入 OpenSSH 配置', () => void importFrom('openssh'))}
-            {menuItem('导入 PuTTY（注册表）', () => void importFrom('putty'))}
-            {menuItem('导入 Xshell', () => void importFrom('xshell'))}
-            {menuItem('导入 FinalShell', () => void importFrom('finalshell'))}
-            <div className="my-1 border-t border-neutral-800" />
-            {menuItem('导出配置（明文）', () => void exportConfig(false))}
-            {menuItem('导出配置（加密）…', () => setPrompt({ mode: 'export-enc', input: '' }))}
-            {menuItem('导入配置文件…', () =>
-              setPrompt({ mode: 'import-cfg', input: '', pass: '' }),
-            )}
-          </div>
-        )}
       </div>
 
       <div className="px-2 pb-1">
@@ -733,13 +684,7 @@ export function Sidebar() {
           const n =
             v.id === 'favorites'
               ? sessions.filter((x) => favorites.has(x.id)).length
-              : v.id === 'recent'
-                ? recent.filter((id) => sessions.some((x) => x.id === id)).length
-                : v.id === 'online'
-                  ? online.size
-                  : v.id === 'ungrouped'
-                    ? sessions.filter((x) => x.groupPath === '').length
-                    : failed.size;
+              : sessions.filter((x) => x.groupPath === '').length;
           return (
             <button
               key={v.id}
@@ -748,9 +693,7 @@ export function Sidebar() {
                   ? 'bg-blue-800 text-neutral-100'
                   : 'text-neutral-500 hover:bg-neutral-800'
               }`}
-              title={
-                v.id === 'failed' && failed.size > 0 ? [...failed.values()].join('\n') : v.label
-              }
+              title={v.label}
               onClick={() => setVirt((cur) => (cur === v.id ? null : v.id))}
             >
               {v.label}
@@ -777,7 +720,7 @@ export function Sidebar() {
       >
         {sessions.length === 0 && (
           <p className="px-2 py-4 text-center text-xs text-neutral-600">
-            还没有会话。点右上角 ＋ 新建，或 ⋯ 菜单导入。
+            还没有会话。右键新建连接或分组。
           </p>
         )}
         {flatMode
@@ -883,42 +826,11 @@ export function Sidebar() {
       {prompt && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60">
           <div className="w-72 rounded-lg border border-neutral-700 bg-neutral-900 p-3 text-xs text-neutral-200 shadow-xl">
-            {prompt.mode === 'export-enc' && (
-              <>
-                <div className="mb-2">导出口令（导入时需同一口令）</div>
-                <input
-                  type="password"
-                  className="mb-2 w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
-                  value={prompt.input}
-                  onChange={(e) => setPrompt({ mode: 'export-enc', input: e.target.value })}
-                  autoFocus
-                />
-              </>
-            )}
-            {prompt.mode === 'import-cfg' && (
-              <>
-                <div className="mb-2">配置文件完整路径</div>
-                <input
-                  className="mb-2 w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
-                  placeholder="…/myssh-config-*.json"
-                  value={prompt.input}
-                  onChange={(e) => setPrompt({ ...prompt, input: e.target.value })}
-                  autoFocus
-                />
-                <input
-                  type="password"
-                  className="mb-2 w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
-                  placeholder="口令（加密包络时必填）"
-                  value={prompt.pass}
-                  onChange={(e) => setPrompt({ ...prompt, pass: e.target.value })}
-                />
-              </>
-            )}
             {(prompt.mode === 'group-new' || prompt.mode === 'group-rename') && (
               <>
                 <div className="mb-2">
                   {prompt.mode === 'group-new'
-                    ? `新建${prompt.parent ? ` ${prompt.parent} 下的子分组` : '根分组'}`
+                    ? `新建${prompt.parent ? ` ${prompt.parent} 下的子分组` : '分组'}`
                     : `重命名分组 ${prompt.path}`}
                 </div>
                 <input
@@ -972,10 +884,7 @@ export function Sidebar() {
                 onClick={() => {
                   const p = prompt;
                   setPrompt(null);
-                  if (p.mode === 'export-enc') void exportConfig(true, p.input);
-                  else if (p.mode === 'import-cfg')
-                    void importConfigFile(p.input, p.pass || undefined);
-                  else if (p.mode === 'group-new') createGroup(p.parent, p.input);
+                  if (p.mode === 'group-new') createGroup(p.parent, p.input);
                   else if (p.mode === 'group-rename') void renameGroup(p.path, p.input);
                   else if (p.mode === 'rename') void renameSession(p.id, p.input);
                   else void moveSessions(p.ids, p.input);

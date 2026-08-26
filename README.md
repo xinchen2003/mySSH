@@ -14,7 +14,7 @@ Built with Tauri 2 (Rust backend + WebView2) and a React frontend.
 - **Tunnels**: local / remote / dynamic SOCKS5 forwarding, auto-start, auto-recover on disconnect; runs on a dedicated SSH connection isolated from interactive terminals
 - **SFTP**: dual-pane file manager, bidirectional drag & drop (including OS files and folders), queued transfers (concurrency control, resume, retry), cross-session transfer history, remote file editing (open in local editor, auto-upload on save), follows the terminal's working directory (OSC 7)
 - **Monitoring**: live CPU / memory / disk / network charts on an isolated channel, silently degrades on failure
-- **Import / Export**: import sessions from common SSH client formats; export config in plaintext or passphrase-encrypted (Argon2id + AES-256-GCM)
+- **Export**: export config in plaintext or passphrase-encrypted (Argon2id + AES-256-GCM)
 - **Themes**: multiple color schemes (dark / light / Nord and more), UI and terminal palettes independent
 
 ## Tech Stack

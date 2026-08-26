@@ -19,6 +19,8 @@ export interface SessionRecord {
   /** ProxyJump 链：session id 数组（就近→最远）；空 = 直连 */
   jumpChain: string[];
   groupPath: string;
+  /** 标签颜色（hex，如 '#e5484d'；null/缺省 = 无色） */
+  color?: string | null;
   tags: string[];
   command?: string | null;
   createdAt: string;

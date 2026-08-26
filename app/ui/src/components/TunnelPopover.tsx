@@ -136,21 +136,21 @@ export function TunnelPopover({
       ref={panelRef}
       role="dialog"
       aria-label="隧道管理"
-      className="absolute top-full right-0 z-50 mt-1 max-h-[70vh] w-[420px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-xs text-neutral-300 shadow-xl"
+      className="absolute top-full right-0 z-50 mt-1 max-h-[70vh] w-[560px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-3 text-xs text-neutral-200 shadow-xl"
     >
-      <div className="mb-1 flex items-center gap-3 text-neutral-500">
-        <span className="font-semibold text-neutral-300">隧道</span>
+      <div className="mb-2 flex items-center gap-3 border-b border-neutral-800 pb-2 text-neutral-400">
+        <span className="text-sm font-semibold text-neutral-100">隧道</span>
         <span className="truncate">按服务器分组 · 编辑即生效（运行中需重启）</span>
         <span className="flex-1" />
         <button
-          className="shrink-0 rounded border border-neutral-700 px-2 py-0.5 hover:bg-neutral-800 disabled:opacity-40"
+          className="shrink-0 rounded border border-neutral-700 px-2 py-0.5 text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
           disabled={sessions.length === 0}
           onClick={() => sessions.length > 0 && setEditor({ sessionId: sessions[0].id, def: null })}
         >
           ＋ 新建隧道
         </button>
         <button
-          className="shrink-0 rounded px-1 text-neutral-500 hover:text-neutral-200"
+          className="shrink-0 rounded px-1 text-neutral-400 hover:text-neutral-200"
           onClick={toggleTunnelPanel}
           aria-label="关闭隧道面板"
         >
@@ -159,7 +159,7 @@ export function TunnelPopover({
       </div>
 
       {orderedGroups.length === 0 && adhoc.length === 0 && (
-        <p className="py-2 text-neutral-500">
+        <p className="py-2 text-neutral-400">
           还没有隧道。点「＋ 新建隧道」，或在服务器编辑器的「隧道」页添加。
         </p>
       )}
@@ -167,7 +167,7 @@ export function TunnelPopover({
       {orderedGroups.map(({ sid, defs }) => {
         return (
           <div key={sid} className="mb-2">
-            <div className="mt-1 mb-0.5 font-semibold text-neutral-400">{sessionLabel(sid)}</div>
+            <div className="mt-1 mb-0.5 font-semibold text-neutral-300">{sessionLabel(sid)}</div>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse whitespace-nowrap">
                 <tbody>
@@ -175,9 +175,14 @@ export function TunnelPopover({
                     const rt = runtimeById.get(d.id);
                     return (
                       <tr key={d.id} className="border-t border-neutral-800/60">
-                        <td className="py-1 pr-3">{tunnelDisplayName(d)}</td>
-                        <td className="pr-3 text-neutral-500">{KIND_LABEL[d.kind] ?? d.kind}</td>
-                        <td className="pr-3 font-mono">
+                        <td className="py-1 pr-3 text-neutral-200" title={tunnelDisplayName(d)}>
+                          {tunnelDisplayName(d)}
+                        </td>
+                        <td className="pr-3 text-neutral-400">{KIND_LABEL[d.kind] ?? d.kind}</td>
+                        <td
+                          className="pr-3 font-mono text-neutral-300"
+                          title={`${d.bindHost}:${d.bindPort}${d.targetHost ? ` → ${d.targetHost}:${d.targetPort}` : ''}`}
+                        >
                           {d.bindHost}:{d.bindPort}
                           {d.targetHost ? ` → ${d.targetHost}:${d.targetPort}` : ''}
                         </td>
@@ -195,10 +200,10 @@ export function TunnelPopover({
                               {STATUS_LABEL[rt.status] ?? rt.status}
                             </span>
                           ) : (
-                            <span className="text-neutral-600">未运行</span>
+                            <span className="text-neutral-400">未运行</span>
                           )}
                         </td>
-                        <td className="pr-3 text-neutral-500">
+                        <td className="pr-3 text-neutral-400">
                           {START_MODE_LABEL[startModeOf(d)]}
                         </td>
                         <td className="pr-3">
@@ -206,7 +211,7 @@ export function TunnelPopover({
                         </td>
                         <td className="pr-3">{rt ? `${rt.activeConns} 连接` : '—'}</td>
                         <td
-                          className="max-w-48 truncate pr-3 text-red-400/80"
+                          className="max-w-48 truncate pr-3 text-red-400"
                           title={rt?.lastError ?? undefined}
                         >
                           {rt?.lastError ?? ''}
@@ -214,33 +219,33 @@ export function TunnelPopover({
                         <td className="whitespace-nowrap">
                           {rt ? (
                             <button
-                              className="rounded px-1.5 text-neutral-500 hover:text-red-400"
+                              className="rounded px-1.5 text-neutral-400 hover:text-red-400"
                               onClick={() => void stopTunnel(d.id)}
                             >
                               停止
                             </button>
                           ) : (
                             <button
-                              className="rounded px-1.5 text-neutral-500 hover:text-green-400"
+                              className="rounded px-1.5 text-neutral-400 hover:text-green-400"
                               onClick={() => void startDef(d)}
                             >
                               启动
                             </button>
                           )}
                           <button
-                            className="rounded px-1.5 text-neutral-500 hover:text-neutral-200"
+                            className="rounded px-1.5 text-neutral-400 hover:text-neutral-200"
                             onClick={() => setEditor({ sessionId: d.sessionId, def: d })}
                           >
                             编辑
                           </button>
                           <button
-                            className="rounded px-1.5 text-neutral-500 hover:text-neutral-200"
+                            className="rounded px-1.5 text-neutral-400 hover:text-neutral-200"
                             onClick={() => void duplicate(d)}
                           >
                             复制
                           </button>
                           <button
-                            className="rounded px-1.5 text-neutral-500 hover:text-red-400"
+                            className="rounded px-1.5 text-neutral-400 hover:text-red-400"
                             onClick={() => setPendingDelete(d)}
                           >
                             删除
@@ -258,14 +263,17 @@ export function TunnelPopover({
 
       {adhoc.length > 0 && (
         <div className="mb-1">
-          <div className="mt-1 mb-0.5 font-semibold text-neutral-500">临时（未持久化）</div>
+          <div className="mt-1 mb-0.5 font-semibold text-neutral-300">临时（未持久化）</div>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse whitespace-nowrap">
               <tbody>
                 {adhoc.map((t) => (
-                  <tr key={t.tunnelId} className="border-t border-neutral-800/60 text-neutral-500">
+                  <tr key={t.tunnelId} className="border-t border-neutral-800/60 text-neutral-400">
                     <td className="py-1 pr-3">{KIND_LABEL[t.kind] ?? t.kind}</td>
-                    <td className="pr-3 font-mono">
+                    <td
+                      className="pr-3 font-mono text-neutral-300"
+                      title={`${t.bind}${t.target ? ` → ${t.target}` : ''}`}
+                    >
                       {t.bind}
                       {t.target ? ` → ${t.target}` : ''}
                     </td>
@@ -275,7 +283,7 @@ export function TunnelPopover({
                     </td>
                     <td>
                       <button
-                        className="rounded px-1.5 text-neutral-500 hover:text-red-400"
+                        className="rounded px-1.5 text-neutral-400 hover:text-red-400"
                         onClick={() => void stopTunnel(t.tunnelId)}
                       >
                         停止

@@ -270,4 +270,29 @@ impl SftpClient {
         }
         Ok(f)
     }
+
+    /// 整文件覆盖写（编辑回传）：截断打开写毕后显式定长为新长度。
+    /// 不依赖服务端对 TRUNC 标志的支持，新内容比旧内容短时尾部不留旧字节。
+    pub async fn overwrite(&self, path: &str, data: &[u8]) -> Result<(), SftpError> {
+        use tokio::io::AsyncWriteExt;
+        let mut f = self
+            .session
+            .create(path)
+            .await
+            .map_err(|e| map_err(path, e))?;
+        f.write_all(data)
+            .await
+            .map_err(|e| map_err(path, e.into()))?;
+        // 排空写确认并关闭句柄（fire-and-forget 坑：drop 不等应答）
+        f.shutdown().await.map_err(|e| map_err(path, e.into()))?;
+        let attrs = FileAttributes {
+            size: Some(data.len() as u64),
+            ..Default::default()
+        };
+        self.session
+            .set_metadata(path, attrs)
+            .await
+            .map_err(|e| map_err(path, e))?;
+        Ok(())
+    }
 }
