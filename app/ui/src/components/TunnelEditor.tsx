@@ -159,175 +159,175 @@ export function TunnelEditor({
         {initial ? '编辑隧道' : '新建隧道'}
       </h2>
 
-        <label className="mb-2 block">
-          <span className="mb-0.5 block text-xs text-neutral-400">模板（只预填，可改）</span>
+      <label className="mb-2 block">
+        <span className="mb-0.5 block text-xs text-neutral-400">模板（只预填，可改）</span>
+        <select
+          className={input}
+          value=""
+          onChange={(e) => applyTemplate(e.target.value)}
+          aria-label="模板"
+        >
+          <option value="">自定义</option>
+          {Object.entries(TUNNEL_TEMPLATES).map(([k, t]) => (
+            <option key={k} value={k}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <div className="mb-2 flex gap-2">
+        <label className="flex-1">
+          <span className="mb-0.5 block text-xs text-neutral-400">名称</span>
+          <input
+            className={input}
+            value={draft.name}
+            onChange={(e) => patch({ name: e.target.value })}
+            placeholder="如 MySQL"
+          />
+        </label>
+        <label className="w-28">
+          <span className="mb-0.5 block text-xs text-neutral-400">类型</span>
           <select
             className={input}
-            value=""
-            onChange={(e) => applyTemplate(e.target.value)}
-            aria-label="模板"
+            value={draft.kind}
+            onChange={(e) => patch({ kind: e.target.value as TunnelKind })}
+            aria-label="类型"
           >
-            <option value="">自定义</option>
-            {Object.entries(TUNNEL_TEMPLATES).map(([k, t]) => (
-              <option key={k} value={k}>
-                {t.label}
-              </option>
-            ))}
+            <option value="local">本地 -L</option>
+            <option value="remote">远程 -R</option>
+            <option value="dynamic">动态 -D</option>
           </select>
         </label>
+      </div>
 
-        <div className="mb-2 flex gap-2">
-          <label className="flex-1">
-            <span className="mb-0.5 block text-xs text-neutral-400">名称</span>
-            <input
-              className={input}
-              value={draft.name}
-              onChange={(e) => patch({ name: e.target.value })}
-              placeholder="如 MySQL"
-            />
-          </label>
-          <label className="w-28">
-            <span className="mb-0.5 block text-xs text-neutral-400">类型</span>
-            <select
-              className={input}
-              value={draft.kind}
-              onChange={(e) => patch({ kind: e.target.value as TunnelKind })}
-              aria-label="类型"
-            >
-              <option value="local">本地 -L</option>
-              <option value="remote">远程 -R</option>
-              <option value="dynamic">动态 -D</option>
-            </select>
-          </label>
-        </div>
+      <div className="mb-2 flex items-end gap-2">
+        <label className="flex-1">
+          <span className="mb-0.5 block text-xs text-neutral-400">绑定地址</span>
+          <input
+            className={input}
+            value={draft.bindHost}
+            onChange={(e) => patch({ bindHost: e.target.value })}
+          />
+        </label>
+        <label className="w-24">
+          <span className="mb-0.5 block text-xs text-neutral-400">绑定端口</span>
+          <input
+            className={input}
+            type="number"
+            min={1}
+            max={65535}
+            value={draft.bindPort}
+            onChange={(e) => patch({ bindPort: e.target.value })}
+          />
+        </label>
+      </div>
+      {isWildcardBind(draft.bindHost) && (
+        <p className="mb-2 rounded border border-yellow-800 bg-yellow-950/40 px-2 py-1 text-xs text-yellow-300">
+          监听 0.0.0.0/:: 将允许局域网内其他机器连接此隧道，请确认网络环境可信。
+        </p>
+      )}
 
+      {draft.kind !== 'dynamic' && (
         <div className="mb-2 flex items-end gap-2">
           <label className="flex-1">
-            <span className="mb-0.5 block text-xs text-neutral-400">绑定地址</span>
+            <span className="mb-0.5 block text-xs text-neutral-400">目标地址</span>
             <input
               className={input}
-              value={draft.bindHost}
-              onChange={(e) => patch({ bindHost: e.target.value })}
+              value={draft.targetHost}
+              onChange={(e) => patch({ targetHost: e.target.value })}
             />
           </label>
           <label className="w-24">
-            <span className="mb-0.5 block text-xs text-neutral-400">绑定端口</span>
+            <span className="mb-0.5 block text-xs text-neutral-400">目标端口</span>
             <input
               className={input}
               type="number"
               min={1}
               max={65535}
-              value={draft.bindPort}
-              onChange={(e) => patch({ bindPort: e.target.value })}
+              value={draft.targetPort}
+              onChange={(e) => patch({ targetPort: e.target.value })}
             />
           </label>
         </div>
-        {isWildcardBind(draft.bindHost) && (
-          <p className="mb-2 rounded border border-yellow-800 bg-yellow-950/40 px-2 py-1 text-xs text-yellow-300">
-            监听 0.0.0.0/:: 将允许局域网内其他机器连接此隧道，请确认网络环境可信。
+      )}
+
+      <fieldset className="mb-3">
+        <legend className="mb-1 text-xs text-neutral-400">启动方式</legend>
+        {(Object.keys(START_MODE_LABEL) as TunnelStartMode[]).map((m) => (
+          <label key={m} className="mb-0.5 flex items-center gap-2 text-xs text-neutral-300">
+            <input
+              type="radio"
+              name="tunnel-start-mode"
+              checked={draft.startMode === m}
+              onChange={() => patch({ startMode: m })}
+            />
+            {START_MODE_LABEL[m]}
+            {m === 'withSession' && (
+              <span className="text-neutral-500">（推荐：连接成功后启动，断开后停止）</span>
+            )}
+          </label>
+        ))}
+      </fieldset>
+
+      {conflict && !conflict.available && (
+        <div className="mb-3 rounded border border-yellow-800 bg-yellow-950/40 p-2 text-xs text-yellow-200">
+          <p className="mb-1">
+            端口 {draft.bindPort} 已被占用
+            {conflict.holder ? `（本应用的隧道 ${conflict.holder}）` : ''}。
           </p>
-        )}
-
-        {draft.kind !== 'dynamic' && (
-          <div className="mb-2 flex items-end gap-2">
-            <label className="flex-1">
-              <span className="mb-0.5 block text-xs text-neutral-400">目标地址</span>
-              <input
-                className={input}
-                value={draft.targetHost}
-                onChange={(e) => patch({ targetHost: e.target.value })}
-              />
-            </label>
-            <label className="w-24">
-              <span className="mb-0.5 block text-xs text-neutral-400">目标端口</span>
-              <input
-                className={input}
-                type="number"
-                min={1}
-                max={65535}
-                value={draft.targetPort}
-                onChange={(e) => patch({ targetPort: e.target.value })}
-              />
-            </label>
-          </div>
-        )}
-
-        <fieldset className="mb-3">
-          <legend className="mb-1 text-xs text-neutral-400">启动方式</legend>
-          {(Object.keys(START_MODE_LABEL) as TunnelStartMode[]).map((m) => (
-            <label key={m} className="mb-0.5 flex items-center gap-2 text-xs text-neutral-300">
-              <input
-                type="radio"
-                name="tunnel-start-mode"
-                checked={draft.startMode === m}
-                onChange={() => patch({ startMode: m })}
-              />
-              {START_MODE_LABEL[m]}
-              {m === 'withSession' && (
-                <span className="text-neutral-500">（推荐：连接成功后启动，断开后停止）</span>
-              )}
-            </label>
-          ))}
-        </fieldset>
-
-        {conflict && !conflict.available && (
-          <div className="mb-3 rounded border border-yellow-800 bg-yellow-950/40 p-2 text-xs text-yellow-200">
-            <p className="mb-1">
-              端口 {draft.bindPort} 已被占用
-              {conflict.holder ? `（本应用的隧道 ${conflict.holder}）` : ''}。
-            </p>
-            <p className="mb-2 text-yellow-300/80">请选择其他端口，或关闭占用该端口的程序。</p>
-            <div className="flex gap-2">
-              {conflict.suggestedPort && (
-                <button
-                  type="button"
-                  className="rounded bg-yellow-700 px-2 py-0.5 text-white hover:bg-yellow-600"
-                  onClick={() => {
-                    patch({ bindPort: String(conflict.suggestedPort) });
-                    // 使用建议端口 = 接受并继续保存（显式传新草稿，避开闭包旧值）
-                    void save({ ...draft, bindPort: String(conflict.suggestedPort) });
-                  }}
-                >
-                  使用建议端口 {conflict.suggestedPort}
-                </button>
-              )}
+          <p className="mb-2 text-yellow-300/80">请选择其他端口，或关闭占用该端口的程序。</p>
+          <div className="flex gap-2">
+            {conflict.suggestedPort && (
               <button
                 type="button"
-                className="rounded border border-neutral-600 px-2 py-0.5 hover:bg-neutral-800"
-                onClick={() => void save()}
+                className="rounded bg-yellow-700 px-2 py-0.5 text-white hover:bg-yellow-600"
+                onClick={() => {
+                  patch({ bindPort: String(conflict.suggestedPort) });
+                  // 使用建议端口 = 接受并继续保存（显式传新草稿，避开闭包旧值）
+                  void save({ ...draft, bindPort: String(conflict.suggestedPort) });
+                }}
               >
-                重新检测
+                使用建议端口 {conflict.suggestedPort}
               </button>
-              <button
-                type="button"
-                className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800"
-                onClick={() => setConflict(null)}
-              >
-                取消
-              </button>
-            </div>
+            )}
+            <button
+              type="button"
+              className="rounded border border-neutral-600 px-2 py-0.5 hover:bg-neutral-800"
+              onClick={() => void save()}
+            >
+              重新检测
+            </button>
+            <button
+              type="button"
+              className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800"
+              onClick={() => setConflict(null)}
+            >
+              取消
+            </button>
           </div>
-        )}
-
-        {error && <p className="mb-2 text-xs text-red-400">{error}</p>}
-
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            className="rounded px-3 py-1 text-neutral-300 hover:bg-neutral-800"
-            onClick={onClose}
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500 disabled:opacity-50"
-            disabled={busy}
-            onClick={() => void save()}
-          >
-            保存
-          </button>
         </div>
+      )}
+
+      {error && <p className="mb-2 text-xs text-red-400">{error}</p>}
+
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          className="rounded px-3 py-1 text-neutral-300 hover:bg-neutral-800"
+          onClick={onClose}
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500 disabled:opacity-50"
+          disabled={busy}
+          onClick={() => void save()}
+        >
+          保存
+        </button>
+      </div>
 
       {pendingRestart && (
         <ConfirmDialog
@@ -340,7 +340,7 @@ export function TunnelEditor({
           }}
         >
           隧道「{pendingRestart.name || `${pendingRestart.bindHost}:${pendingRestart.bindPort}`}
-          」当前正在运行，新配置已保存。           立即重启将中断该隧道上的现有连接。
+          」当前正在运行，新配置已保存。 立即重启将中断该隧道上的现有连接。
         </ConfirmDialog>
       )}
     </Dialog>

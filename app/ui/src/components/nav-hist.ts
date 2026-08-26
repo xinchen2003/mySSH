@@ -37,3 +37,15 @@ export function navDropBack(h: NavHist): NavHist {
 export function navDropFwd(h: NavHist): NavHist {
   return { ...h, fwd: h.fwd.slice(0, -1) };
 }
+/** 跟随终端目录的目标判定（批次六 10）：cwd 为空、与上次跟随一致（去重）、
+ *  或与当前远程路径一致 → null（不导航）；否则返回 cwd。
+ *  跟随导航属非用户导航，调用方不得入历史栈。 */
+export function followTarget(
+  lastFollowed: string | null,
+  cwd: string | null,
+  currentRemote: string,
+): string | null {
+  if (!cwd) return null;
+  if (cwd === lastFollowed || cwd === currentRemote) return null;
+  return cwd;
+}

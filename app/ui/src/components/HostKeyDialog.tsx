@@ -75,7 +75,9 @@ export function HostKeyDialog() {
           <p className="mb-2 text-xs text-neutral-400">
             {pending.host}:{pending.port}（{pending.keyType}）
           </p>
-          <div className="mb-3 rounded bg-black/40 p-2 font-mono text-xs">{pending.fingerprint}</div>
+          <div className="mb-3 rounded bg-black/40 p-2 font-mono text-xs">
+            {pending.fingerprint}
+          </div>
           <div className="flex justify-end gap-2">
             <button
               data-autofocus

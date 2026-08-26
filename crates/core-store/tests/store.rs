@@ -507,6 +507,23 @@ async fn transfer_history_crud() {
     let rest = repo.for_session("s1").await.expect("list2");
     assert_eq!(rest.len(), 1);
     assert_eq!(rest[0].id, "tr-2");
+
+    // recent：跨会话聚合（TransferCenter 历史记录区数据源）
+    store
+        .sessions()
+        .upsert(&sample("s2", "B"))
+        .await
+        .expect("session2");
+    let mut rec4 = rec.clone();
+    rec4.id = "tr-3".into();
+    rec4.session_id = "s2".into();
+    repo.upsert(&rec4).await.expect("insert3");
+    let all = repo.recent(10).await.expect("recent");
+    assert_eq!(all.len(), 2);
+
+    // clear_all：清空历史
+    assert_eq!(repo.clear_all().await.expect("clear_all"), 2);
+    assert!(repo.recent(10).await.expect("recent2").is_empty());
 }
 
 // ---------- 批次二：分组管理（groupPath 前缀改写，事务化） ----------

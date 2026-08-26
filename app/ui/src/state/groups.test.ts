@@ -12,6 +12,7 @@ import {
   rewritePathOnDeleteKeep,
   rewritePathOnRename,
   sshCommand,
+  virtualCount,
 } from './groups';
 import type { SessionRecord } from '../term/types';
 
@@ -122,6 +123,13 @@ describe('虚拟分组过滤', () => {
     expect(filterVirtual('online', sessions, ctx).map((s) => s.id)).toEqual(['2']);
     expect(filterVirtual('ungrouped', sessions, ctx).map((s) => s.id)).toEqual(['2']);
     expect(filterVirtual('failed', sessions, ctx).map((s) => s.id)).toEqual(['3']);
+  });
+  it('「默认」过滤：仅 groupPath 为空串的会话；嵌套分组不混入', () => {
+    const list = [rec('a', '生产'), rec('b', ''), rec('c', '生产/华东'), rec('d', '')];
+    expect(filterVirtual('ungrouped', list, ctx).map((s) => s.id)).toEqual(['b', 'd']);
+    expect(virtualCount('ungrouped', list, ctx)).toBe(2);
+    // 空集合/全已分组时为 0，不抛错
+    expect(virtualCount('ungrouped', [rec('x', 'g')], ctx)).toBe(0);
   });
 });
 

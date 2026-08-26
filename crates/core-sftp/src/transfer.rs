@@ -287,13 +287,14 @@ impl TransferQueue {
     /// 重试：仅 Failed/Canceled 可重跑。重置为 Queued 后 respawn run_transfer，
     /// 断点由 download_once/upload_once 的既有续传逻辑自动沿用（无需显式传断点）。
     pub fn retry(self: &Arc<Self>, id: &str) -> Result<(), SftpError> {
-        let inner = lock(&self.transfers)
-            .get(id)
-            .cloned()
-            .ok_or_else(|| SftpError::RemotePath {
-                path: id.to_string(),
-                reason: "传输不存在".into(),
-            })?;
+        let inner =
+            lock(&self.transfers)
+                .get(id)
+                .cloned()
+                .ok_or_else(|| SftpError::RemotePath {
+                    path: id.to_string(),
+                    reason: "传输不存在".into(),
+                })?;
         {
             let mut info = lock(&inner.info);
             if !matches!(info.state, TransferState::Failed | TransferState::Canceled) {

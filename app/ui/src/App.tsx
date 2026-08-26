@@ -6,12 +6,13 @@ import { initIdPrefix } from './state/app-store';
 import { invoke } from '@tauri-apps/api/core';
 import { Sidebar } from './components/Sidebar';
 import { TabBar } from './components/TabBar';
-import { TunnelPanel } from './components/TunnelPanel';
+import { AppToolbar } from './components/AppToolbar';
 import { CommandPalette } from './components/CommandPalette';
 import { ConnectDialog } from './components/ConnectDialog';
 import { HostKeyDialog } from './components/HostKeyDialog';
 import { KiDialog } from './components/KiDialog';
 import { SftpPanel } from './components/SftpPanel';
+import { TransferCenter } from './components/TransferCenter';
 import { MetricsPanel } from './components/MetricsPanel';
 import { SettingsDialog } from './components/SettingsDialog';
 import { SplitTree } from './components/SplitTree';
@@ -28,10 +29,8 @@ export function App() {
   const tabs = useAppStore((s) => s.tabs);
   const activeId = useAppStore((s) => s.activeId);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
-  const toggleTunnelPanel = useAppStore((s) => s.toggleTunnelPanel);
   const subscribeTunnels = useAppStore((s) => s.subscribeTunnels);
   const settingsOpen = useAppStore((s) => s.settingsOpen);
-  const toggleSettings = useAppStore((s) => s.toggleSettings);
   const sftpOpen = useAppStore((s) => s.sftpOpen);
   const metricsOpen = useAppStore((s) => s.metricsOpen);
   const paletteOpen = useAppStore((s) => s.paletteOpen);
@@ -146,20 +145,7 @@ export function App() {
           <span className="font-semibold text-neutral-200">mySSH</span>
         </span>
         <span className="flex items-center gap-2">
-          <button
-            className="rounded px-1 hover:bg-neutral-800"
-            onClick={toggleTunnelPanel}
-            title="隧道面板"
-          >
-            ⇄
-          </button>
-          <button
-            className="rounded px-1 hover:bg-neutral-800"
-            onClick={toggleSettings}
-            title="设置（Ctrl+,）"
-          >
-            ⚙
-          </button>
+          <AppToolbar />
           <span>v{version}</span>
         </span>
       </header>
@@ -184,7 +170,7 @@ export function App() {
       </main>
       {activeId && sftpOpen[activeId] && <SftpPanel tabId={activeId} />}
       {activeId && metricsOpen[activeId] && <MetricsPanel tabId={activeId} />}
-      <TunnelPanel />
+      <TransferCenter />
       <ConnectDialog />
       <QuickConnectDialog />
       <HostKeyDialog />
@@ -227,7 +213,9 @@ export function App() {
           onConfirm={() => useAppStore.getState().confirmCloseTab()}
         >
           <p className="mb-1">
-            {pendingCloseTabData.length === 1 ? '该标签' : `这 ${pendingCloseTabData.length} 个标签`}
+            {pendingCloseTabData.length === 1
+              ? '该标签'
+              : `这 ${pendingCloseTabData.length} 个标签`}
             包含 {pendingCloseIds.length} 个窗格，其中 {pendingCloseLive} 个连接仍活跃。
           </p>
           <p className="text-red-300">关闭后，{pendingCloseLive} 个活跃连接将立即断开。</p>

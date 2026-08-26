@@ -26,6 +26,7 @@ import type {
 } from '../term/types';
 import { tunnelDisplayName, tunnelFeedback } from './tunnel-utils';
 import { reconnectRegistry } from '../term/registry';
+import { broadcastInput } from '../term/broadcast';
 
 export type PaneState = 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'error';
 /** 通知分级（批次一 7.7）：success/info 短时自动消失，warning 较长，error 常驻手动关 */
@@ -58,6 +59,8 @@ export interface Pane {
   id: string;
   session: TerminalSession;
   state: PaneState;
+  /** 分屏新 pane 的初始目录（来源 pane 的 OSC 7 cwd；首连成功 cd 一次后即消费） */
+  initialCwd?: string;
 }
 
 export interface Tab {
@@ -75,9 +78,35 @@ let tabSeq = 1;
 let paneSeq = 1;
 /** 多窗口隔离（M5 标签分离）：窗口 label 作 id 前缀，防跨窗口 tab/pane id 碰撞 */
 let idPrefix = '';
+/** 本窗口 label（广播跨窗口事件帧 source 字段/回环防护；live binding） */
+export let windowLabel = 'main';
 /** App 挂载时以窗口 label 初始化一次 */
-export function initIdPrefix(windowLabel: string): void {
-  idPrefix = windowLabel === 'main' ? '' : `${windowLabel}-`;
+export function initIdPrefix(label: string): void {
+  windowLabel = label;
+  idPrefix = label === 'main' ? '' : `${label}-`;
+}
+
+/** POSIX 单引号转义（分屏新 pane 初始 cd 用） */
+const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+/** Shell 集成注入（批次六 10 根因修复）：bash/zsh 装 OSC 7 cwd 上报钩子。
+ *  「跟随终端目录」/分屏 cwd 继承此前依赖服务器 shell 自发 OSC 7，默认 bash 不发 → 功能无效。
+ *  仅在连接成功的会话内定义临时函数并挂 PROMPT_COMMAND/precmd，不写用户配置文件；
+ *  case 守卫幂等；自定义 command 的目标（可能不是 shell）不注入。 */
+const OSC7_HOOK = `if [ -n "\${BASH_VERSION:-}" ]; then _myssh_osc7(){ printf '\\033]7;file://%s%s\\007' "\${HOSTNAME:-localhost}" "$PWD"; }; PROMPT_COMMAND="_myssh_osc7\${PROMPT_COMMAND:+;$PROMPT_COMMAND}"; elif [ -n "\${ZSH_VERSION:-}" ]; then _myssh_osc7(){ printf '\\033]7;file://%s%s\\007' "\${HOSTNAME:-localhost}" "$PWD"; }; autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd _myssh_osc7 2>/dev/null; fi; _myssh_osc7 2>/dev/null\n`;
+/** 注入 OSC 7 钩子但不上屏：tty 回显在字节到达时发生，直接写钩子会被当键盘输入
+ *  整段打出来。先写 `stty -echo`（仅此一行可见），延迟等 bash 执行生效后再写钩子
+ *  并恢复回显。幂等守卫不需要——每次连接都是全新远程 shell。
+ *  副作用窗口：600ms 内用户击键不回显（输入不丢）。 */
+function injectOsc7(session: { write(data: string): void }): void {
+  session.write('stty -echo\n');
+  setTimeout(() => session.write(`${OSC7_HOOK}stty echo\n`), 600);
+}
+
+/** 目标是否配置了自定义启动命令（注入了也没人执行，只会污染程序输入） */
+function targetHasCommand(target: ConnectTarget): boolean {
+  if (target.kind === 'spec') return !!target.spec.command;
+  const rec = useAppStore.getState().sessions.find((r) => r.id === target.sessionId);
+  return !!rec?.command;
 }
 
 interface AppStore {
@@ -88,7 +117,8 @@ interface AppStore {
   pendingHostKeys: HostKeyPromptFrame[];
   pendingKis: KiChallengeFrame[];
 
-  openConnect(editTarget?: SessionRecord): void;
+  /** 打开连接对话框；editTarget=编辑既有会话，presetGroup=预填分组路径（分组菜单「新建连接」） */
+  openConnect(editTarget?: SessionRecord, presetGroup?: string): void;
   closeConnect(): void;
   /** 命令面板（Ctrl+Shift+P） */
   paletteOpen: boolean;
@@ -158,6 +188,8 @@ interface AppStore {
   deleteSession(id: string): Promise<void>;
   /** 编辑既有会话（null=新建） */
   editing: SessionRecord | null;
+  /** 新建连接时预填的分组路径（null=不预填） */
+  connectPreset: string | null;
   sessions: SessionRecord[];
   sidebarOpen: boolean;
   toggleSidebar(): void;
@@ -197,6 +229,9 @@ interface AppStore {
   /** §9.6 连接反馈：随会话隧道启动结果汇总成通知 */
   notifySessionTunnels(sessionId: string, results: SessionTunnelResult[]): void;
   splitActive(dir: 'row' | 'col'): void;
+  /** 广播输入开关（11）：开启后输入同步写入本窗口全部已连接 pane，并经事件转发其它窗口 */
+  broadcastEnabled: boolean;
+  toggleBroadcast(): void;
   closePane(tabId: string, paneId: string): void;
   setActive(id: string): void;
   /** 拖拽重排：把 dragId 移到 targetId 之前 */
@@ -243,10 +278,32 @@ export const useAppStore = create<AppStore>((set, get) => {
         if (ev.type === 'session_state' && ev.state === 'connected') {
           const tab = get().tabs.find((t) => t.id === tabId);
           if (tab && tab.target.kind === 'session') get().clearConnectFailure(tab.target.sessionId);
+          // 6b：分屏新 pane 落同 cwd——首连成功（非断线重连）cd 一次即消费，
+          // 避免用户之后手动重连时被 cd 回旧目录
+          const p = tab?.panes[id];
+          // shell 集成：每次连上（含重连，新 shell 进程）都注入 OSC 7 钩子；
+          // 先于 initialCwd 的 cd，使 cd 后 cwd 即刻上报
+          if (tab && p && !targetHasCommand(tab.target)) injectOsc7(p.session);
+          if (p?.initialCwd && !ev.reconnected) {
+            const cwd = p.initialCwd;
+            set((s) => ({
+              tabs: s.tabs.map((t) =>
+                t.id === tabId
+                  ? { ...t, panes: { ...t.panes, [id]: { ...t.panes[id], initialCwd: undefined } } }
+                  : t,
+              ),
+            }));
+            p.session.write(`cd ${shellQuote(cwd)}\n`);
+          }
         }
       }
     };
-    return { id, session: new TerminalSession(onEvent), state: 'connecting' };
+    const session = new TerminalSession(onEvent);
+    // 广播输入（11）：输入帧旁路钩子，开关状态在触发时读取
+    session.inputHook = (data) => {
+      if (get().broadcastEnabled) broadcastInput(tabId, id, data);
+    };
+    return { id, session, state: 'connecting' };
   };
 
   const openTabWithTarget = (target: ConnectTarget, title: string) => {
@@ -270,6 +327,7 @@ export const useAppStore = create<AppStore>((set, get) => {
     pendingHostKeys: [],
     pendingKis: [],
     editing: null,
+    connectPreset: null,
     sessions: [],
     sidebarOpen: true,
     tunnels: [],
@@ -379,6 +437,9 @@ export const useAppStore = create<AppStore>((set, get) => {
         title: `${title} · mySSH`,
         width: 1200,
         height: 800,
+        // 默认 true 时 OS 文件拖放被原生 handler 截获（只发 tauri://drag-drop），
+        // SFTP 面板的 HTML5 drop 上传不生效；与主窗口 tauri.conf.json 一致关闭
+        dragDropEnabled: false,
       });
       void win.once('tauri://error', () => undefined);
     },
@@ -390,17 +451,35 @@ export const useAppStore = create<AppStore>((set, get) => {
     },
 
     duplicateSession: async (rec) => {
+      // 名称自动去重：「X 副本」「X 副本 2」…
+      const names = new Set(get().sessions.map((x) => x.name));
+      let name = `${rec.name} 副本`;
+      for (let i = 2; names.has(name); i++) name = `${rec.name} 副本 ${i}`;
       const copy: SessionRecord = {
         ...rec,
         id: crypto.randomUUID(),
-        name: `${rec.name} 副本`,
+        name,
         jumpChain: [...rec.jumpChain],
         tags: [...rec.tags],
       };
       try {
         await invoke('session_upsert', { record: copy });
+        // 端口转发随档案克隆（新 id、绑定新会话、不启动）；
+        // 凭据存保险库按会话 id 取且不可回读，按现有模型不复制，需重新录入
+        // tunnelDefs 可能尚未加载（隧道弹层从未打开过），先拉取再筛，否则静默丢克隆
+        await get().loadTunnelDefs();
+        const tunnels = get().tunnelDefs.filter((t) => t.sessionId === rec.id);
+        for (const t of tunnels) {
+          await invoke('tunnel_save', {
+            def: { ...t, id: `td-${crypto.randomUUID()}`, sessionId: copy.id, start: false },
+          });
+        }
         await get().loadSessions();
-        get().notify(`已复制为「${copy.name}」（凭据不随档案复制）`, 'success');
+        if (tunnels.length > 0) await get().loadTunnelDefs();
+        get().notify(
+          `已复制为「${name}」${tunnels.length > 0 ? `（含 ${tunnels.length} 条端口转发，未启动）` : ''}（凭据不随档案复制）`,
+          'success',
+        );
       } catch (e) {
         get().notify(`复制服务器失败: ${String(e)}`, 'error');
       }
@@ -441,11 +520,14 @@ export const useAppStore = create<AppStore>((set, get) => {
 
     setGroupList: (key, list) => get().setSetting(key, [...new Set(list)]),
 
-    openConnect: (editTarget) => set({ showConnect: true, editing: editTarget ?? null }),
-    closeConnect: () => set({ showConnect: false, editing: null }),
+    openConnect: (editTarget, presetGroup) =>
+      set({ showConnect: true, editing: editTarget ?? null, connectPreset: presetGroup ?? null }),
+    closeConnect: () => set({ showConnect: false, editing: null, connectPreset: null }),
 
     paletteOpen: false,
     togglePalette: () => set((s) => ({ paletteOpen: !s.paletteOpen })),
+    broadcastEnabled: false,
+    toggleBroadcast: () => set((s) => ({ broadcastEnabled: !s.broadcastEnabled })),
     quickConnectOpen: false,
     toggleQuickConnect: () => set((s) => ({ quickConnectOpen: !s.quickConnectOpen })),
     bellTabs: [],
@@ -457,7 +539,11 @@ export const useAppStore = create<AppStore>((set, get) => {
       const tab = get().tabs.find((t) => t.id === tabId);
       const pane = tab?.panes[paneId];
       if (!tab || !pane) return;
-      if (pane.state === 'connected' || pane.state === 'connecting' || pane.state === 'reconnecting') {
+      if (
+        pane.state === 'connected' ||
+        pane.state === 'connecting' ||
+        pane.state === 'reconnecting'
+      ) {
         void pane.session.close();
         get().setPaneState(tabId, paneId, 'closed');
       }
@@ -568,8 +654,7 @@ export const useAppStore = create<AppStore>((set, get) => {
       );
     },
 
-    closeAllTabs: () =>
-      get().requestCloseTabs(get().tabs.map((t) => t.id)),
+    closeAllTabs: () => get().requestCloseTabs(get().tabs.map((t) => t.id)),
 
     importFrom: async (source, path) => {
       try {
@@ -635,7 +720,11 @@ export const useAppStore = create<AppStore>((set, get) => {
       const { tabs, activeId } = get();
       const tab = tabs.find((t) => t.id === activeId);
       if (!tab) return;
+      const src = tab.panes[tab.activePaneId];
       const pane = makePane(tab.id);
+      // 6b：新 pane 复用 tab.target（TerminalView 以同一 target attach = 同服务器新通道）；
+      // 源 pane cwd 已知且目标无自定义命令（command 会取代登录 shell）时作为初始目录
+      if (src?.session.cwd && !targetHasCommand(tab.target)) pane.initialCwd = src.session.cwd;
       set((s) => ({
         tabs: s.tabs.map((t) =>
           t.id === tab.id
@@ -671,8 +760,7 @@ export const useAppStore = create<AppStore>((set, get) => {
     },
 
     // 激活即清 bell 待读标记（12.6）
-    setActive: (id) =>
-      set((s) => ({ activeId: id, bellTabs: s.bellTabs.filter((t) => t !== id) })),
+    setActive: (id) => set((s) => ({ activeId: id, bellTabs: s.bellTabs.filter((t) => t !== id) })),
 
     moveTab: (dragId, targetId) =>
       set((s) => {

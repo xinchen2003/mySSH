@@ -20,7 +20,8 @@ export function SplitTree({
     const pane = tab.panes[node.paneId];
     if (!pane) return null;
     return (
-      <PaneFrame tab={tab} paneId={node.paneId} visible={visible}>
+      // key=pane.id：分屏占比拖拽等同级重排时保持实例（leaf↔split 的跨层重挂由 TerminalView 保活池兜底）
+      <PaneFrame key={node.paneId} tab={tab} paneId={node.paneId} visible={visible}>
         <TerminalView tab={tab} pane={pane} />
       </PaneFrame>
     );

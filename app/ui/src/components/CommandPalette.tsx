@@ -198,7 +198,12 @@ export function CommandPalette() {
           s.notify(`主题：${next.label}`, 'success');
         },
       },
-      { id: 'a-settings', label: '设置', keyId: 'settings', run: () => useAppStore.getState().toggleSettings() },
+      {
+        id: 'a-settings',
+        label: '设置',
+        keyId: 'settings',
+        run: () => useAppStore.getState().toggleSettings(),
+      },
       { id: 'a-sidebar', label: '侧栏开关', run: () => toggleSidebar() },
       {
         id: 'a-imp-ssh',
@@ -357,7 +362,15 @@ export function CommandPalette() {
           <ul className="max-h-80 overflow-y-auto py-1">
             {items.length === 0 && <li className="px-4 py-3 text-xs text-neutral-600">无匹配</li>}
             {items.map((item, i) => (
-              <li key={item.kind === 'action' ? item.action.id : item.kind === 'group' ? `g:${item.path}` : item.id}>
+              <li
+                key={
+                  item.kind === 'action'
+                    ? item.action.id
+                    : item.kind === 'group'
+                      ? `g:${item.path}`
+                      : item.id
+                }
+              >
                 {(i === 0 || sectionOf(items[i - 1] ?? item) !== sectionOf(item)) && (
                   <div className="px-4 pt-1.5 pb-0.5 text-[10px] text-neutral-600">
                     {sectionOf(item)}

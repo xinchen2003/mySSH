@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Channel, invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../state/app-store';
-import type { FileEntry, TransferView } from '../term/types';
+import type { FileEntry } from '../term/types';
+import { useTransferStore } from '../state/transfer-store';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ContextMenu, type MenuItem } from './ContextMenu';
 import { PathBar } from './PathBar';
 import {
   EMPTY_NAV_HIST,
+  followTarget,
   navBack as histBack,
   navDropBack,
   navDropFwd,
@@ -17,9 +18,17 @@ import {
 } from './nav-hist';
 import { usePanelHeight } from './panel-height';
 
-/** 双栏 SFTP 面板：左本地 / 右远程，拖拽互传 + 队列进度 + 终端 cwd 联动（OSC 7）。
+/** 双栏 SFTP 面板：左本地 / 右远程，拖拽互传 + 终端 cwd 联动（OSC 7）。
  *  批次五：可编辑路径栏（前进/后退历史）、多选与批量操作、失败任务重试、
- *  本地文件操作、面板拖拽调高。远端操作命令见 crates/app/src/sftp.rs。 */
+ *  本地文件操作、面板拖拽调高。远端操作命令见 crates/app/src/sftp.rs。
+ *  批次六：拖拽增强（OS 拖入本地栏复制、拖到目录行进子目录、落点高亮）、
+ *  复制路径、路径栏模糊建议、本地快捷位「桌面」、传输迁出至 TransferCenter、
+ *  初始定位终端 cwd / 家目录（权限失败回退家目录）、跟随终端修复。
+ *  批次七：OS 拖放改走 HTML5（dragDropEnabled=false，旧 Tauri 原生事件路径坐标是
+ *  物理像素、150% 缩放下命中测试全偏 → 静默失效）；File 无完整路径故字节流经
+ *  local_drop_* 落盘后入 sftp_upload 队列。
+ *  限制：远程 → 窗外 OS 拖出下载在 Tauri webview 无原生支持（不提供 DragOut/
+ *  拖拽数据供给），且不允许新增依赖，故不实现。 */
 
 type Side = 'local' | 'remote';
 
@@ -39,6 +48,81 @@ function fmtTime(unix?: number | null): string {
 function fmtPerms(p?: number | null): string {
   if (p == null) return '';
   return (p & 0o7777).toString(8).padStart(4, '0');
+}
+
+/** 权限位 → 中文三段（拥有者/同组/其他），如 0755 → 读写执/读执/读执；无权限段显示「无」 */
+function fmtPermsCn(p?: number | null): string {
+  if (p == null) return '';
+  const seg = (b: number) => `${b & 4 ? '读' : ''}${b & 2 ? '写' : ''}${b & 1 ? '执' : ''}` || '无';
+  return `${seg((p >> 6) & 7)}/${seg((p >> 3) & 7)}/${seg(p & 7)}`;
+}
+
+/** 权限列 tooltip：三段完整描述 + 原始八进制 */
+function permsTitle(p?: number | null): string {
+  if (p == null) return '';
+  const seg = (b: number) =>
+    [b & 4 ? '读' : '', b & 2 ? '写' : '', b & 1 ? '执行' : ''].filter(Boolean).join('、') ||
+    '无权限';
+  return `拥有者：${seg((p >> 6) & 7)}；同组：${seg((p >> 3) & 7)}；其他：${seg(p & 7)}（八进制 ${fmtPerms(p)}）`;
+}
+
+/** 远程路径拼接（base='/' 不产生双斜杠） */
+function joinRemote(base: string, rel: string): string {
+  return base === '/' || base === '' ? `/${rel}` : `${base}/${rel}`;
+}
+
+/** 遍历拖放条目（webkitGetAsEntry 递归展开文件夹），rel 为相对拖入根的路径 */
+async function collectDroppedFiles(
+  items: DataTransferItemList,
+): Promise<{ file: File; rel: string }[]> {
+  const out: { file: File; rel: string }[] = [];
+  const walk = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
+    if (entry.isFile) {
+      const { promise, resolve, reject } = Promise.withResolvers<File>();
+      (entry as FileSystemFileEntry).file(resolve, reject);
+      out.push({ file: await promise, rel: prefix + entry.name });
+      return;
+    }
+    if (!entry.isDirectory) return;
+    const reader = (entry as FileSystemDirectoryEntry).createReader();
+    // readEntries 每批最多 100 条，必须循环读到空
+    for (;;) {
+      const { promise, resolve, reject } = Promise.withResolvers<FileSystemEntry[]>();
+      reader.readEntries(resolve, reject);
+      const es = await promise;
+      if (es.length === 0) break;
+      for (const s of es) await walk(s, `${prefix}${entry.name}/`);
+    }
+  };
+  const entries: FileSystemEntry[] = [];
+  for (const it of Array.from(items)) {
+    if (it.kind !== 'file') continue;
+    const e = it.webkitGetAsEntry?.();
+    if (e) entries.push(e);
+    else {
+      const f = it.getAsFile();
+      if (f) out.push({ file: f, rel: f.name });
+    }
+  }
+  for (const e of entries) await walk(e, '');
+  return out;
+}
+
+/** File → 4MB 分块 base64 回调（fromCharCode 32K 分批，避开参数上限） */
+async function fileToBase64Chunks(
+  file: File,
+  onChunk: (b64: string) => Promise<void>,
+): Promise<void> {
+  const CHUNK = 4 * 1024 * 1024;
+  for (let off = 0; off < file.size || (off === 0 && file.size === 0); off += CHUNK) {
+    const buf = new Uint8Array(await file.slice(off, off + CHUNK).arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < buf.length; i += 0x8000) {
+      bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    }
+    await onChunk(btoa(bin));
+    if (file.size === 0) break;
+  }
 }
 
 function parentDir(path: string, remote: boolean): string {
@@ -72,23 +156,54 @@ interface PaneProps {
   onUp: () => void;
   onRefresh: () => void;
   onDropEntries: (paths: string[]) => void;
+  /** 落到目录行上：传入该子目录路径（批次六 1b） */
+  onDropEntriesInto: (paths: string[], dir: string) => void;
+  /** OS 文件拖入（HTML5 drop；dir=落点目录：命中的目录行，否则 pane 当前目录） */
+  onDropOsFiles: (items: DataTransferItemList, dir: string) => void;
   onRowMenu: (e: FileEntry, x: number, y: number) => void;
   onClearSel: () => void;
   onSelectAll: () => void;
+  /** 路径栏模糊建议（批次六 3） */
+  fetchSuggestions: (input: string) => Promise<string[]>;
+  /** 落点高亮：内部拖拽悬停 或 OS 文件悬停（批次六 1d） */
+  dropActive: boolean;
+  onDropHover: (active: boolean) => void;
+  /** 快捷位置条（批次六 4，本地栏：此电脑/桌面）；远程栏传 null */
+  quickSlots?: React.ReactNode;
 }
 
 function FilePane(p: PaneProps) {
+  // 行级落点（批次六 1b）：悬停的目录行路径；null=落当前目录
+  const [rowDrop, setRowDrop] = useState<string | null>(null);
   return (
     <div
-      className="flex min-h-0 flex-1 flex-col"
-      onDragOver={(e) => e.preventDefault()}
+      className={`flex min-h-0 flex-1 flex-col ${p.dropActive ? 'ring-2 ring-inset ring-blue-600' : ''}`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        p.onDropHover(true);
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+        p.onDropHover(false);
+        setRowDrop(null);
+      }}
       onDrop={(e) => {
         e.preventDefault();
+        p.onDropHover(false);
         const raw = e.dataTransfer.getData('application/x-myssh-entry');
+        const dir = rowDrop;
+        setRowDrop(null);
         if (raw) {
           const src = JSON.parse(raw) as { side: string; paths: string[] };
-          if (src.side !== p.side) p.onDropEntries(src.paths);
+          if (src.side !== p.side) {
+            if (dir) p.onDropEntriesInto(src.paths, dir);
+            else p.onDropEntries(src.paths);
+          }
+          return;
         }
+        // OS 文件拖入（dragDropEnabled=false 后走 HTML5；File 无完整路径，字节流经
+        // local_drop_* 落盘，远程侧再进 sftp_upload 队列）
+        if (e.dataTransfer.files.length > 0) p.onDropOsFiles(e.dataTransfer.items, dir ?? p.path);
       }}
     >
       <PathBar
@@ -102,7 +217,9 @@ function FilePane(p: PaneProps) {
         onUp={p.onUp}
         onRefresh={p.onRefresh}
         onNavigate={p.onNavigate}
+        fetchSuggestions={p.fetchSuggestions}
       />
+      {p.quickSlots}
       <div
         className="min-h-0 flex-1 overflow-y-auto outline-none"
         tabIndex={0}
@@ -129,6 +246,39 @@ function FilePane(p: PaneProps) {
                 }),
               )
             }
+            onDragOver={
+              e.kind === 'dir'
+                ? (ev) => {
+                    // 目录行可接收对面栏条目或 OS 文件（落到该子目录）
+                    if (
+                      ev.dataTransfer.types.includes('application/x-myssh-entry') ||
+                      ev.dataTransfer.types.includes('Files')
+                    ) {
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                      setRowDrop(e.path);
+                    }
+                  }
+                : undefined
+            }
+            onDragLeave={
+              e.kind === 'dir' ? () => setRowDrop((d) => (d === e.path ? null : d)) : undefined
+            }
+            onDrop={
+              e.kind === 'dir'
+                ? (ev) => {
+                    const raw = ev.dataTransfer.getData('application/x-myssh-entry');
+                    // 非内部负载（OS 文件）不拦截：冒泡给栏位级 onDrop 统一处理
+                    if (!raw) return;
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    setRowDrop(null);
+                    p.onDropHover(false);
+                    const src = JSON.parse(raw) as { side: string; paths: string[] };
+                    if (src.side !== p.side) p.onDropEntriesInto(src.paths, e.path);
+                  }
+                : undefined
+            }
             onClick={(ev) => p.onRowClick(e, ev)}
             onDoubleClick={() => p.onOpen(e)}
             onContextMenu={(ev) => {
@@ -136,9 +286,11 @@ function FilePane(p: PaneProps) {
               p.onRowMenu(e, ev.clientX, ev.clientY);
             }}
             className={`flex cursor-pointer items-center gap-2 px-2 py-0.5 text-xs ${
-              p.sel.has(e.path)
-                ? 'bg-neutral-700 text-neutral-100'
-                : 'text-neutral-300 hover:bg-neutral-800'
+              rowDrop === e.path
+                ? 'bg-blue-900/60 text-neutral-100 outline outline-1 outline-blue-600'
+                : p.sel.has(e.path)
+                  ? 'bg-neutral-700 text-neutral-100'
+                  : 'text-neutral-300 hover:bg-neutral-800'
             }`}
           >
             <span className="w-4 shrink-0 text-center">
@@ -152,8 +304,11 @@ function FilePane(p: PaneProps) {
             </span>
             <span className="w-16 shrink-0 text-right text-neutral-600">{fmtTime(e.mtime)}</span>
             {p.side === 'remote' && (
-              <span className="w-12 shrink-0 text-right font-mono text-neutral-600">
-                {fmtPerms(e.permissions)}
+              <span
+                className="w-32 shrink-0 text-right text-neutral-600"
+                title={permsTitle(e.permissions)}
+              >
+                {fmtPermsCn(e.permissions)}
               </span>
             )}
           </div>
@@ -172,7 +327,6 @@ export function SftpPanel({ tabId }: { tabId: string }) {
   const notify = useAppStore((s) => s.notify);
   const tab = tabs.find((t) => t.id === tabId);
   const sessionId = tab?.target.kind === 'session' ? tab.target.sessionId : null;
-  const pane = tab ? tab.panes[tab.activePaneId] : null;
 
   const [localPath, setLocalPath] = useState('');
   const [remotePath, setRemotePath] = useState('/');
@@ -188,7 +342,6 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     paths: new Set(),
     anchor: null,
   });
-  const [transfers, setTransfers] = useState<TransferView[]>([]);
   const [followTerm, setFollowTerm] = useState(true);
   const [prompt, setPrompt] = useState<{
     action: 'mkdir' | 'rename' | 'chmod' | 'move';
@@ -198,9 +351,22 @@ export function SftpPanel({ tabId }: { tabId: string }) {
   /** 待确认删除的条目（11.2 批量；目录递归删除，无法恢复） */
   const [confirmDel, setConfirmDel] = useState<FileEntry[] | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; side: Side } | null>(null);
-  const [showErr, setShowErr] = useState<Set<string>>(new Set());
-  const remotePaneRef = useRef<HTMLDivElement>(null);
+  /** 本会话传输快照（transfer-store 聚合；订阅由初始 effect 幂等建立） */
+  const sessionTransfers = useTransferStore((s) =>
+    sessionId ? s.bySession[sessionId] : undefined,
+  );
+  /** 拖拽悬停的栏位（落点高亮） */
+  const [html5DragSide, setHtml5DragSide] = useState<Side | null>(null);
   const { height, handle } = usePanelHeight('sftp.height', 256);
+  // 最新路径/刷新函数的 ref：1s 跟随轮询与 OS 拖放回调读取，避免闭包过期（批次六 10）
+  const remotePathRef = useRef(remotePath);
+  const localPathRef = useRef(localPath);
+  const refreshRemoteRef = useRef<(path?: string) => Promise<string | null>>(async () => null);
+  const refreshLocalRef = useRef<(path?: string) => Promise<string | null>>(async () => null);
+  /** 已解析的远端家目录（sftp_home 缓存；解析失败退化为 "."） */
+  const homeRef = useRef<string | null>(null);
+  /** 上次跟随导航到的 cwd（去重，见 followTarget） */
+  const lastFollowRef = useRef<string | null>(null);
 
   const clearSel = useCallback(() => setSel((s) => ({ ...s, paths: new Set(), anchor: null })), []);
 
@@ -225,91 +391,183 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     [localPath, notify],
   );
 
+  /** 解析远端家目录（批次六 9）：sftp_home 一次缓存；服务器无 expand-path 扩展时
+   *  退化为 "."（SFTP 会话默认起点即家目录，不落 "/"） */
+  const resolveHome = useCallback(async (): Promise<string> => {
+    if (homeRef.current) return homeRef.current;
+    try {
+      const home = await invoke<string>('sftp_home', { sessionId });
+      homeRef.current = home;
+      return home;
+    } catch {
+      homeRef.current = '.';
+      return '.';
+    }
+  }, [sessionId]);
+
   const refreshRemote = useCallback(
-    async (path?: string): Promise<string | null> => {
+    async (path?: string, allowFallback = true): Promise<string | null> => {
       if (!sessionId) return null;
-      const target = path ?? remotePath;
-      setRemoteLoading(true);
-      try {
-        const res = await invoke<{ entries: FileEntry[] }>('sftp_list', {
-          sessionId,
-          path: target,
-        });
-        setRemoteEntries(res.entries);
-        setRemotePath(target);
-        return target;
-      } catch (e) {
-        notify(`远程目录读取失败: ${e}`, 'error');
-        return null;
-      } finally {
-        setRemoteLoading(false);
+      // 批次六 9：权限等失败回退家目录（warning），不停在原地报错；回退只尝试一次（循环而非递归，
+      // 避免 useCallback 自引用触发 react-hooks/immutability）
+      let target = path ?? remotePath;
+      for (;;) {
+        setRemoteLoading(true);
+        try {
+          const res = await invoke<{ entries: FileEntry[] }>('sftp_list', {
+            sessionId,
+            path: target,
+          });
+          setRemoteEntries(res.entries);
+          setRemotePath(target);
+          return target;
+        } catch (e) {
+          if (allowFallback) {
+            const home = await resolveHome();
+            if (home !== target) {
+              notify(`无法读取 ${target}（${e}），已回退到家目录`, 'warning');
+              target = home;
+              allowFallback = false;
+              continue;
+            }
+          }
+          notify(`远程目录读取失败: ${e}`, 'error');
+          return null;
+        } finally {
+          setRemoteLoading(false);
+        }
       }
     },
-    [sessionId, remotePath, notify],
+    [sessionId, remotePath, notify, resolveHome],
   );
+
+  // 跟随轮询 / OS 拖放回调经 ref 读最新值（闭包过期修复，批次六 10）
+  useEffect(() => {
+    remotePathRef.current = remotePath;
+    localPathRef.current = localPath;
+    refreshRemoteRef.current = refreshRemote;
+    refreshLocalRef.current = refreshLocal;
+  }, [remotePath, localPath, refreshRemote, refreshLocal]);
 
   // 初始加载 + 传输订阅（微任务推迟 setState，避开 effect 内同步渲染级联）
   useEffect(() => {
     if (!sessionId) return;
-    const cwd = pane?.session.cwd;
     queueMicrotask(() => {
-      void refreshRemote(cwd ?? '/');
-      void refreshLocal('');
+      // 批次六 9：优先定位终端 cwd；shell 未上报（null）时解析家目录，不落 "/"
+      const t = useAppStore.getState().tabs.find((x) => x.id === tabId);
+      const p = t ? t.panes[t.activePaneId] : null;
+      const cwd = p?.session.cwd ?? null;
+      void (async () => {
+        await refreshRemoteRef.current(cwd ?? (await resolveHome()));
+      })();
+      void refreshLocalRef.current('');
     });
-    const events = new Channel<{ transfers: TransferView[] }>();
-    // 12.2 状态栏：顺带发布全局活跃传输数（复用既有订阅，无新增轮询）；
-    // 只数本次运行的非终态任务，history 帧不计
-    events.onmessage = (f) => {
-      setTransfers(f.transfers);
-      useAppStore
-        .getState()
-        .setTransferActive(
-          f.transfers.filter(
-            (t) =>
-              !t.history && (t.state === 'queued' || t.state === 'running' || t.state === 'paused'),
-          ).length,
-        );
-    };
-    void invoke('transfer_subscribe', { sessionId, events });
-    return () => {
-      useAppStore.getState().setTransferActive(null);
-    };
+    // 传输订阅迁至 transfer-store（幂等；状态栏活跃数由 store 聚合发布）
+    useTransferStore.getState().ensureSession(sessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // 终端 cwd 跟随（OSC 7；非用户导航 → 不入历史栈）
+  // 终端 cwd 跟随（OSC 7；非用户导航 → 不入历史栈）。
+  // 批次六 10 修复：不再捕获渲染期的 pane/remotePath（pane 对象身份不随 cwd 变化，
+  // tab 切换后引用过期），改为 tick 内从 store 按 tabId 取最新 pane，followTarget 去重。
   useEffect(() => {
     if (!followTerm || !sessionId) return;
     const timer = setInterval(() => {
-      const cwd = pane?.session.cwd;
-      if (cwd && cwd !== remotePath) void refreshRemote(cwd);
+      const t = useAppStore.getState().tabs.find((x) => x.id === tabId);
+      const p = t ? t.panes[t.activePaneId] : null;
+      const target = followTarget(
+        lastFollowRef.current,
+        p?.session.cwd ?? null,
+        remotePathRef.current,
+      );
+      if (target) {
+        lastFollowRef.current = target;
+        void refreshRemoteRef.current(target);
+      }
     }, 1000);
     return () => clearInterval(timer);
-  }, [followTerm, sessionId, pane, remotePath, refreshRemote]);
+  }, [followTerm, sessionId, tabId]);
 
-  // OS 文件拖入：落在远程栏 → 上传
-  useEffect(() => {
-    if (!sessionId) return;
-    let unlisten: (() => void) | null = null;
-    void getCurrentWindow()
-      .onDragDropEvent((ev) => {
-        if (ev.payload.type !== 'drop') return;
-        const rect = remotePaneRef.current?.getBoundingClientRect();
-        if (!rect) return;
-        const { x, y } = ev.payload.position;
-        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-          for (const p of ev.payload.paths) {
-            void invoke('sftp_upload', { sessionId, local: p, remote: remotePath }).catch((e) =>
-              notify(`上传失败: ${e}`, 'error'),
-            );
+  // OS 文件拖入（批次六 1）：远程栏 → 上传（落目录行进该子目录）；本地栏 → 写进当前本地目录。
+  // dragDropEnabled=false 后走 HTML5 drop：File 对象无完整路径，只能读字节流——
+  // 经 local_drop_begin/append 落盘（远程侧落到 %TEMP%/myssh-drops 中转），再走既有
+  // sftp_upload 队列（进度/续传/审计/完成提示全复用）。文件夹拖入按 webkitGetAsEntry
+  // 递归保结构。
+  const osFileDrop = (side: Side) => (items: DataTransferItemList, dir: string) => {
+    void (async () => {
+      const files = await collectDroppedFiles(items);
+      if (files.length === 0) return;
+      if (side === 'remote') {
+        if (!sessionId) return;
+        const base = dir;
+        // 先逐级补远程目录（sftp_mkdir 不递归；已存在失败忽略）
+        const dirs = new Set<string>();
+        for (const f of files) {
+          const parts = f.rel.split('/').slice(0, -1);
+          for (let i = 1; i <= parts.length; i++) dirs.add(parts.slice(0, i).join('/'));
+        }
+        for (const d of [...dirs].sort()) {
+          await invoke('sftp_mkdir', { sessionId, path: joinRemote(base, d) }).catch(
+            () => undefined,
+          );
+        }
+        for (const f of files) {
+          try {
+            const tmp = await invoke<string>('local_drop_begin', {
+              destDir: null,
+              relPath: f.rel,
+            });
+            await fileToBase64Chunks(f.file, async (b64) => {
+              await invoke('local_drop_append', { path: tmp, dataB64: b64 });
+            });
+            // sftp_upload 的 remote 是目标目录（远端文件名取本地 basename，中转区已保留原名）
+            const relDir = f.rel.split('/').slice(0, -1).join('/');
+            await invoke('sftp_upload', {
+              sessionId,
+              local: tmp,
+              remote: relDir ? joinRemote(base, relDir) : base,
+            });
+          } catch (e) {
+            notify(`上传失败: ${e}`, 'error');
           }
         }
-      })
-      .then((u) => {
-        unlisten = u;
-      });
-    return () => unlisten?.();
-  }, [sessionId, remotePath, notify]);
+        // 入队后的开始/完成/失败提示由 transfer-store 订阅差分统一发
+      } else {
+        const target = dir;
+        if (!target) {
+          notify('盘符枚举页无法接收文件，请先进入一个本地目录', 'warning');
+          return;
+        }
+        let ok = 0;
+        for (const f of files) {
+          try {
+            const dst = await invoke<string>('local_drop_begin', {
+              destDir: target,
+              relPath: f.rel,
+            });
+            await fileToBase64Chunks(f.file, async (b64) => {
+              await invoke('local_drop_append', { path: dst, dataB64: b64 });
+            });
+            ok++;
+          } catch (e) {
+            notify(`复制失败: ${e}`, 'error');
+          }
+        }
+        if (ok > 0) {
+          notify(`已复制 ${ok} 个项目`, 'success');
+          void refreshLocal();
+        }
+      }
+    })();
+  };
+
+  // 终端右键「打开 SFTP」且面板已开：消费导航请求定位到 cwd（批次六 9；不入历史栈）
+  const navReq = useTransferStore((s) => s.navRequests[tabId]);
+  useEffect(() => {
+    if (!navReq || !sessionId) return;
+    useTransferStore.getState().consumeNav(tabId);
+    void refreshRemoteRef.current(navReq);
+  }, [navReq, sessionId, tabId]);
 
   if (!sessionId) {
     return (
@@ -426,25 +684,35 @@ export function SftpPanel({ tabId }: { tabId: string }) {
 
   // ---------- 传输 ----------
 
-  const uploadPaths = (paths: string[]) => {
+  const uploadPathsTo = (paths: string[], dir: string) => {
     for (const p of paths) {
-      void invoke('sftp_upload', { sessionId, local: p, remote: remotePath }).catch((e) =>
+      void invoke('sftp_upload', { sessionId, local: p, remote: dir }).catch((e) =>
         notify(`上传失败: ${e}`, 'error'),
       );
     }
   };
 
-  const downloadPaths = (paths: string[]) => {
+  const downloadPathsTo = (paths: string[], dir: string) => {
     for (const p of paths) {
-      void invoke('sftp_download', { sessionId, remote: p, local: localPath || '' }).catch((e) =>
+      void invoke('sftp_download', { sessionId, remote: p, local: dir }).catch((e) =>
         notify(`下载失败: ${e}`, 'error'),
       );
     }
   };
 
+  const uploadPaths = (paths: string[]) => uploadPathsTo(paths, remotePath);
+
+  const downloadPaths = (paths: string[]) => downloadPathsTo(paths, localPath || '');
+
   const transferDrop = (toSide: Side) => (paths: string[]) => {
     if (toSide === 'remote') uploadPaths(paths);
     else downloadPaths(paths);
+  };
+
+  /** 栏间拖拽落到目录行：进该子目录（批次六 1b） */
+  const transferDropInto = (toSide: Side) => (paths: string[], dir: string) => {
+    if (toSide === 'remote') uploadPathsTo(paths, dir);
+    else downloadPathsTo(paths, dir);
   };
 
   // ---------- 元操作（mkdir/rename/chmod/move/delete） ----------
@@ -455,7 +723,8 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     const join = (name: string) => (dir === '/' || dir === '' ? `${dir}${name}` : `${dir}/${name}`);
     try {
       if (prompt.action === 'mkdir') {
-        if (prompt.side === 'remote') await invoke('sftp_mkdir', { sessionId, path: join(prompt.value) });
+        if (prompt.side === 'remote')
+          await invoke('sftp_mkdir', { sessionId, path: join(prompt.value) });
         else await invoke('local_mkdir', { path: join(prompt.value) });
       } else if (prompt.action === 'rename') {
         const one = selEntries(prompt.side)[0];
@@ -519,6 +788,16 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     setMenu({ x, y, side });
   };
 
+  /** 复制路径（批次六 2）：多选逐行拼接 */
+  const copyPaths = (side: Side) => {
+    const picked = selEntries(side);
+    if (picked.length === 0) return;
+    void navigator.clipboard
+      .writeText(picked.map((e) => e.path).join('\n'))
+      .then(() => notify(`已复制 ${picked.length} 个路径`, 'success'))
+      .catch((e) => notify(`复制失败: ${e}`, 'error'));
+  };
+
   const menuItems = (side: Side): MenuItem[] => {
     const picked = selEntries(side);
     const n = picked.length;
@@ -535,6 +814,11 @@ export function SftpPanel({ tabId }: { tabId: string }) {
           label: n > 1 ? `下载 ${n} 项` : '下载',
           disabled: !batch,
           onSelect: () => downloadPaths(picked.map((e) => e.path)),
+        },
+        {
+          label: n > 1 ? `复制 ${n} 个路径` : '复制路径',
+          disabled: !batch,
+          onSelect: () => copyPaths('remote'),
         },
         'separator',
         {
@@ -582,6 +866,11 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         disabled: !batch,
         onSelect: () => uploadPaths(picked.map((e) => e.path)),
       },
+      {
+        label: n > 1 ? `复制 ${n} 个路径` : '复制路径',
+        disabled: !batch,
+        onSelect: () => copyPaths('local'),
+      },
       'separator',
       {
         label: '重命名…',
@@ -608,147 +897,80 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     ];
   };
 
-  // ---------- 传输队列条（11.3） ----------
+  // ---------- 传输摘要（批次六 5）：完整队列迁至 TransferCenter，此处只留计数 + 入口 ----------
 
-  const tcmd = (cmd: string, extra: Record<string, unknown> = {}) =>
-    void invoke(cmd, { sessionId, ...extra }).catch((e) => notify(`操作失败: ${e}`, 'error'));
+  const transfers = sessionTransfers ?? [];
+  const liveCount = transfers.filter(
+    (t) => !t.history && (t.state === 'queued' || t.state === 'running' || t.state === 'paused'),
+  ).length;
+  const failedCount = transfers.filter((t) => !t.history && t.state === 'failed').length;
 
-  const openDirOf = (t: TransferView, which: 'src' | 'dst') => {
-    // upload: src=local 文件, dst=remote 目录；download: src=remote, dst=local 文件
-    if (t.direction === 'upload') {
-      if (which === 'src') {
-        void invoke('open_in_explorer', { path: t.local }).catch((e) =>
-          notify(`打开失败: ${e}`, 'error'),
-        );
+  // ---------- 路径栏模糊建议（批次六 3）：按草稿父目录拉列表，前缀/包含过滤 ----------
+
+  const fetchSuggestions =
+    (side: Side) =>
+    async (input: string): Promise<string[]> => {
+      const remote = side === 'remote';
+      const value = input.trim();
+      if (!value) return [];
+      // 以最后一个分隔符拆父目录与前缀；Windows 盘符根 C:/ 的父级是其自身
+      const norm = remote ? value : value.replace(/\\/g, '/');
+      const idx = norm.lastIndexOf('/');
+      let parent: string;
+      let frag: string;
+      if (idx < 0) {
+        parent = remote ? '/' : ''; // 本地空父级 = 盘符枚举
+        frag = norm;
       } else {
-        void navSide('remote', parentDir(t.remote, true));
+        const head = norm.slice(0, idx);
+        parent = remote ? head || '/' : /^[A-Z]:$/i.test(head) ? `${head}/` : head;
+        frag = norm.slice(idx + 1);
       }
-    } else {
-      if (which === 'src') {
-        void navSide('remote', parentDir(t.remote, true));
-      } else {
-        void invoke('open_in_explorer', { path: t.local }).catch((e) =>
-          notify(`打开失败: ${e}`, 'error'),
-        );
+      try {
+        const entries = remote
+          ? (await invoke<{ entries: FileEntry[] }>('sftp_list', { sessionId, path: parent }))
+              .entries
+          : (await invoke<{ entries: FileEntry[]; path: string }>('local_list', { path: parent }))
+              .entries;
+        const f = frag.toLowerCase();
+        const base = parent === '' ? '' : parent.endsWith('/') ? parent : `${parent}/`;
+        return entries
+          .filter((e) => e.kind === 'dir' || e.kind === 'symlink')
+          .filter((e) => {
+            const name = e.name.toLowerCase();
+            return !f || name.startsWith(f) || name.includes(f);
+          })
+          .slice(0, 20)
+          .map((e) => (parent === '' ? e.path : `${base}${e.name}`));
+      } catch {
+        return [];
       }
-    }
-  };
+    };
 
-  const transferRow = (t: TransferView) => {
-    const pct = t.bytesTotal > 0 ? Math.min(100, (t.bytesDone / t.bytesTotal) * 100) : 0;
-    const name = t.remote.split('/').pop() || t.remote;
-    const failed = !t.history && t.state === 'failed';
-    return (
-      <div key={t.id}>
-        <div className="flex items-center gap-2 py-0.5 text-neutral-400">
-          <span>{t.direction === 'upload' ? '⬆' : '⬇'}</span>
-          <span className="w-40 truncate" title={`${t.remote}\n${t.error ?? ''}`}>
-            {name}
-          </span>
-          <div className="h-1.5 w-32 overflow-hidden rounded bg-neutral-800">
-            <div
-              className={`h-full ${t.state === 'failed' ? 'bg-red-600' : t.state === 'done' ? 'bg-green-600' : 'bg-blue-600'}`}
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          <span className="w-16 text-right">{pct.toFixed(0)}%</span>
-          <span className="w-20 text-right text-neutral-500">
-            {t.state === 'running' ? `${fmtSize(t.rate ?? 0)}/s` : t.state}
-          </span>
-          {!t.history && (t.state === 'running' || t.state === 'queued') && (
-            <>
-              {t.state === 'running' && (
-                <button
-                  className="rounded px-1 hover:bg-neutral-800"
-                  title="暂停"
-                  onClick={() => tcmd('transfer_pause', { transferId: t.id })}
-                >
-                  ⏸
-                </button>
-              )}
-              <button
-                className="rounded px-1 hover:bg-neutral-800"
-                title="取消"
-                onClick={() => tcmd('transfer_cancel', { transferId: t.id })}
-              >
-                ✕
-              </button>
-            </>
-          )}
-          {!t.history && t.state === 'paused' && (
-            <>
-              <button
-                className="rounded px-1 hover:bg-neutral-800"
-                title="继续"
-                onClick={() => tcmd('transfer_resume', { transferId: t.id })}
-              >
-                ▶
-              </button>
-              <button
-                className="rounded px-1 hover:bg-neutral-800"
-                title="取消"
-                onClick={() => tcmd('transfer_cancel', { transferId: t.id })}
-              >
-                ✕
-              </button>
-            </>
-          )}
-          {failed && (
-            <>
-              <button
-                className="rounded px-1 hover:bg-neutral-800"
-                title="重试（从断点续传）"
-                onClick={() => tcmd('transfer_retry', { transferId: t.id })}
-              >
-                ↻
-              </button>
-              <button
-                className="rounded px-1 hover:bg-neutral-800"
-                title="查看错误"
-                onClick={() =>
-                  setShowErr((s) => {
-                    const next = new Set(s);
-                    if (next.has(t.id)) next.delete(t.id);
-                    else next.add(t.id);
-                    return next;
-                  })
-                }
-              >
-                ⓘ
-              </button>
-              <button
-                className="rounded px-1 hover:bg-neutral-800"
-                title="打开来源目录"
-                onClick={() => openDirOf(t, 'src')}
-              >
-                ⌂⇧
-              </button>
-              <button
-                className="rounded px-1 hover:bg-neutral-800"
-                title="打开目标目录"
-                onClick={() => openDirOf(t, 'dst')}
-              >
-                ⌂⇩
-              </button>
-              <button
-                className="rounded px-1 hover:bg-neutral-800"
-                title="从队列移除"
-                onClick={() => tcmd('transfer_remove', { transferId: t.id })}
-              >
-                🗑
-              </button>
-            </>
-          )}
-        </div>
-        {failed && showErr.has(t.id) && t.error && (
-          <div className="ml-6 break-all py-0.5 text-red-400">{t.error}</div>
-        )}
-      </div>
-    );
-  };
+  // ---------- 本地快捷位置（批次六 4） ----------
 
-  const live = transfers.filter((t) => !t.history);
-  const qbtn = 'rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-800';
+  const localQuickSlots = (
+    <div className="flex items-center gap-1 border-b border-neutral-800 px-2 py-0.5">
+      <button
+        className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800"
+        title="盘符枚举"
+        onClick={() => void navSide('local', '')}
+      >
+        此电脑
+      </button>
+      <button
+        className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800"
+        title="桌面"
+        onClick={() =>
+          void invoke<string>('local_desktop_path')
+            .then((p) => navSide('local', p))
+            .catch((e) => notify(`桌面定位失败: ${e}`, 'error'))
+        }
+      >
+        桌面
+      </button>
+    </div>
+  );
 
   // ---------- 渲染 ----------
 
@@ -901,39 +1123,52 @@ export function SftpPanel({ tabId }: { tabId: string }) {
 
       {/* 文件右键菜单 */}
       {menu && (
-        <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu.side)} onClose={() => setMenu(null)} />
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems(menu.side)}
+          onClose={() => setMenu(null)}
+        />
       )}
 
       {/* 双栏 */}
       <div className="flex min-h-0 flex-1">
-        <FilePane
-          side="local"
-          entries={localEntries}
-          path={localPath}
-          loading={localLoading}
-          canBack={localHist.back.length > 0}
-          canFwd={localHist.fwd.length > 0}
-          sel={sel.side === 'local' ? sel.paths : new Set()}
-          onRowClick={rowClick('local')}
-          onOpen={openEntry('local')}
-          onNavigate={(p) => navSide('local', p)}
-          onBack={() => void navBack('local')}
-          onFwd={() => void navFwd('local')}
-          onUp={() => void navSide('local', parentDir(localPath, false))}
-          onRefresh={() => void refreshLocal()}
-          onDropEntries={transferDrop('local')}
-          onRowMenu={rowMenu('local')}
-          onClearSel={clearSel}
-          onSelectAll={() =>
-            setSel({
-              side: 'local',
-              paths: new Set(localEntries.map((e) => e.path)),
-              anchor: localEntries[0]?.path ?? null,
-            })
-          }
-        />
+        <div className="flex min-h-0 flex-1 flex-col">
+          <FilePane
+            side="local"
+            entries={localEntries}
+            path={localPath}
+            loading={localLoading}
+            canBack={localHist.back.length > 0}
+            canFwd={localHist.fwd.length > 0}
+            sel={sel.side === 'local' ? sel.paths : new Set()}
+            onRowClick={rowClick('local')}
+            onOpen={openEntry('local')}
+            onNavigate={(p) => navSide('local', p)}
+            onBack={() => void navBack('local')}
+            onFwd={() => void navFwd('local')}
+            onUp={() => void navSide('local', parentDir(localPath, false))}
+            onRefresh={() => void refreshLocal()}
+            onDropEntries={transferDrop('local')}
+            onDropEntriesInto={transferDropInto('local')}
+            onDropOsFiles={osFileDrop('local')}
+            fetchSuggestions={fetchSuggestions('local')}
+            dropActive={html5DragSide === 'local'}
+            onDropHover={(v) => setHtml5DragSide(v ? 'local' : null)}
+            quickSlots={localQuickSlots}
+            onRowMenu={rowMenu('local')}
+            onClearSel={clearSel}
+            onSelectAll={() =>
+              setSel({
+                side: 'local',
+                paths: new Set(localEntries.map((e) => e.path)),
+                anchor: localEntries[0]?.path ?? null,
+              })
+            }
+          />
+        </div>
         <div className="w-px bg-neutral-800" />
-        <div ref={remotePaneRef} className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col">
           <FilePane
             side="remote"
             entries={remoteEntries}
@@ -950,6 +1185,11 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             onUp={() => void navSide('remote', parentDir(remotePath, true))}
             onRefresh={() => void refreshRemote()}
             onDropEntries={transferDrop('remote')}
+            onDropEntriesInto={transferDropInto('remote')}
+            onDropOsFiles={osFileDrop('remote')}
+            fetchSuggestions={fetchSuggestions('remote')}
+            dropActive={html5DragSide === 'remote'}
+            onDropHover={(v) => setHtml5DragSide(v ? 'remote' : null)}
             onRowMenu={rowMenu('remote')}
             onClearSel={clearSel}
             onSelectAll={() =>
@@ -963,35 +1203,21 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         </div>
       </div>
 
-      {/* 传输队列条（11.3：失败重试/队列管理） */}
-      {transfers.length > 0 && (
-        <div className="max-h-24 overflow-y-auto border-t border-neutral-800 px-2 py-1">
-          <div className="flex items-center gap-2 py-0.5 text-neutral-500">
-            <span>传输（{live.length}）</span>
-            <button className={qbtn} title="全部暂停" onClick={() => tcmd('transfer_pause_all')}>
-              全部暂停
-            </button>
-            <button className={qbtn} title="全部继续" onClick={() => tcmd('transfer_resume_all')}>
-              全部继续
-            </button>
-            <button
-              className={qbtn}
-              title="清除已完成"
-              onClick={() => tcmd('transfer_clear', { filter: 'done' })}
-            >
-              清除已完成
-            </button>
-            <button
-              className={qbtn}
-              title="清除失败"
-              onClick={() => tcmd('transfer_clear', { filter: 'failed' })}
-            >
-              清除失败
-            </button>
-          </div>
-          {transfers.map(transferRow)}
-        </div>
-      )}
+      {/* 传输摘要（批次六 5）：完整队列/逐任务控制在 TransferCenter 抽屉 */}
+      <div className="flex items-center gap-2 border-t border-neutral-800 px-2 py-1 text-neutral-500">
+        <span>
+          传输
+          {liveCount > 0 && `：${liveCount} 个进行中`}
+          {failedCount > 0 && <span className="text-red-400">，{failedCount} 个失败</span>}
+          {liveCount === 0 && failedCount === 0 && '：空闲'}
+        </span>
+        <button
+          className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800"
+          onClick={() => useTransferStore.getState().setOpen(true)}
+        >
+          打开传输管理
+        </button>
+      </div>
     </div>
   );
 }

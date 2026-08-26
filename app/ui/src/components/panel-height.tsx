@@ -31,7 +31,10 @@ export function usePanelHeight(settingKey: string, defaultH: number) {
         const d = dragRef.current;
         dragRef.current = null;
         if (!d) return;
-        const next = Math.min(PANEL_MAX_H, Math.max(PANEL_MIN_H, d.startH + (d.startY - ev.clientY)));
+        const next = Math.min(
+          PANEL_MAX_H,
+          Math.max(PANEL_MIN_H, d.startH + (d.startY - ev.clientY)),
+        );
         setHeight(next);
         setSetting(settingKey, next);
       };

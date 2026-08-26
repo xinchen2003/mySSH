@@ -30,6 +30,7 @@ anyhow.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 zeroize = { version = "1", features = ["zeroize_derive"] }
+base64 = "0.22.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 tauri-plugin-clipboard-manager = "2.3.2"

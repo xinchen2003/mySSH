@@ -102,6 +102,21 @@ export interface TransferView {
   history?: boolean;
 }
 
+/** 持久化传输历史记录（transfers 表，跨重启保留；TransferCenter 历史记录区） */
+export interface TransferHistoryView {
+  id: string;
+  sessionId: string;
+  direction: 'upload' | 'download';
+  local: string;
+  remote: string;
+  state: 'queued' | 'running' | 'paused' | 'done' | 'failed' | 'canceled';
+  bytesDone: number;
+  bytesTotal: number;
+  error?: string | null;
+  /** SQLite datetime('now') 生成，UTC「YYYY-MM-DD HH:MM:SS」 */
+  updatedAt: string;
+}
+
 /** 连接目标：内联参数 或 存储档案引用 */
 export type ConnectTarget =
   { kind: 'spec'; spec: TermOpenSpec } | { kind: 'session'; sessionId: string };

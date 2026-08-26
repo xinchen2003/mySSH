@@ -76,6 +76,28 @@ impl TransferRepo {
         .map_err(db)?;
         Ok(r.rows_affected())
     }
+
+    /// 全部会话的历史记录（终态落表），按更新时间倒序
+    pub async fn recent(&self, limit: u32) -> Result<Vec<TransferRecord>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT id,session_id,direction,local,remote,bytes_done,bytes_total,state,error,updated_at
+             FROM transfers ORDER BY updated_at DESC LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        rows.iter().map(row_to_record).collect()
+    }
+
+    /// 清空全部历史记录
+    pub async fn clear_all(&self) -> Result<u64, StoreError> {
+        let r = sqlx::query("DELETE FROM transfers")
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(r.rows_affected())
+    }
 }
 
 fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<TransferRecord, StoreError> {

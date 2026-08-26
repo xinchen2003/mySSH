@@ -232,6 +232,13 @@ impl SftpClient {
             .await
             .map_err(|e| map_err(path, e))
     }
+    /// 解析真实路径（REALPATH，SFTP v3 基础协议，所有服务器可用）
+    pub async fn canonicalize(&self, path: &str) -> Result<String, SftpError> {
+        self.session
+            .canonicalize(path)
+            .await
+            .map_err(|e| map_err(path, e))
+    }
 
     /// 低层传输原语：只读打开（TransferQueue 使用；一般调用方勿直接碰）
     #[doc(hidden)]

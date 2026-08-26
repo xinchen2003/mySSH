@@ -259,6 +259,37 @@ pub async fn sftp_chmod(
 }
 
 // ---------- 本地浏览 ----------
+/// 解析远端家目录绝对路径（SFTP 面板初始定位 / 权限失败回退用，批次六）。
+/// 优先 expand-path@openssh.com 扩展（~ → .）；老服务器无此扩展时回退 REALPATH(.)
+/// （SFTP v3 基础协议，均支持），解析 SFTP 会话默认起点即家目录的绝对路径。
+#[tauri::command]
+pub async fn sftp_home(
+    session_id: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<String, String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    if let Some(p) = ctx
+        .client
+        .expand_path("~")
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(p);
+    }
+    if let Some(p) = ctx
+        .client
+        .expand_path(".")
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(p);
+    }
+    ctx.client
+        .canonicalize(".")
+        .await
+        .map_err(|e| e.to_string())
+}
 
 /// 本地目录列表（"" 或 "/" → Windows 盘符枚举）
 #[tauri::command]
@@ -546,6 +577,33 @@ pub async fn transfer_list(
     Ok(json!({ "transfers": live }))
 }
 
+/// 全部会话的持久化传输历史（transfers 表，含时间；TransferCenter 历史记录区）
+#[tauri::command]
+pub async fn transfer_history(
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let records = sessions
+        .store
+        .transfers()
+        .recent(200)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "records": records }))
+}
+
+/// 清空全部传输历史记录
+#[tauri::command]
+pub async fn transfer_history_clear(
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<u64, String> {
+    sessions
+        .store
+        .transfers()
+        .clear_all()
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn transfer_pause(
     session_id: String,
@@ -643,7 +701,6 @@ pub async fn transfer_resume_all(
     ctx.queue.resume_all();
     Ok(())
 }
-
 
 /// 进度订阅：500ms 快照推送（前端差分算速率；与 tunnel_subscribe 同构）
 #[tauri::command]

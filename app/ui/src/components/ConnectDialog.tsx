@@ -21,11 +21,25 @@ const TAB_LABEL: Record<EditorTab, string> = {
 export function ConnectDialog() {
   const show = useAppStore((s) => s.showConnect);
   const editing = useAppStore((s) => s.editing);
+  const presetGroup = useAppStore((s) => s.connectPreset);
   if (!show) return null;
-  return <ConnectForm key={editing?.id ?? 'new'} initial={editing} />;
+  // key 含 preset：分组菜单「新建连接」重挂载时重置表单并预填分组
+  return (
+    <ConnectForm
+      key={editing?.id ?? `new-${presetGroup ?? ''}`}
+      initial={editing}
+      presetGroup={presetGroup}
+    />
+  );
 }
 
-function ConnectForm({ initial }: { initial: SessionRecord | null }) {
+function ConnectForm({
+  initial,
+  presetGroup,
+}: {
+  initial: SessionRecord | null;
+  presetGroup: string | null;
+}) {
   const close = useAppStore((s) => s.closeConnect);
   const connect = useAppStore((s) => s.connect);
   const connectBySession = useAppStore((s) => s.connectBySession);
@@ -33,7 +47,7 @@ function ConnectForm({ initial }: { initial: SessionRecord | null }) {
 
   const [tab, setTab] = useState<EditorTab>('basic');
   const [name, setName] = useState(initial?.name ?? '');
-  const [groupPath, setGroupPath] = useState(initial?.groupPath ?? '');
+  const [groupPath, setGroupPath] = useState(initial?.groupPath ?? presetGroup ?? '');
   const [host, setHost] = useState(initial?.host ?? '127.0.0.1');
   const [port, setPort] = useState(initial?.port ?? 22);
   const [user, setUser] = useState(initial?.username ?? '');
@@ -119,181 +133,176 @@ function ConnectForm({ initial }: { initial: SessionRecord | null }) {
     >
       <h2 className="mb-2 text-base font-semibold">{initial ? '编辑会话' : '新建 SSH 连接'}</h2>
 
-        {/* §9.1 双入口之一：服务器编辑器标签页 */}
-        <div className="mb-3 flex gap-1 border-b border-neutral-800" role="tablist">
-          {(Object.keys(TAB_LABEL) as EditorTab[]).map((t) => (
-            <button
-              key={t}
-              role="tab"
-              aria-selected={tab === t}
-              className={`px-2.5 py-1 text-xs ${
-                tab === t
-                  ? 'border-b-2 border-blue-500 text-neutral-100'
-                  : 'text-neutral-500 hover:text-neutral-300'
-              }`}
-              onClick={() => setTab(t)}
-            >
-              {TAB_LABEL[t]}
-            </button>
-          ))}
-        </div>
+      {/* §9.1 双入口之一：服务器编辑器标签页 */}
+      <div className="mb-3 flex gap-1 border-b border-neutral-800" role="tablist">
+        {(Object.keys(TAB_LABEL) as EditorTab[]).map((t) => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={tab === t}
+            className={`px-2.5 py-1 text-xs ${
+              tab === t
+                ? 'border-b-2 border-blue-500 text-neutral-100'
+                : 'text-neutral-500 hover:text-neutral-300'
+            }`}
+            onClick={() => setTab(t)}
+          >
+            {TAB_LABEL[t]}
+          </button>
+        ))}
+      </div>
 
-        <div className="flex min-h-56 flex-col gap-2">
-          {tab === 'basic' && (
-            <>
-              {save && (
-                <div className="flex gap-2">
-                  <label className="flex-1">
-                    <span className="mb-0.5 block text-xs text-neutral-400">名称</span>
-                    <input
-                      className={input}
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="缺省取 用户@主机"
-                    />
-                  </label>
-                  <label className="w-28">
-                    <span className="mb-0.5 block text-xs text-neutral-400">分组</span>
-                    <input
-                      className={input}
-                      value={groupPath}
-                      onChange={(e) => setGroupPath(e.target.value)}
-                      placeholder="生产/华东"
-                    />
-                  </label>
-                </div>
-              )}
+      <div className="flex min-h-56 flex-col gap-2">
+        {tab === 'basic' && (
+          <>
+            {save && (
               <div className="flex gap-2">
                 <label className="flex-1">
-                  <span className="mb-0.5 block text-xs text-neutral-400">主机</span>
+                  <span className="mb-0.5 block text-xs text-neutral-400">名称</span>
                   <input
                     className={input}
-                    value={host}
-                    onChange={(e) => setHost(e.target.value)}
-                    autoFocus
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="缺省取 用户@主机"
                   />
                 </label>
-                <label className="w-20">
-                  <span className="mb-0.5 block text-xs text-neutral-400">端口</span>
+                <label className="w-28">
+                  <span className="mb-0.5 block text-xs text-neutral-400">分组</span>
                   <input
                     className={input}
-                    type="number"
-                    value={port}
-                    onChange={(e) => setPort(Number(e.target.value) || 22)}
+                    value={groupPath}
+                    onChange={(e) => setGroupPath(e.target.value)}
+                    placeholder="生产/华东"
                   />
                 </label>
               </div>
-              <label>
-                <span className="mb-0.5 block text-xs text-neutral-400">用户名</span>
-                <input className={input} value={user} onChange={(e) => setUser(e.target.value)} />
-              </label>
-              <label className="mt-1 flex items-center gap-2 text-xs text-neutral-400">
+            )}
+            <div className="flex gap-2">
+              <label className="flex-1">
+                <span className="mb-0.5 block text-xs text-neutral-400">主机</span>
                 <input
-                  type="checkbox"
-                  checked={save}
-                  onChange={(e) => setSave(e.target.checked)}
-                  disabled={initial !== null}
-                />
-                保存会话（密码/passphrase 存加密保险库）
-              </label>
-            </>
-          )}
-
-          {tab === 'auth' && (
-            <>
-              <label>
-                <span className="mb-0.5 block text-xs text-neutral-400">认证方式</span>
-                <select
                   className={input}
-                  value={kind}
-                  onChange={(e) => setKind(e.target.value as AuthKind)}
-                >
-                  <option value="password">密码</option>
-                  <option value="publicKey">公钥（OpenSSH / .ppk）</option>
-                  <option value="keyboardInteractive">keyboard-interactive（2FA）</option>
-                  <option value="agent">ssh-agent / Pageant</option>
-                </select>
+                  value={host}
+                  onChange={(e) => setHost(e.target.value)}
+                  autoFocus
+                />
               </label>
-              {kind === 'password' && (
+              <label className="w-20">
+                <span className="mb-0.5 block text-xs text-neutral-400">端口</span>
+                <input
+                  className={input}
+                  type="number"
+                  value={port}
+                  onChange={(e) => setPort(Number(e.target.value) || 22)}
+                />
+              </label>
+            </div>
+            <label>
+              <span className="mb-0.5 block text-xs text-neutral-400">用户名</span>
+              <input className={input} value={user} onChange={(e) => setUser(e.target.value)} />
+            </label>
+            <label className="mt-1 flex items-center gap-2 text-xs text-neutral-400">
+              <input
+                type="checkbox"
+                checked={save}
+                onChange={(e) => setSave(e.target.checked)}
+                disabled={initial !== null}
+              />
+              保存会话（密码/passphrase 存加密保险库）
+            </label>
+          </>
+        )}
+
+        {tab === 'auth' && (
+          <>
+            <label>
+              <span className="mb-0.5 block text-xs text-neutral-400">认证方式</span>
+              <select
+                className={input}
+                value={kind}
+                onChange={(e) => setKind(e.target.value as AuthKind)}
+              >
+                <option value="password">密码</option>
+                <option value="publicKey">公钥（OpenSSH / .ppk）</option>
+                <option value="keyboardInteractive">keyboard-interactive（2FA）</option>
+                <option value="agent">ssh-agent / Pageant</option>
+              </select>
+            </label>
+            {kind === 'password' && (
+              <label>
+                <span className="mb-0.5 block text-xs text-neutral-400">
+                  密码{initial ? '（留空 = 沿用已存凭据）' : ''}
+                </span>
+                <input
+                  className={input}
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </label>
+            )}
+            {kind === 'publicKey' && (
+              <>
                 <label>
-                  <span className="mb-0.5 block text-xs text-neutral-400">
-                    密码{initial ? '（留空 = 沿用已存凭据）' : ''}
-                  </span>
+                  <span className="mb-0.5 block text-xs text-neutral-400">私钥文件路径</span>
+                  <input
+                    className={input}
+                    value={keyPath}
+                    onChange={(e) => setKeyPath(e.target.value)}
+                    placeholder="C:\Users\…\.ssh\id_ed25519 或 .ppk"
+                  />
+                </label>
+                <label>
+                  <span className="mb-0.5 block text-xs text-neutral-400">passphrase（可空）</span>
                   <input
                     className={input}
                     type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    value={passphrase}
+                    onChange={(e) => setPassphrase(e.target.value)}
                   />
                 </label>
-              )}
-              {kind === 'publicKey' && (
-                <>
-                  <label>
-                    <span className="mb-0.5 block text-xs text-neutral-400">私钥文件路径</span>
-                    <input
-                      className={input}
-                      value={keyPath}
-                      onChange={(e) => setKeyPath(e.target.value)}
-                      placeholder="C:\Users\…\.ssh\id_ed25519 或 .ppk"
-                    />
-                  </label>
-                  <label>
-                    <span className="mb-0.5 block text-xs text-neutral-400">
-                      passphrase（可空）
-                    </span>
-                    <input
-                      className={input}
-                      type="password"
-                      value={passphrase}
-                      onChange={(e) => setPassphrase(e.target.value)}
-                    />
-                  </label>
-                </>
-              )}
-            </>
-          )}
+              </>
+            )}
+          </>
+        )}
 
-          {tab === 'jump' &&
-            (save ? (
-              <JumpChainEditor
-                chain={jumpChain}
-                onChange={setJumpChain}
-                excludeId={initial?.id ?? null}
-              />
-            ) : (
-              <p className="py-6 text-center text-xs text-neutral-500">
-                勾选「保存会话」后可配置跳板链
-              </p>
-            ))}
+        {tab === 'jump' &&
+          (save ? (
+            <JumpChainEditor
+              chain={jumpChain}
+              onChange={setJumpChain}
+              excludeId={initial?.id ?? null}
+            />
+          ) : (
+            <p className="py-6 text-center text-xs text-neutral-500">
+              勾选「保存会话」后可配置跳板链
+            </p>
+          ))}
 
-          {tab === 'tunnels' &&
-            (initial ? (
-              <SessionTunnelsTab sessionId={initial.id} />
-            ) : (
-              <p className="py-6 text-center text-xs text-neutral-500">
-                保存会话后可在此配置隧道；隧道绑定到该服务器
-              </p>
-            ))}
+        {tab === 'tunnels' &&
+          (initial ? (
+            <SessionTunnelsTab sessionId={initial.id} />
+          ) : (
+            <p className="py-6 text-center text-xs text-neutral-500">
+              保存会话后可在此配置隧道；隧道绑定到该服务器
+            </p>
+          ))}
 
-          {error && <p className="text-xs text-red-400">{error}</p>}
-        </div>
+        {error && <p className="text-xs text-red-400">{error}</p>}
+      </div>
 
-        <div className="mt-2 flex justify-end gap-2">
-          <button
-            className="rounded px-3 py-1 text-neutral-400 hover:bg-neutral-800"
-            onClick={close}
-          >
-            取消
-          </button>
-          <button
-            className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500 disabled:opacity-50"
-            onClick={() => void submit()}
-            disabled={busy || !host.trim() || !user.trim()}
-          >
-            {save ? '保存并连接' : '连接'}
-          </button>
-        </div>
+      <div className="mt-2 flex justify-end gap-2">
+        <button className="rounded px-3 py-1 text-neutral-400 hover:bg-neutral-800" onClick={close}>
+          取消
+        </button>
+        <button
+          className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500 disabled:opacity-50"
+          onClick={() => void submit()}
+          disabled={busy || !host.trim() || !user.trim()}
+        >
+          {save ? '保存并连接' : '连接'}
+        </button>
+      </div>
     </Dialog>
   );
 }

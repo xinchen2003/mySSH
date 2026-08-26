@@ -23,34 +23,34 @@ export function Notices() {
         // 局部常量收窄（eslint 禁非空断言）
         const action = n.action;
         return (
-        <div
-          key={n.id}
-          role={n.level === 'error' ? 'alert' : 'status'}
-          aria-live={n.level === 'error' ? 'assertive' : 'polite'}
-          className={`flex items-start gap-2 rounded px-3 py-2 text-xs shadow-lg ${NOTICE_STYLE[n.level]}`}
-        >
-          <span className="min-w-0 flex-1 break-words">{n.message}</span>
-          {action && (
-            <button
-              className="shrink-0 rounded bg-black/20 px-1.5 py-0.5 leading-tight hover:bg-black/40"
-              onClick={() => {
-                runNoticeAction(action.actionId, action.arg);
-                dismissNotice(n.id);
-              }}
-            >
-              {action.label}
-            </button>
-          )}
-          {n.level === 'error' && (
-            <button
-              className="shrink-0 rounded px-1 leading-tight hover:bg-black/20"
-              onClick={() => dismissNotice(n.id)}
-              aria-label="关闭通知"
-            >
-              ×
-            </button>
-          )}
-        </div>
+          <div
+            key={n.id}
+            role={n.level === 'error' ? 'alert' : 'status'}
+            aria-live={n.level === 'error' ? 'assertive' : 'polite'}
+            className={`flex items-start gap-2 rounded px-3 py-2 text-xs shadow-lg ${NOTICE_STYLE[n.level]}`}
+          >
+            <span className="min-w-0 flex-1 break-words">{n.message}</span>
+            {action && (
+              <button
+                className="shrink-0 rounded bg-black/20 px-1.5 py-0.5 leading-tight hover:bg-black/40"
+                onClick={() => {
+                  runNoticeAction(action.actionId, action.arg);
+                  dismissNotice(n.id);
+                }}
+              >
+                {action.label}
+              </button>
+            )}
+            {n.level === 'error' && (
+              <button
+                className="shrink-0 rounded px-1 leading-tight hover:bg-black/20"
+                onClick={() => dismissNotice(n.id)}
+                aria-label="关闭通知"
+              >
+                ×
+              </button>
+            )}
+          </div>
         );
       })}
     </div>

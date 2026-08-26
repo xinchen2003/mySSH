@@ -18,11 +18,15 @@ export class TerminalSession {
   /** TerminalView 的旁路钩子：session_state 帧写重连/关闭标记进 xterm */
   private stateHook: ((ev: SessionStateFrame) => void) | null = null;
   private consumer: StreamConsumer | null = null;
+  /** 开链前 write 的缓冲队列（见 write） */
+  private pendingWrites: string[] = [];
   private encoder = new TextEncoder();
   /** 输入/resize 订阅释放器：attach 幂等关键——原位重连重挂前必须先释放上一轮 */
   private disposers: { dispose(): void }[] = [];
+  /** 广播输入旁路钩子（11）：onData 直发后同步触发；未开链的输入不触发 */
+  inputHook: ((data: string) => void) | null = null;
 
-  constructor(private readonly onEvent: (ev: TermEvent) => void) {}
+  constructor(readonly onEvent: (ev: TermEvent) => void) {}
 
   async attach(
     term: Terminal,
@@ -60,6 +64,8 @@ export class TerminalSession {
       rows: openedRows,
     });
     this.tabId = res.tabId;
+    // 补发开链前缓冲的写入（OSC 7 钩子、分屏初始 cd 等）
+    for (const s of this.pendingWrites.splice(0)) this.write(s);
 
     // OSC 7：shell 上报 cwd（file://host/path），SFTP 面板「跟随终端」用
     term.parser.registerOscHandler(7, (data) => {
@@ -76,20 +82,32 @@ export class TerminalSession {
     if (term.cols !== openedCols || term.rows !== openedRows)
       void invoke('term_resize', { tabId: res.tabId, cols: term.cols, rows: term.rows });
 
-    // 输入零聚合直发（规格书输入路径预算）
+    // 输入零聚合直发（规格书输入路径预算）；广播钩子在同窗口同步扇出
     this.disposers.push(
       term.onData((s) => {
         if (!this.tabId) return;
-        void invoke('term_input', {
-          tabId: this.tabId,
-          bytes: Array.from(this.encoder.encode(s)),
-        });
+        this.write(s);
+        this.inputHook?.(s);
       }),
       term.onResize(({ cols, rows }) => {
         if (this.tabId) void invoke('term_resize', { tabId: this.tabId, cols, rows });
       }),
     );
     return this.tabId;
+  }
+
+  /** 发送一段输入（广播扇出 / OSC 7 钩子注入 / 分屏初始 cd 用）。
+   *  connected 事件可能先于 term_open 返回抵达（tabId 未赋值），
+   *  此时入队缓冲，开链后按序补发；close 时清空。 */
+  write(s: string): void {
+    if (!this.tabId) {
+      if (this.pendingWrites.length < 64) this.pendingWrites.push(s);
+      return;
+    }
+    void invoke('term_input', {
+      tabId: this.tabId,
+      bytes: Array.from(this.encoder.encode(s)),
+    });
   }
 
   /** 释放输入/resize 订阅与消费器（OSC 7 handler 重注册即覆盖，无需释放） */
@@ -103,6 +121,7 @@ export class TerminalSession {
   async close(): Promise<void> {
     const id = this.tabId;
     this.tabId = null;
+    this.pendingWrites = [];
     this.detachInput();
     if (id) await invoke('term_close', { tabId: id });
   }

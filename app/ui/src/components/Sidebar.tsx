@@ -33,13 +33,14 @@ type Prompt =
   | { mode: 'import-cfg'; input: string; pass: string }
   | { mode: 'group-new'; parent: string; input: string }
   | { mode: 'group-rename'; path: string; input: string }
+  | { mode: 'rename'; id: string; input: string }
   | { mode: 'move-to'; ids: string[]; input: string };
 
 const VIRTUAL_LABELS: { id: VirtualView; label: string }[] = [
   { id: 'favorites', label: '收藏' },
   { id: 'recent', label: '最近连接' },
   { id: 'online', label: '当前在线' },
-  { id: 'ungrouped', label: '未分组' },
+  { id: 'ungrouped', label: '默认' },
   { id: 'failed', label: '最近失败' },
 ];
 
@@ -213,6 +214,20 @@ export function Sidebar() {
     }
   };
 
+  /** 会话改名：整档 upsert（仅 name 变化，其余字段原样回写） */
+  const renameSession = async (id: string, name: string) => {
+    const rec = sessions.find((x) => x.id === id);
+    const n = name.trim();
+    if (!rec || !n || n === rec.name) return;
+    try {
+      await invoke('session_upsert', { record: { ...rec, name: n } });
+      await s().loadSessions();
+      s().notify(`已重命名为「${n}」`, 'success');
+    } catch (e) {
+      s().notify(`重命名失败: ${String(e)}`, 'error');
+    }
+  };
+
   const moveGroupTo = async (source: string, targetParent: string) => {
     const leaf = source.split('/').pop() ?? source;
     const next = targetParent ? `${targetParent}/${leaf}` : leaf;
@@ -311,6 +326,10 @@ export function Sidebar() {
       { label: '连接并打开 SFTP', onSelect: () => s().connectAndOpenSftp(rec.id, rec.name) },
       'separator',
       { label: '编辑', onSelect: () => openConnect(rec) },
+      {
+        label: '重命名…',
+        onSelect: () => setPrompt({ mode: 'rename', id: rec.id, input: rec.name }),
+      },
       { label: '复制服务器', onSelect: () => void s().duplicateSession(rec) },
       {
         label: '移动到分组…',
@@ -380,6 +399,10 @@ export function Sidebar() {
     {
       label: '新建子分组…',
       onSelect: () => setPrompt({ mode: 'group-new', parent: path, input: '' }),
+    },
+    {
+      label: '在此分组新建连接…',
+      onSelect: () => openConnect(undefined, path),
     },
     {
       label: '重命名…',
@@ -907,6 +930,18 @@ export function Sidebar() {
                 />
               </>
             )}
+            {prompt.mode === 'rename' && (
+              <>
+                <div className="mb-2">重命名服务器</div>
+                <input
+                  className="mb-2 w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
+                  placeholder="新名称"
+                  value={prompt.input}
+                  onChange={(e) => setPrompt({ ...prompt, input: e.target.value })}
+                  autoFocus
+                />
+              </>
+            )}
             {prompt.mode === 'move-to' && (
               <>
                 <div className="mb-2">移动 {prompt.ids.length} 台服务器到分组（留空 = 未分组）</div>
@@ -942,6 +977,7 @@ export function Sidebar() {
                     void importConfigFile(p.input, p.pass || undefined);
                   else if (p.mode === 'group-new') createGroup(p.parent, p.input);
                   else if (p.mode === 'group-rename') void renameGroup(p.path, p.input);
+                  else if (p.mode === 'rename') void renameSession(p.id, p.input);
                   else void moveSessions(p.ids, p.input);
                 }}
               >

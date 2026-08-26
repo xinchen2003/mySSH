@@ -695,7 +695,12 @@ async fn retry_rejects_non_terminal_then_reruns() {
     assert!(info.error.is_none());
 
     let done = wait_done(&q, &id).await;
-    assert_eq!(done.state, core_sftp::TransferState::Done, "{:?}", done.error);
+    assert_eq!(
+        done.state,
+        core_sftp::TransferState::Done,
+        "{:?}",
+        done.error
+    );
     assert_eq!(done.bytes_done, 2 * 1024 * 1024);
 }
 
@@ -744,9 +749,7 @@ async fn clear_where_only_removes_matching_terminal() {
     // 一条快速上传 → Done
     let local_ok = temp_root("clear-local").join("ok.bin");
     std::fs::write(&local_ok, pattern(1024)).unwrap();
-    let id_done = q
-        .enqueue_upload(local_ok, "/ok.bin".into(), 1024)
-        .await;
+    let id_done = q.enqueue_upload(local_ok, "/ok.bin".into(), 1024).await;
     wait_done(&q, &id_done).await;
 
     // 一条慢速上传 → 取消 → Canceled
@@ -821,6 +824,11 @@ async fn pause_all_resume_all_flip_states() {
     q.resume_all();
     for id in &ids {
         let done = wait_done(&q, id).await;
-        assert_eq!(done.state, core_sftp::TransferState::Done, "{:?}", done.error);
+        assert_eq!(
+            done.state,
+            core_sftp::TransferState::Done,
+            "{:?}",
+            done.error
+        );
     }
 }

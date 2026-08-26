@@ -38,7 +38,9 @@ function KiForm({ pending }: { pending: KiChallengeFrame }) {
     >
       <h2 className="mb-1 text-base font-semibold">二次认证</h2>
       {pending.name && <p className="text-xs text-neutral-400">{pending.name}</p>}
-      {pending.instruction && <p className="mb-2 text-xs text-neutral-400">{pending.instruction}</p>}
+      {pending.instruction && (
+        <p className="mb-2 text-xs text-neutral-400">{pending.instruction}</p>
+      )}
       <div className="mt-2 flex flex-col gap-2">
         {pending.prompts.map((p, i) => (
           <label key={i}>

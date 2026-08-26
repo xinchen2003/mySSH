@@ -16,6 +16,35 @@ import { keymapFromSettings, matchAction, matchCombo } from '../term/keymap';
 import type { SessionStateFrame } from '../term/types';
 import { SearchBar, type SearchOptions, type SearchResults } from '../components/SearchBar';
 import { ContextMenu, type MenuItem } from '../components/ContextMenu';
+import { useTransferStore } from '../state/transfer-store';
+/**
+ * pane 终端运行时（条目 6a）：跨布局变化（leaf↔split 重挂）保活的 xterm 实例。
+ * 分屏/合屏改变 SplitTree 的嵌套结构 → TerminalView 必卸载重挂；
+ * 卸载时若 pane 仍在 store（panes 表未移除）则 runtime 留池复用，新挂载把同一
+ * term.element DOM 移入新宿主——滚动缓冲、渲染态、SSH 通道全部原样保留；
+ * pane 真正关闭（panes 表移除）时才 dispose。
+ */
+interface PaneRuntime {
+  term: Terminal;
+  fit: FitAddon;
+  search: SearchAddon;
+  /** 是否经历过自动重连（区分用户主动退出的 closed 与重连耗尽的 closed） */
+  sawReconnect: boolean;
+  /** 终态原因缓存：重挂后新实例以此为初值，原位操作层不丢 */
+  deadMsg: string | null;
+  /** session_state 旁路钩子：经 ui 出口动态触达当前挂载实例（旧闭包重挂后仍指最新 setState） */
+  stateHook: (ev: SessionStateFrame) => void;
+  /** 最近一次挂载写入的组件态出口 */
+  ui: {
+    setSearchOpen: (open: boolean) => void;
+    setSearchResults: (r: SearchResults | null) => void;
+    setDead: (msg: string | null) => void;
+    setMenu: (m: { x: number; y: number; canCopy: boolean } | null) => void;
+  };
+}
+
+/** pane id → 终端运行时保活池 */
+const paneRuntimes = new Map<string, PaneRuntime>();
 
 /**
  * 终端视图：xterm 生命周期 + 会话 attach。每个 pane 一份。
@@ -34,10 +63,8 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
   const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
   const setPaneState = useAppStore((s) => s.setPaneState);
   const closePane = useAppStore((s) => s.closePane);
-  /** 终态原因（重连耗尽/连接失败）；非空时渲染非阻塞原位操作层 */
-  const [dead, setDead] = useState<string | null>(null);
-  /** 是否经历过自动重连（区分用户主动退出的 closed 与重连耗尽的 closed） */
-  const sawReconnectRef = useRef(false);
+  /** 终态原因（重连耗尽/连接失败）；非空时渲染非阻塞原位操作层。初值取保活池缓存（重挂恢复） */
+  const [dead, setDead] = useState<string | null>(() => paneRuntimes.get(pane.id)?.deadMsg ?? null);
   /** 挂载效应内注册的立即重连闭包（复用同一 xterm 与连接 target） */
   const reconnectRef = useRef<() => void>(() => undefined);
   /** 右键菜单（批次四 10.2）；canCopy 在打开瞬间采样，菜单存续期间不刷新 */
@@ -47,95 +74,176 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
     const host = hostRef.current;
     if (!host) return;
 
-    const settings = useAppStore.getState().settings;
-    const termOpts = readTerminalSettings(settings);
-    const term = new Terminal({
-      scrollback: termOpts.scrollback,
-      allowProposedApi: true,
-      fontFamily: termOpts.fontFamily,
-      fontSize: termOpts.fontSize,
-      theme: resolveTheme(
-        typeof settings['theme'] === 'string' ? settings['theme'] : 'one-dark',
-        typeof settings['theme.customJson'] === 'string' ? settings['theme.customJson'] : undefined,
-      ).xterm,
+    /** 建立（或原位重连）SSH 通道；attach 幂等防重复订阅 */
+    const attachNow = (r: PaneRuntime) => {
+      pane.session.attach(r.term, tab.target, r.stateHook).catch((e: unknown) => {
+        setPaneState(tab.id, pane.id, 'error');
+        const msg = `连接失败: ${String(e)}`;
+        r.ui.setDead(msg);
+        if (tab.target.kind === 'session')
+          useAppStore.getState().recordConnectFailure(tab.target.sessionId, msg);
+
+        r.term.write(`\r\n\x1b[1;31m${msg}\x1b[0m\r\n`);
+      });
+    };
+
+    /** setDead 同步写 runtime 缓存：重挂后新实例可恢复原位操作层 */
+    const uiOf = (r: PaneRuntime): PaneRuntime['ui'] => ({
+      setSearchOpen,
+      setSearchResults,
+      setDead: (m) => {
+        r.deadMsg = m;
+        setDead(m);
+      },
+      setMenu,
     });
-    const fit = new FitAddon();
-    const search = new SearchAddon();
-    searchRef.current = search;
-    term.loadAddon(fit);
-    term.loadAddon(search);
-    term.loadAddon(new WebLinksAddon());
-    term.loadAddon(new Unicode11Addon());
-    term.loadAddon(new SerializeAddon());
-    term.open(host);
-    fit.fit();
 
-    // 12.7：搜索结果统计（高亮 decorations 同时是计数来源）
-    search.onDidChangeResults((r) => setSearchResults({ index: r.resultIndex, count: r.resultCount }));
+    let rt = paneRuntimes.get(pane.id);
+    if (rt) {
+      // 布局重排（leaf↔split）重挂：xterm 实例/滚动缓冲/SSH 通道全部保活，
+      // 只把同一 DOM 节点移入新宿主并刷新组件态出口；session 输入订阅仍在，不重复 attach
+      rt.ui = uiOf(rt);
+      if (rt.term.element && rt.term.element.parentElement !== host)
+        host.appendChild(rt.term.element);
+      searchRef.current = rt.search;
+    } else {
+      const settings = useAppStore.getState().settings;
+      const termOpts = readTerminalSettings(settings);
+      const term = new Terminal({
+        scrollback: termOpts.scrollback,
+        allowProposedApi: true,
+        fontFamily: termOpts.fontFamily,
+        fontSize: termOpts.fontSize,
+        theme: resolveTheme(
+          typeof settings['theme'] === 'string' ? settings['theme'] : 'one-dark',
+          typeof settings['theme.customJson'] === 'string'
+            ? settings['theme.customJson']
+            : undefined,
+        ).xterm,
+      });
+      const fit = new FitAddon();
+      const search = new SearchAddon();
+      searchRef.current = search;
+      term.loadAddon(fit);
+      term.loadAddon(search);
+      term.loadAddon(new WebLinksAddon());
+      term.loadAddon(new Unicode11Addon());
+      term.loadAddon(new SerializeAddon());
+      term.open(host);
+      fit.fit();
 
-    // 12.6 终端 bell：非活跃标签打标记（激活即清）；窗口非活动时闪任务栏。
-    // 事件驱动，无定时器无动画；terminal.bell=false 全关
-    term.onBell(() => {
-      const s = useAppStore.getState();
-      if (s.settings['terminal.bell'] === false) return;
-      if (s.activeId !== tab.id) s.markBell(tab.id);
-      if (!document.hasFocus()) {
-        void getCurrentWindow()
-          .requestUserAttention(UserAttentionType.Informational)
-          .catch(() => undefined);
+      const rtNew: PaneRuntime = {
+        term,
+        fit,
+        search,
+        sawReconnect: false,
+        deadMsg: null,
+        ui: { setSearchOpen, setSearchResults, setDead, setMenu },
+        // 断线/重连/终态标记直接写入 xterm（同一实例续写，回滚天然保留）；
+        // 组件态经 rtNew.ui 出口——重挂后此闭包仍指向最新挂载实例
+        stateHook: (ev) => {
+          if (ev.state === 'reconnecting') {
+            rtNew.sawReconnect = true;
+            rtNew.term.write(
+              `\r\n\x1b[33m[连接中断，正在第 ${ev.attempt ?? '?'} 次重连…]\x1b[0m\r\n`,
+            );
+          } else if (ev.state === 'connected') {
+            rtNew.sawReconnect = false;
+            rtNew.ui.setDead(null);
+            if (ev.reconnected) rtNew.term.write('\x1b[32m[已重连]\x1b[0m\r\n');
+          } else if (ev.state === 'closed') {
+            rtNew.term.write('\r\n\x1b[2m[连接已关闭]\x1b[0m\r\n');
+            // 重连耗尽（后端发 closed 终态）→ 原位操作层；用户主动 exit 的关闭不打扰
+            if (rtNew.sawReconnect) {
+              const msg = '连接中断，自动重连已耗尽（5 次尝试）';
+              rtNew.ui.setDead(msg);
+              if (tab.target.kind === 'session')
+                useAppStore.getState().recordConnectFailure(tab.target.sessionId, msg);
+            }
+          }
+        },
+      };
+      rt = rtNew;
+      paneRuntimes.set(pane.id, rtNew);
+      rtNew.ui = uiOf(rtNew);
+
+      // 12.7：搜索结果统计（高亮 decorations 同时是计数来源）
+      search.onDidChangeResults((r) =>
+        rtNew.ui.setSearchResults({ index: r.resultIndex, count: r.resultCount }),
+      );
+
+      // 12.6 终端 bell：非活跃标签打标记（激活即清）；窗口非活动时闪任务栏。
+      // 事件驱动，无定时器无动画；terminal.bell=false 全关
+      term.onBell(() => {
+        const s = useAppStore.getState();
+        if (s.settings['terminal.bell'] === false) return;
+        if (s.activeId !== tab.id) s.markBell(tab.id);
+        if (!document.hasFocus()) {
+          void getCurrentWindow()
+            .requestUserAttention(UserAttentionType.Informational)
+            .catch(() => undefined);
+        }
+      });
+
+      try {
+        term.loadAddon(new WebglAddon());
+      } catch {
+        // @xterm/addon-canvas 尚未支持 xterm 6（peer ^5），降级用 xterm 核心内置 canvas 渲染器
       }
-    });
 
-    try {
-      term.loadAddon(new WebglAddon());
-    } catch {
-      // @xterm/addon-canvas 尚未支持 xterm 6（peer ^5），降级用 xterm 核心内置 canvas 渲染器
+      // 快捷键（keymap 注册表）：搜索/复制/粘贴在此拦截，其余按键全部放行给终端。
+      // Ctrl+C 不在注册表内（保留给 SIGINT）；无选中时复制动作禁用（吞键不下发）。
+      term.attachCustomKeyEventHandler((e) => {
+        if (e.type !== 'keydown') return true;
+        const bindings = keymapFromSettings(useAppStore.getState().settings);
+        if (bindings['search'] && matchCombo(e, bindings['search'])) {
+          rtNew.ui.setSearchOpen(true);
+          return false;
+        }
+        if (matchAction(e, bindings, 'copy')) {
+          if (term.hasSelection()) {
+            void writeText(term.getSelection()).catch((err: unknown) => {
+              console.warn('copy failed', err);
+            });
+          }
+          return false;
+        }
+        if (matchAction(e, bindings, 'paste')) {
+          void readText()
+            .then((text) => {
+              if (text) term.paste(text);
+            })
+            .catch((err: unknown) => {
+              console.warn('paste failed', err);
+            });
+          return false;
+        }
+        return true;
+      });
+
+      // 选中即复制（规格书 M1 体验项）。
+      // 剪贴板走 Tauri 插件：WebView2 的 navigator.clipboard 在窗口无焦点时静默挂起（实测）。
+      term.onSelectionChange(() => {
+        // 批次一 7.5：可开关；事件时读设置 → 修改对已有终端立即生效
+        if (useAppStore.getState().settings['terminal.copyOnSelect'] === false) return;
+        const sel = term.getSelection();
+        if (sel)
+          void writeText(sel).catch((e: unknown) => {
+            console.warn('copy failed', e);
+          });
+      });
+
+      // 首挂建立会话（重挂跳过：session 输入订阅与后端通道仍在）
+      attachNow(rtNew);
     }
+
+    // —— 以下为每次挂载都需重建的宿主相关接线（host 元素随重挂更换） ——
+    // const 固定 narrowing：let 在闭包内会回退到声明类型（含 undefined）
+    const runtime = rt;
+    const { term, fit } = runtime;
     termRegistry.set(pane.id, term);
     fitRegistry.set(pane.id, () => {
       if (host.clientWidth > 0 && host.clientHeight > 0) fit.fit();
-    });
-
-    // 快捷键（keymap 注册表）：搜索/复制/粘贴在此拦截，其余按键全部放行给终端。
-    // Ctrl+C 不在注册表内（保留给 SIGINT）；无选中时复制动作禁用（吞键不下发）。
-    term.attachCustomKeyEventHandler((e) => {
-      if (e.type !== 'keydown') return true;
-      const bindings = keymapFromSettings(useAppStore.getState().settings);
-      if (bindings['search'] && matchCombo(e, bindings['search'])) {
-        setSearchOpen(true);
-        return false;
-      }
-      if (matchAction(e, bindings, 'copy')) {
-        if (term.hasSelection()) {
-          void writeText(term.getSelection()).catch((err: unknown) => {
-            console.warn('copy failed', err);
-          });
-        }
-        return false;
-      }
-      if (matchAction(e, bindings, 'paste')) {
-        void readText()
-          .then((text) => {
-            if (text) term.paste(text);
-          })
-          .catch((err: unknown) => {
-            console.warn('paste failed', err);
-          });
-        return false;
-      }
-      return true;
-    });
-
-    // 选中即复制（规格书 M1 体验项）。
-    // 剪贴板走 Tauri 插件：WebView2 的 navigator.clipboard 在窗口无焦点时静默挂起（实测）。
-    term.onSelectionChange(() => {
-      // 批次一 7.5：可开关；事件时读设置 → 修改对已有终端立即生效
-      if (useAppStore.getState().settings['terminal.copyOnSelect'] === false) return;
-      const sel = term.getSelection();
-      if (sel)
-        void writeText(sel).catch((e: unknown) => {
-          console.warn('copy failed', e);
-        });
     });
 
     // 右键（批次四 10.2）：默认开菜单；terminal.rightClickPaste=true 恢复直接粘贴
@@ -153,51 +261,18 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
           });
         return;
       }
-      setMenu({ x: e.clientX, y: e.clientY, canCopy: term.hasSelection() });
+      runtime.ui.setMenu({ x: e.clientX, y: e.clientY, canCopy: term.hasSelection() });
     };
 
-    // 断线/重连/终态标记直接写入 xterm（同一实例续写，回滚天然保留）
-    const stateHook = (ev: SessionStateFrame) => {
-      if (ev.state === 'reconnecting') {
-        sawReconnectRef.current = true;
-        term.write(`\r\n\x1b[33m[连接中断，正在第 ${ev.attempt ?? '?'} 次重连…]\x1b[0m\r\n`);
-      } else if (ev.state === 'connected') {
-        sawReconnectRef.current = false;
-        setDead(null);
-        if (ev.reconnected) term.write('\x1b[32m[已重连]\x1b[0m\r\n');
-      } else if (ev.state === 'closed') {
-        term.write('\r\n\x1b[2m[连接已关闭]\x1b[0m\r\n');
-        // 重连耗尽（后端发 closed 终态）→ 原位操作层；用户主动 exit 的关闭不打扰
-        if (sawReconnectRef.current) {
-          const msg = '连接中断，自动重连已耗尽（5 次尝试）';
-          setDead(msg);
-          if (tab.target.kind === 'session')
-            useAppStore.getState().recordConnectFailure(tab.target.sessionId, msg);
-        }
-      }
-    };
-
-    const attachNow = () => {
-      pane.session.attach(term, tab.target, stateHook).catch((e: unknown) => {
-        setPaneState(tab.id, pane.id, 'error');
-        const msg = `连接失败: ${String(e)}`;
-        setDead(msg);
-        if (tab.target.kind === 'session')
-          useAppStore.getState().recordConnectFailure(tab.target.sessionId, msg);
-
-        term.write(`\r\n\x1b[1;31m${msg}\x1b[0m\r\n`);
-      });
-    };
-    // 原位重连：复用当前 target 与 xterm（回滚保留、不新建标签；attach 幂等防重复订阅）
+    // 原位重连：复用当前 target 与 xterm（回滚保留、不新建标签）
     reconnectRef.current = () => {
-      sawReconnectRef.current = false;
-      setDead(null);
+      runtime.sawReconnect = false;
+      runtime.ui.setDead(null);
       setPaneState(tab.id, pane.id, 'connecting');
       term.write('\r\n\x1b[33m[正在重新连接…]\x1b[0m\r\n');
-      attachNow();
+      attachNow(runtime);
     };
     reconnectRegistry.set(pane.id, () => reconnectRef.current());
-    attachNow();
 
     const observer = new ResizeObserver(() => {
       // display:none 时尺寸为 0，fit 会产生 0 列——跳过
@@ -209,8 +284,14 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       termRegistry.delete(pane.id);
       fitRegistry.delete(pane.id);
       reconnectRegistry.delete(pane.id);
-      term.dispose();
       searchRef.current = null;
+      // pane 仍在 store = 布局重排重挂 → runtime 留池保活等复用；
+      // 已从 panes 表移除 = 真关闭（session 由 closePane/doCloseTab 关闭），dispose
+      const alive = useAppStore.getState().tabs.some((t) => t.panes[pane.id] !== undefined);
+      if (!alive) {
+        paneRuntimes.delete(pane.id);
+        term.dispose();
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -332,6 +413,9 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
         disabled: !isSession,
         onSelect: () => {
           if (!s.sftpOpen[tab.id]) s.toggleSftp(tab.id);
+          // 面板已开时定位到终端 cwd（SftpPanel 消费 navRequests，不入历史栈）
+          const cwd = pane.session.cwd;
+          if (cwd) useTransferStore.getState().requestNav(tab.id, cwd);
         },
       },
     ];
