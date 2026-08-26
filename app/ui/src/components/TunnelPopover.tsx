@@ -3,6 +3,7 @@ import { useAppStore } from '../state/app-store';
 import { TunnelEditor } from './TunnelEditor';
 import { ConfirmDialog } from './ConfirmDialog';
 import { START_MODE_LABEL, fmtRate, startModeOf, tunnelDisplayName } from '../state/tunnel-utils';
+import { usePanelWidth } from './panel-height';
 import type { TunnelDef, TunnelInfo } from '../term/types';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -23,7 +24,7 @@ const KIND_LABEL: Record<string, string> = {
  * 全局隧道中心（§9.1 双入口之二）：按服务器分组的定义 × 1Hz 运行态合并视图。
  * 行操作：启动/停止/编辑/复制/删除；新建经 TunnelEditor（含端口预检与模板）。
  *
- * 展现形式（UX 批次 · 条目 7）：右上角工具条 ⇄ 触发的弹层（~420px，右锚定），
+ * 展现形式（UX 批次 · 条目 7）：右上角工具条 ⇄ 触发的弹层（右锚定，左缘可拖拽调宽），
  * 不再占用底部整宽栏位。Esc / 点击外部关闭；编辑器或删除确认打开时
  * 抑制外部关闭（它们是 fixed 模态，落在弹层 DOM 之外）。
  * 开关状态复用 store 的 tunnelPanelOpen/toggleTunnelPanel，快捷键与命令面板入口不变。
@@ -53,6 +54,8 @@ export function TunnelPopover({
   const [pendingDelete, setPendingDelete] = useState<TunnelDef | null>(null);
 
   const panelRef = useRef<HTMLDivElement>(null);
+  // 左缘拖拽调宽（批次十 4）；弹层右锚定，向左拖变宽
+  const { width, widthHandle } = usePanelWidth('ui.tunnelWidth', 560);
   /** 子模态（编辑器/删除确认）打开时抑制弹层自身的 Esc 与外部点击关闭 */
   const modalOpenRef = useRef(false);
   useEffect(() => {
@@ -136,8 +139,10 @@ export function TunnelPopover({
       ref={panelRef}
       role="dialog"
       aria-label="隧道管理"
-      className="absolute top-full right-0 z-50 mt-1 max-h-[70vh] w-[560px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-3 text-xs text-neutral-200 shadow-xl"
+      className="absolute top-full right-0 z-50 mt-1 max-h-[70vh] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-3 text-xs text-neutral-200 shadow-xl"
+      style={{ width }}
     >
+      {widthHandle}
       <div className="mb-2 flex items-center gap-3 border-b border-neutral-800 pb-2 text-neutral-400">
         <span className="text-sm font-semibold text-neutral-100">隧道</span>
         <span className="truncate">按服务器分组 · 编辑即生效（运行中需重启）</span>

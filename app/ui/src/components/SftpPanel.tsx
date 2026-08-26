@@ -351,6 +351,10 @@ export function SftpPanel({ tabId }: { tabId: string }) {
   /** 待确认删除的条目（11.2 批量；目录递归删除，无法恢复） */
   const [confirmDel, setConfirmDel] = useState<FileEntry[] | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; side: Side } | null>(null);
+  /** 本地常用路径（批次十 3）：chip 右键菜单目标 */
+  const [favMenu, setFavMenu] = useState<{ x: number; y: number; path: string } | null>(null);
+  const appSettings = useAppStore((s) => s.settings);
+  const setSetting = useAppStore((s) => s.setSetting);
   /** 本会话传输快照（transfer-store 聚合；订阅由初始 effect 幂等建立） */
   const sessionTransfers = useTransferStore((s) =>
     sessionId ? s.bySession[sessionId] : undefined,
@@ -807,44 +811,52 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       return [
         {
           label: '打开',
+          icon: '▶',
           disabled: !one,
           onSelect: () => one && openEntry('remote')(one),
         },
         {
           label: n > 1 ? `下载 ${n} 项` : '下载',
+          icon: '⬇',
           disabled: !batch,
           onSelect: () => downloadPaths(picked.map((e) => e.path)),
         },
         {
           label: n > 1 ? `复制 ${n} 个路径` : '复制路径',
+          icon: '⧉',
           disabled: !batch,
           onSelect: () => copyPaths('remote'),
         },
         'separator',
         {
           label: '重命名…',
+          icon: '✎',
           disabled: !one,
           onSelect: () => one && setPrompt({ action: 'rename', side, value: one.name }),
         },
         {
           label: n > 1 ? `移动 ${n} 项到…` : '移动到…',
+          icon: '➜',
           disabled: !batch,
           onSelect: () => setPrompt({ action: 'move', side, value: remotePath }),
         },
         {
           label: n > 1 ? `修改 ${n} 项权限…` : '修改权限…',
+          icon: '⚙',
           disabled: !batch,
           onSelect: () =>
             setPrompt({ action: 'chmod', side, value: fmtPerms(one?.permissions) || '644' }),
         },
         {
           label: '新建目录…',
+          icon: '＋',
           onSelect: () => setPrompt({ action: 'mkdir', side, value: '' }),
         },
-        { label: '刷新', onSelect: () => void refreshRemote() },
+        { label: '刷新', icon: '↻', onSelect: () => void refreshRemote() },
         'separator',
         {
           label: n > 1 ? `删除 ${n} 项…` : '删除…',
+          icon: '🗑',
           danger: true,
           disabled: !batch,
           onSelect: () => setConfirmDel(picked),
@@ -854,6 +866,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     return [
       {
         label: '在资源管理器中显示',
+        icon: '⬈',
         disabled: !one,
         onSelect: () =>
           one &&
@@ -863,33 +876,39 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       },
       {
         label: n > 1 ? `上传 ${n} 项` : '上传',
+        icon: '⬆',
         disabled: !batch,
         onSelect: () => uploadPaths(picked.map((e) => e.path)),
       },
       {
         label: n > 1 ? `复制 ${n} 个路径` : '复制路径',
+        icon: '⧉',
         disabled: !batch,
         onSelect: () => copyPaths('local'),
       },
       'separator',
       {
         label: '重命名…',
+        icon: '✎',
         disabled: !one,
         onSelect: () => one && setPrompt({ action: 'rename', side, value: one.name }),
       },
       {
         label: n > 1 ? `移动 ${n} 项到…` : '移动到…',
+        icon: '➜',
         disabled: !batch,
         onSelect: () => setPrompt({ action: 'move', side, value: localPath }),
       },
       {
         label: '新建目录…',
+        icon: '＋',
         onSelect: () => setPrompt({ action: 'mkdir', side, value: '' }),
       },
-      { label: '刷新', onSelect: () => void refreshLocal() },
+      { label: '刷新', icon: '↻', onSelect: () => void refreshLocal() },
       'separator',
       {
         label: n > 1 ? `删除 ${n} 项…` : '删除…',
+        icon: '🗑',
         danger: true,
         disabled: !batch,
         onSelect: () => setConfirmDel(picked),
@@ -947,19 +966,37 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       }
     };
 
-  // ---------- 本地快捷位置（批次六 4） ----------
+  // ---------- 本地快捷位置（批次六 4；批次十 3：常用路径动态增删，settings KV 持久化） ----------
 
+  const rawFavs = appSettings['sftp.localFavorites'];
+  const localFavs: string[] = Array.isArray(rawFavs)
+    ? rawFavs.filter((x): x is string => typeof x === 'string' && x.trim() !== '')
+    : [];
+
+  const favLabel = (p: string) => {
+    const norm = p.replace(/\\/g, '/').replace(/\/+$/, '');
+    return norm.split('/').pop() || norm; // 盘符根 C:/ → C:
+  };
+  const addLocalFav = () => {
+    if (!localPath || localFavs.includes(localPath)) return;
+    setSetting('sftp.localFavorites', [...localFavs, localPath]);
+    notify(`已收藏本地路径: ${localPath}`, 'success');
+  };
+  const removeLocalFav = (p: string) =>
+    setSetting(
+      'sftp.localFavorites',
+      localFavs.filter((x) => x !== p),
+    );
+
+  const qbtn =
+    'rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-40';
   const localQuickSlots = (
-    <div className="flex items-center gap-1 border-b border-neutral-800 px-2 py-0.5">
-      <button
-        className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800"
-        title="盘符枚举"
-        onClick={() => void navSide('local', '')}
-      >
+    <div className="flex items-center gap-1 overflow-x-auto border-b border-neutral-800 px-2 py-0.5">
+      <button className={qbtn} title="盘符枚举" onClick={() => void navSide('local', '')}>
         此电脑
       </button>
       <button
-        className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800"
+        className={qbtn}
         title="桌面"
         onClick={() =>
           void invoke<string>('local_desktop_path')
@@ -968,6 +1005,28 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         }
       >
         桌面
+      </button>
+      {localFavs.map((p) => (
+        <button
+          key={p}
+          className={`${qbtn} max-w-32 truncate`}
+          title={`${p}（右键移除）`}
+          onClick={() => void navSide('local', p)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setFavMenu({ x: e.clientX, y: e.clientY, path: p });
+          }}
+        >
+          {favLabel(p)}
+        </button>
+      ))}
+      <button
+        className={`${qbtn} shrink-0`}
+        title={localPath ? `收藏当前路径: ${localPath}` : '先进入一个本地目录再收藏'}
+        disabled={!localPath || localFavs.includes(localPath)}
+        onClick={addLocalFav}
+      >
+        ☆ 收藏当前
       </button>
     </div>
   );
@@ -1128,6 +1187,23 @@ export function SftpPanel({ tabId }: { tabId: string }) {
           y={menu.y}
           items={menuItems(menu.side)}
           onClose={() => setMenu(null)}
+        />
+      )}
+      {/* 本地常用路径 chip 右键（批次十 3） */}
+      {favMenu && (
+        <ContextMenu
+          x={favMenu.x}
+          y={favMenu.y}
+          items={[
+            { label: '打开', icon: '▶', onSelect: () => void navSide('local', favMenu.path) },
+            {
+              label: '移除收藏',
+              icon: '🗑',
+              danger: true,
+              onSelect: () => removeLocalFav(favMenu.path),
+            },
+          ]}
+          onClose={() => setFavMenu(null)}
         />
       )}
 

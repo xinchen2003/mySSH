@@ -29,11 +29,12 @@ export function TabBar() {
     const isSession = t.target.kind === 'session';
     const sessionId = t.target.kind === 'session' ? t.target.sessionId : null;
     return [
-      { label: '重新连接', onSelect: () => s.reconnectTab(t.id) },
-      { label: '断开', onSelect: () => s.disconnectTab(t.id) },
+      { label: '重新连接', icon: '▶', onSelect: () => s.reconnectTab(t.id) },
+      { label: '断开', icon: '⏻', onSelect: () => s.disconnectTab(t.id) },
       'separator',
       {
         label: '打开 SFTP',
+        icon: '⇅',
         disabled: !isSession,
         onSelect: () => {
           s.setActive(t.id);
@@ -42,6 +43,7 @@ export function TabBar() {
       },
       {
         label: '打开监控',
+        icon: '∿',
         disabled: !isSession,
         onSelect: () => {
           s.setActive(t.id);
@@ -50,6 +52,7 @@ export function TabBar() {
       },
       {
         label: '管理隧道',
+        icon: '⇄',
         onSelect: () => {
           if (!s.tunnelPanelOpen) s.toggleTunnelPanel();
         },
@@ -71,24 +74,32 @@ export function TabBar() {
       },
       {
         label: '分离窗口',
+        icon: '⬈',
         disabled: !isSession,
         onSelect: () => {
           if (sessionId) s.connectInNewWindow(sessionId, t.title);
         },
       },
       'separator',
-      { label: '关闭', onSelect: () => s.closeTab(t.id) },
+      { label: '关闭', icon: '✕', onSelect: () => s.closeTab(t.id) },
       {
         label: '关闭其他',
+        icon: '✕',
         disabled: s.tabs.length < 2,
         onSelect: () => s.closeOtherTabs(t.id),
       },
       {
         label: '关闭右侧',
+        icon: '✕',
         disabled: idx < 0 || idx >= s.tabs.length - 1,
         onSelect: () => s.closeTabsToRight(t.id),
       },
-      { label: '关闭全部', disabled: s.tabs.length < 2, onSelect: () => s.closeAllTabs() },
+      {
+        label: '关闭全部',
+        icon: '✕',
+        disabled: s.tabs.length < 2,
+        onSelect: () => s.closeAllTabs(),
+      },
     ];
   };
 

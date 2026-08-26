@@ -181,7 +181,7 @@ function ToolBtn({
     >
       {children}
       {badge !== undefined && badge > 0 && (
-        <span className="absolute -right-1 -top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-blue-600 px-0.5 text-[9px] font-medium leading-none text-white">
+        <span className="absolute -right-1 -top-1 flex h-3.5 min-w-3.5 animate-pulse items-center justify-center rounded-full bg-blue-600 px-0.5 text-[9px] font-medium leading-none text-white">
           {badge > 99 ? '99+' : badge}
         </span>
       )}

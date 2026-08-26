@@ -386,9 +386,10 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
         })
         .catch((e: unknown) => console.warn('paste failed', e));
     return [
-      { label: '粘贴', onSelect: paste },
+      { label: '粘贴', icon: '⤵', onSelect: paste },
       {
         label: '复制',
+        icon: '⧉',
         disabled: !canCopy,
         onSelect: () => {
           const sel = term?.getSelection();
@@ -398,18 +399,19 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
             });
         },
       },
-      { label: '全选', onSelect: () => term?.selectAll() },
-      { label: '搜索', onSelect: () => setSearchOpen(true) },
+      { label: '全选', icon: '□', onSelect: () => term?.selectAll() },
+      { label: '搜索', icon: '⌕', onSelect: () => setSearchOpen(true) },
       'separator',
-      { label: '清空屏幕', onSelect: () => term?.write('\x1b[2J\x1b[H') },
-      { label: '清空回滚', onSelect: () => term?.write('\x1b[3J') },
+      { label: '清空屏幕', icon: '⌫', onSelect: () => term?.write('\x1b[2J\x1b[H') },
+      { label: '清空回滚', icon: '⌫', onSelect: () => term?.write('\x1b[3J') },
       'separator',
       { label: '向右分屏', onSelect: () => s.splitActive('row') },
       { label: '向下分屏', onSelect: () => s.splitActive('col') },
       'separator',
-      { label: '重新连接', onSelect: () => reconnectRef.current() },
+      { label: '重新连接', icon: '▶', onSelect: () => reconnectRef.current() },
       {
         label: '打开 SFTP',
+        icon: '⇅',
         disabled: !isSession,
         onSelect: () => {
           if (!s.sftpOpen[tab.id]) s.toggleSftp(tab.id);

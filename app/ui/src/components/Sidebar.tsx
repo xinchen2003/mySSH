@@ -313,25 +313,40 @@ export function Sidebar() {
   const sessionMenu = (rec: SessionRecord): MenuItem[] => {
     const fav = favorites.has(rec.id);
     return [
-      { label: '连接', onSelect: () => connect(rec) },
-      { label: '在新标签连接', onSelect: () => connect(rec, 'new-tab') },
-      { label: '在新窗口连接', onSelect: () => s().connectInNewWindow(rec.id, rec.name) },
-      { label: '连接并打开 SFTP', onSelect: () => s().connectAndOpenSftp(rec.id, rec.name) },
+      { label: '连接', icon: '▶', onSelect: () => connect(rec) },
+      { label: '在新标签连接', icon: '↗', onSelect: () => connect(rec, 'new-tab') },
+      {
+        label: '在新窗口连接',
+        icon: '⬈',
+        onSelect: () => s().connectInNewWindow(rec.id, rec.name),
+      },
+      {
+        label: '连接并打开 SFTP',
+        icon: '⇅',
+        onSelect: () => s().connectAndOpenSftp(rec.id, rec.name),
+      },
       'separator',
-      { label: '编辑', onSelect: () => openConnect(rec) },
+      { label: '编辑', icon: '⚙', onSelect: () => openConnect(rec) },
       {
         label: '重命名…',
+        icon: '✎',
         onSelect: () => setPrompt({ mode: 'rename', id: rec.id, input: rec.name }),
       },
-      { label: '复制服务器', onSelect: () => void s().duplicateSession(rec) },
+      { label: '复制服务器', icon: '❐', onSelect: () => void s().duplicateSession(rec) },
       {
         label: '移动到分组…',
+        icon: '➜',
         onSelect: () => setPrompt({ mode: 'move-to', ids: [rec.id], input: rec.groupPath }),
       },
-      { label: fav ? '取消收藏' : '添加收藏', onSelect: () => s().toggleFavorite(rec.id) },
+      {
+        label: fav ? '取消收藏' : '添加收藏',
+        icon: fav ? '☆' : '★',
+        onSelect: () => s().toggleFavorite(rec.id),
+      },
       'separator',
       {
         label: '复制主机地址',
+        icon: '⧉',
         onSelect: () =>
           void writeText(`${rec.username}@${rec.host}:${rec.port}`).then(
             () => s().notify('已复制主机地址', 'success'),
@@ -340,6 +355,7 @@ export function Sidebar() {
       },
       {
         label: '复制 SSH 命令',
+        icon: '⧉',
         onSelect: () =>
           void writeText(sshCommand(rec, sessions)).then(
             () => s().notify('已复制 SSH 命令', 'success'),
@@ -348,6 +364,7 @@ export function Sidebar() {
       },
       {
         label: '导出（复制 JSON）',
+        icon: '⧉',
         onSelect: () =>
           void writeText(JSON.stringify(rec, null, 2)).then(
             () => s().notify('会话 JSON 已复制到剪贴板', 'success'),
@@ -355,23 +372,26 @@ export function Sidebar() {
           ),
       },
       'separator',
-      { label: '删除', danger: true, onSelect: () => s().requestDeleteSession(rec) },
+      { label: '删除', icon: '🗑', danger: true, onSelect: () => s().requestDeleteSession(rec) },
     ];
   };
 
   const batchMenu = (ids: string[]): MenuItem[] => [
     {
       label: `移动到分组…（${ids.length}）`,
+      icon: '➜',
       onSelect: () => setPrompt({ mode: 'move-to', ids, input: '' }),
     },
     {
       label: `添加收藏（${ids.length}）`,
+      icon: '★',
       onSelect: () => {
         for (const id of ids) if (!favorites.has(id)) s().toggleFavorite(id);
       },
     },
     {
       label: `导出（复制 JSON，${ids.length}）`,
+      icon: '⧉',
       onSelect: () => {
         const recs = sessions.filter((x) => ids.includes(x.id));
         void writeText(JSON.stringify(recs, null, 2)).then(
@@ -383,6 +403,7 @@ export function Sidebar() {
     'separator',
     {
       label: `删除（${ids.length}）…`,
+      icon: '🗑',
       danger: true,
       onSelect: () => setBatchDel(sessions.filter((x) => ids.includes(x.id))),
     },
@@ -391,20 +412,24 @@ export function Sidebar() {
   const groupMenu = (path: string, count: number): MenuItem[] => [
     {
       label: '新建子分组…',
+      icon: '＋',
       onSelect: () => setPrompt({ mode: 'group-new', parent: path, input: '' }),
     },
     {
       label: '在此分组新建连接…',
+      icon: '＋',
       onSelect: () => openConnect(undefined, path),
     },
     {
       label: '重命名…',
+      icon: '✎',
       onSelect: () =>
         setPrompt({ mode: 'group-rename', path, input: path.split('/').pop() ?? path }),
     },
     'separator',
     {
       label: count > 0 ? `删除分组（含 ${count} 台服务器）…` : '删除分组',
+      icon: '🗑',
       danger: true,
       onSelect: () => {
         if (count > 0) setGroupDel({ path, count });
@@ -418,13 +443,14 @@ export function Sidebar() {
   ];
 
   const blankMenu = (): MenuItem[] => [
-    { label: '新建连接…', onSelect: () => openConnect() },
+    { label: '新建连接…', icon: '＋', onSelect: () => openConnect() },
     {
       label: '新建分组…',
+      icon: '＋',
       onSelect: () => setPrompt({ mode: 'group-new', parent: '', input: '' }),
     },
     'separator',
-    { label: '刷新', onSelect: () => void load() },
+    { label: '刷新', icon: '↻', onSelect: () => void load() },
   ];
 
   // ---------- 拖拽 ----------
