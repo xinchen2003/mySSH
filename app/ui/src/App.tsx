@@ -13,6 +13,7 @@ import { HostKeyDialog } from './components/HostKeyDialog';
 import { KiDialog } from './components/KiDialog';
 import { SftpPanel } from './components/SftpPanel';
 import { TransferCenter } from './components/TransferCenter';
+import { TransferIndicator } from './components/TransferIndicator';
 import { MetricsPanel } from './components/MetricsPanel';
 import { SettingsDialog } from './components/SettingsDialog';
 import { SplitTree } from './components/SplitTree';
@@ -188,6 +189,7 @@ export function App() {
       {activeId && sftpOpen[activeId] && <SftpPanel tabId={activeId} />}
       {activeId && metricsOpen[activeId] && <MetricsPanel tabId={activeId} />}
       <TransferCenter />
+      <TransferIndicator />
       <ConnectDialog />
       <QuickConnectDialog />
       <HostKeyDialog />

@@ -129,7 +129,17 @@ impl TransferQueue {
         remote: String,
         bytes_total: u64,
     ) -> (TransferId, Arc<TransferInner>) {
-        let id = format!("tr-{}", self.id_seq.fetch_add(1, Ordering::Relaxed));
+        // ID 跨进程唯一（毫秒时间戳 + 进程内序号）：终态会落 transfers 表并按 id upsert，
+        // 纯进程内序号在重启后从 tr-1 重排，会覆盖掉上次运行留下的历史记录。
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let id = format!(
+            "tr-{}-{}",
+            millis,
+            self.id_seq.fetch_add(1, Ordering::Relaxed)
+        );
         let inner = Arc::new(TransferInner {
             info: Mutex::new(TransferInfo {
                 id: id.clone(),

@@ -132,10 +132,18 @@ pub(crate) async fn ensure_ctx(
         let _ = tx.send(result);
     });
     let ctx = Arc::new(rx.await.map_err(|_| "bulk-rt 连接任务丢失".to_string())??);
-    state
-        .ctxs
-        .lock()
-        .insert(session_id.to_string(), ctx.clone());
+    // 并发建连去重：等待 rx 期间可能有别的调用已建好并插入（SFTP 打开瞬间
+    // sftp_list / transfer_list / transfer_subscribe 并发触发）。若不检查，
+    // 后插入者覆盖 map，而先返回的调用方（如 transfer_subscribe 推送循环）
+    // 永久持有孤儿 ctx 的空 queue —— 订阅帧恒空、前端传输面板无任何反馈。
+    let mut map = state.ctxs.lock();
+    if let Some(existing) = map.get(session_id) {
+        if !existing._conn.is_closed() {
+            return Ok(existing.clone()); // 多余的自建 ctx 随 drop 关闭连接
+        }
+    }
+    map.insert(session_id.to_string(), ctx.clone());
+    drop(map);
     Ok(ctx)
 }
 

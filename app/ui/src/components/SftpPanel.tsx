@@ -501,66 +501,73 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     void (async () => {
       const files = await collectDroppedFiles(items);
       if (files.length === 0) return;
-      if (side === 'remote') {
-        if (!sessionId) return;
-        const base = dir;
-        // 先逐级补远程目录（sftp_mkdir 不递归；已存在失败忽略）
-        const dirs = new Set<string>();
-        for (const f of files) {
-          const parts = f.rel.split('/').slice(0, -1);
-          for (let i = 1; i <= parts.length; i++) dirs.add(parts.slice(0, i).join('/'));
-        }
-        for (const d of [...dirs].sort()) {
-          await invoke('sftp_mkdir', { sessionId, path: joinRemote(base, d) }).catch(
-            () => undefined,
-          );
-        }
-        for (const f of files) {
-          try {
-            const tmp = await invoke<string>('local_drop_begin', {
-              destDir: null,
-              relPath: f.rel,
-            });
-            await fileToBase64Chunks(f.file, async (b64) => {
-              await invoke('local_drop_append', { path: tmp, dataB64: b64 });
-            });
-            // sftp_upload 的 remote 是目标目录（远端文件名取本地 basename，中转区已保留原名）
-            const relDir = f.rel.split('/').slice(0, -1).join('/');
-            await invoke('sftp_upload', {
-              sessionId,
-              local: tmp,
-              remote: relDir ? joinRemote(base, relDir) : base,
-            });
-          } catch (e) {
-            notify(`上传失败: ${e}`, 'error');
+      // 字节流经 base64 分块落临时区，大文件要数秒：期间入队前无任何传输帧，
+      // 用 staging 计数让浮动指示器立刻给出「读取中」反馈（批次十补强）
+      useTransferStore.getState().beginStaging();
+      try {
+        if (side === 'remote') {
+          if (!sessionId) return;
+          const base = dir;
+          // 先逐级补远程目录（sftp_mkdir 不递归；已存在失败忽略）
+          const dirs = new Set<string>();
+          for (const f of files) {
+            const parts = f.rel.split('/').slice(0, -1);
+            for (let i = 1; i <= parts.length; i++) dirs.add(parts.slice(0, i).join('/'));
+          }
+          for (const d of [...dirs].sort()) {
+            await invoke('sftp_mkdir', { sessionId, path: joinRemote(base, d) }).catch(
+              () => undefined,
+            );
+          }
+          for (const f of files) {
+            try {
+              const tmp = await invoke<string>('local_drop_begin', {
+                destDir: null,
+                relPath: f.rel,
+              });
+              await fileToBase64Chunks(f.file, async (b64) => {
+                await invoke('local_drop_append', { path: tmp, dataB64: b64 });
+              });
+              // sftp_upload 的 remote 是目标目录（远端文件名取本地 basename，中转区已保留原名）
+              const relDir = f.rel.split('/').slice(0, -1).join('/');
+              await invoke('sftp_upload', {
+                sessionId,
+                local: tmp,
+                remote: relDir ? joinRemote(base, relDir) : base,
+              });
+            } catch (e) {
+              notify(`上传失败: ${e}`, 'error');
+            }
+          }
+          // 入队后的开始/完成/失败提示由 transfer-store 订阅差分统一发
+        } else {
+          const target = dir;
+          if (!target) {
+            notify('盘符枚举页无法接收文件，请先进入一个本地目录', 'warning');
+            return;
+          }
+          let ok = 0;
+          for (const f of files) {
+            try {
+              const dst = await invoke<string>('local_drop_begin', {
+                destDir: target,
+                relPath: f.rel,
+              });
+              await fileToBase64Chunks(f.file, async (b64) => {
+                await invoke('local_drop_append', { path: dst, dataB64: b64 });
+              });
+              ok++;
+            } catch (e) {
+              notify(`复制失败: ${e}`, 'error');
+            }
+          }
+          if (ok > 0) {
+            notify(`已复制 ${ok} 个项目`, 'success');
+            void refreshLocal();
           }
         }
-        // 入队后的开始/完成/失败提示由 transfer-store 订阅差分统一发
-      } else {
-        const target = dir;
-        if (!target) {
-          notify('盘符枚举页无法接收文件，请先进入一个本地目录', 'warning');
-          return;
-        }
-        let ok = 0;
-        for (const f of files) {
-          try {
-            const dst = await invoke<string>('local_drop_begin', {
-              destDir: target,
-              relPath: f.rel,
-            });
-            await fileToBase64Chunks(f.file, async (b64) => {
-              await invoke('local_drop_append', { path: dst, dataB64: b64 });
-            });
-            ok++;
-          } catch (e) {
-            notify(`复制失败: ${e}`, 'error');
-          }
-        }
-        if (ok > 0) {
-          notify(`已复制 ${ok} 个项目`, 'success');
-          void refreshLocal();
-        }
+      } finally {
+        useTransferStore.getState().endStaging();
       }
     })();
   };

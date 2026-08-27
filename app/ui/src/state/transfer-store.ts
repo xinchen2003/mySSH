@@ -17,6 +17,10 @@ interface TransferStore {
   history: TransferHistoryView[];
   /** 传输管理中心抽屉开关 */
   open: boolean;
+  /** 拖放读取中计数（OS 文件落临时区阶段尚未入队，无传输帧可显示；批次十补强） */
+  staging: number;
+  beginStaging(): void;
+  endStaging(): void;
   /** SFTP 导航请求：tabId → 远端目标路径（终端右键「打开 SFTP」面板已开时写入） */
   navRequests: Record<string, string>;
   setOpen(v: boolean): void;
@@ -59,6 +63,11 @@ function diffAndNotify(sessionId: string, transfers: TransferView[]): void {
       if (t.state === 'queued' || t.state === 'running') {
         if (t.direction === 'upload') upStart++;
         else downStart++;
+      } else if (t.state === 'done') {
+        // 亚帧完成（局域网小文件整个生命周期 < 500ms 推送间隔）：
+        // 此前不入任何计数 → 零提示，用户完全无感知
+        if (t.direction === 'upload') upDone++;
+        else downDone++;
       } else if (t.state === 'failed') {
         // 入队即失败（帧间隔内跑完 queued→failed）：不能以「新出现」吞掉失败提示
         failed.push(t);
@@ -110,6 +119,9 @@ export const useTransferStore = create<TransferStore>((set, get) => ({
   bySession: {},
   history: [],
   open: false,
+  staging: 0,
+  beginStaging: () => set((s) => ({ staging: s.staging + 1 })),
+  endStaging: () => set((s) => ({ staging: Math.max(0, s.staging - 1) })),
   navRequests: {},
   setOpen: (v) => {
     set({ open: v });
