@@ -10,6 +10,10 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  /* IME 修复：xterm 组合输入时辅助 textarea 跟随光标定位；光标贴近右缘时
+     textarea 溢出视口，浏览器 reveal 会把整页横向往右顶。clip 禁止横向滚动
+     （含程序化 reveal），候选框仍由 OS 按光标位置弹出。 */
+  overflow-x: clip;
   background: #0b0e14;
   color: #bfbdb6;
   font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
