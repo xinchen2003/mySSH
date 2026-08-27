@@ -17,10 +17,6 @@ interface TransferStore {
   history: TransferHistoryView[];
   /** 传输管理中心抽屉开关 */
   open: boolean;
-  /** 拖放读取中计数（OS 文件落临时区阶段尚未入队，无传输帧可显示；批次十补强） */
-  staging: number;
-  beginStaging(): void;
-  endStaging(): void;
   /** SFTP 导航请求：tabId → 远端目标路径（终端右键「打开 SFTP」面板已开时写入） */
   navRequests: Record<string, string>;
   setOpen(v: boolean): void;
@@ -119,9 +115,6 @@ export const useTransferStore = create<TransferStore>((set, get) => ({
   bySession: {},
   history: [],
   open: false,
-  staging: 0,
-  beginStaging: () => set((s) => ({ staging: s.staging + 1 })),
-  endStaging: () => set((s) => ({ staging: Math.max(0, s.staging - 1) })),
   navRequests: {},
   setOpen: (v) => {
     set({ open: v });

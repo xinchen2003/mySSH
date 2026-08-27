@@ -87,8 +87,6 @@ pub fn run() {
             files::open_in_explorer,
             files::local_copy,
             files::local_desktop_path,
-            files::local_drop_append,
-            files::local_drop_begin,
             sessions::session_list,
             sessions::session_upsert,
             sessions::session_delete,

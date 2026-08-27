@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
+import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../state/app-store';
 import type { FileEntry } from '../term/types';
 import { useTransferStore } from '../state/transfer-store';
@@ -26,9 +27,11 @@ import { usePanelHeight } from './panel-height';
  *  批次六：拖拽增强（OS 拖入本地栏复制、拖到目录行进子目录、落点高亮）、
  *  复制路径、路径栏模糊建议、本地快捷位「桌面」、传输迁出至 TransferCenter、
  *  初始定位终端 cwd / 家目录（权限失败回退家目录）、跟随终端修复。
- *  批次七：OS 拖放改走 HTML5（dragDropEnabled=false，旧 Tauri 原生事件路径坐标是
- *  物理像素、150% 缩放下命中测试全偏 → 静默失效）；File 无完整路径故字节流经
- *  local_drop_* 落盘后入 sftp_upload 队列。
+ *  批次十三：OS 拖放回归 Tauri 原生事件（dragDropEnabled=true）。批次七改走 HTML5
+ *  是因为原生事件坐标为物理像素、高 DPI 下命中全偏；但 File 无完整路径，只能字节流
+ *  经 local_drop_* 中转（大文件双份拷贝、无冲突确认）。现按 devicePixelRatio 换算回
+ *  CSS 像素命中，拿到真实路径后与面板「上传 →」共用 uploadPathsTo（冲突确认/目录
+ *  递归/续传策略一致）；拖入本地栏走 local_copy。
  *  限制：远程 → 窗外 OS 拖出下载在 Tauri webview 无原生支持（不提供 DragOut/
  *  拖拽数据供给），且不允许新增依赖，故不实现。 */
 
@@ -82,60 +85,6 @@ function baseNameOf(p: string): string {
 /** 目标已存在时的处理策略（sftp_upload/sftp_download 的 onExists 参数） */
 type OnExists = 'resume' | 'overwrite' | 'skip' | 'rename';
 
-/** 遍历拖放条目（webkitGetAsEntry 递归展开文件夹），rel 为相对拖入根的路径 */
-async function collectDroppedFiles(
-  items: DataTransferItemList,
-): Promise<{ file: File; rel: string }[]> {
-  const out: { file: File; rel: string }[] = [];
-  const walk = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
-    if (entry.isFile) {
-      const { promise, resolve, reject } = Promise.withResolvers<File>();
-      (entry as FileSystemFileEntry).file(resolve, reject);
-      out.push({ file: await promise, rel: prefix + entry.name });
-      return;
-    }
-    if (!entry.isDirectory) return;
-    const reader = (entry as FileSystemDirectoryEntry).createReader();
-    // readEntries 每批最多 100 条，必须循环读到空
-    for (;;) {
-      const { promise, resolve, reject } = Promise.withResolvers<FileSystemEntry[]>();
-      reader.readEntries(resolve, reject);
-      const es = await promise;
-      if (es.length === 0) break;
-      for (const s of es) await walk(s, `${prefix}${entry.name}/`);
-    }
-  };
-  const entries: FileSystemEntry[] = [];
-  for (const it of Array.from(items)) {
-    if (it.kind !== 'file') continue;
-    const e = it.webkitGetAsEntry?.();
-    if (e) entries.push(e);
-    else {
-      const f = it.getAsFile();
-      if (f) out.push({ file: f, rel: f.name });
-    }
-  }
-  for (const e of entries) await walk(e, '');
-  return out;
-}
-
-/** File → 4MB 分块 base64 回调（fromCharCode 32K 分批，避开参数上限） */
-async function fileToBase64Chunks(
-  file: File,
-  onChunk: (b64: string) => Promise<void>,
-): Promise<void> {
-  const CHUNK = 4 * 1024 * 1024;
-  for (let off = 0; off < file.size || (off === 0 && file.size === 0); off += CHUNK) {
-    const buf = new Uint8Array(await file.slice(off, off + CHUNK).arrayBuffer());
-    let bin = '';
-    for (let i = 0; i < buf.length; i += 0x8000) {
-      bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-    }
-    await onChunk(btoa(bin));
-    if (file.size === 0) break;
-  }
-}
-
 function parentDir(path: string, remote: boolean): string {
   if (remote) {
     if (path === '/' || path === '') return '/';
@@ -169,8 +118,6 @@ interface PaneProps {
   onDropEntries: (paths: string[]) => void;
   /** 落到目录行上：传入该子目录路径（批次六 1b） */
   onDropEntriesInto: (paths: string[], dir: string) => void;
-  /** OS 文件拖入（HTML5 drop；dir=落点目录：命中的目录行，否则 pane 当前目录） */
-  onDropOsFiles: (items: DataTransferItemList, dir: string) => void;
   onRowMenu: (e: FileEntry, x: number, y: number) => void;
   onClearSel: () => void;
   onSelectAll: () => void;
@@ -229,6 +176,7 @@ function FilePane(p: PaneProps) {
   return (
     <div
       className={`flex min-h-0 flex-1 flex-col ${p.dropActive ? 'ring-2 ring-inset ring-blue-600' : ''}`}
+      data-drop-side={p.side}
       onDragOver={(e) => {
         e.preventDefault();
         p.onDropHover(true);
@@ -252,9 +200,7 @@ function FilePane(p: PaneProps) {
           }
           return;
         }
-        // OS 文件拖入（dragDropEnabled=false 后走 HTML5；File 无完整路径，字节流经
-        // local_drop_* 落盘，远程侧再进 sftp_upload 队列）
-        if (e.dataTransfer.files.length > 0) p.onDropOsFiles(e.dataTransfer.items, dir ?? p.path);
+        // OS 文件拖入走 Tauri 原生事件（dragDropEnabled=true），不会进 HTML5 drop
       }}
     >
       <PathBar
@@ -320,6 +266,7 @@ function FilePane(p: PaneProps) {
             key={e.path}
             role="option"
             aria-selected={p.sel.has(e.path)}
+            data-dir-row={e.kind === 'dir' ? e.path : undefined}
             tabIndex={0}
             draggable
             onDragStart={(ev) =>
@@ -334,11 +281,8 @@ function FilePane(p: PaneProps) {
             onDragOver={
               e.kind === 'dir'
                 ? (ev) => {
-                    // 目录行可接收对面栏条目或 OS 文件（落到该子目录）
-                    if (
-                      ev.dataTransfer.types.includes('application/x-myssh-entry') ||
-                      ev.dataTransfer.types.includes('Files')
-                    ) {
+                    // 目录行可接收对面栏条目（落到该子目录）；OS 文件走原生事件，不进这里
+                    if (ev.dataTransfer.types.includes('application/x-myssh-entry')) {
                       ev.preventDefault();
                       ev.stopPropagation();
                       setRowDrop(e.path);
@@ -577,6 +521,85 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     refreshLocalRef.current = refreshLocal;
   }, [remotePath, localPath, refreshRemote, refreshLocal]);
 
+  /** 面板根节点：原生拖放命中测试限定本面板 DOM（多窗口/隐藏页签不误触发） */
+  const rootRef = useRef<HTMLDivElement>(null);
+  /** 原生 OS 拖放处理器：无依赖 effect 每渲染同步最新闭包，监听器内经 ref 调用 */
+  const osDropRef = useRef<(paths: string[], side: Side, dir: string | null) => void>(() => {
+    /* 首帧占位，随即被下方 effect 同步为真实闭包 */
+  });
+  useEffect(() => {
+    osDropRef.current = (paths, side, dir) => {
+      if (paths.length === 0) return;
+      if (side === 'remote') {
+        if (!sessionId) return;
+        // 与面板「上传 →」完全同路径：冲突确认/目录递归/续传策略一致
+        uploadPathsTo(paths, dir ?? remotePath);
+        return;
+      }
+      void (async () => {
+        const target = dir ?? localPath;
+        if (!target) {
+          notify('盘符枚举页无法接收文件，请先进入一个本地目录', 'warning');
+          return;
+        }
+        let ok = 0;
+        for (const src of paths) {
+          try {
+            await invoke('local_copy', { from: src, toDir: target });
+            ok++;
+          } catch (e) {
+            notify(`复制失败: ${e}`, 'error');
+          }
+        }
+        if (ok > 0) {
+          notify(`已复制 ${ok} 个项目`, 'success');
+          void refreshLocal();
+        }
+      })();
+    };
+  });
+
+  // 批次十三：Tauri 原生拖放监听。position 是物理像素（DragDropEvent 为
+  // dpi::PhysicalPosition），高 DPI 下必须除以 devicePixelRatio 换回 CSS 像素再做
+  // elementFromPoint 命中——批次七正是漏了这步导致 150% 缩放全偏。drag-over 连续给
+  // 位置，兼做落点栏高亮；命中目录行（data-dir-row）则落进该子目录。
+  useEffect(() => {
+    interface DragPayload {
+      paths: string[];
+      position: { x: number; y: number };
+    }
+    const hit = (pos: { x: number; y: number }): { side: Side; dir: string | null } | null => {
+      const dpr = window.devicePixelRatio || 1;
+      const el = document.elementFromPoint(pos.x / dpr, pos.y / dpr);
+      if (!el || !rootRef.current?.contains(el)) return null;
+      const pane = el.closest('[data-drop-side]');
+      if (!pane) return null;
+      const side: Side = pane.getAttribute('data-drop-side') === 'remote' ? 'remote' : 'local';
+      const dir = el.closest('[data-dir-row]')?.getAttribute('data-dir-row') ?? null;
+      return { side, dir };
+    };
+    let lastHover: Side | null = null;
+    const offs: (() => void)[] = [];
+    void listen<DragPayload>('tauri://drag-over', (ev) => {
+      const side = hit(ev.payload.position)?.side ?? null;
+      if (side !== lastHover) {
+        lastHover = side;
+        setHtml5DragSide(side);
+      }
+    }).then((off) => offs.push(off));
+    void listen<DragPayload>('tauri://drag-drop', (ev) => {
+      lastHover = null;
+      setHtml5DragSide(null);
+      const h = hit(ev.payload.position);
+      if (h) osDropRef.current(ev.payload.paths, h.side, h.dir);
+    }).then((off) => offs.push(off));
+    void listen('tauri://drag-leave', () => {
+      lastHover = null;
+      setHtml5DragSide(null);
+    }).then((off) => offs.push(off));
+    return () => offs.forEach((off) => off());
+  }, []);
+
   // 初始加载 + 传输订阅（微任务推迟 setState，避开 effect 内同步渲染级联）
   useEffect(() => {
     if (!sessionId) return;
@@ -652,86 +675,6 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       if (timers.remote) window.clearTimeout(timers.remote);
     };
   }, []);
-
-  // OS 文件拖入（批次六 1）：远程栏 → 上传（落目录行进该子目录）；本地栏 → 写进当前本地目录。
-  // dragDropEnabled=false 后走 HTML5 drop：File 对象无完整路径，只能读字节流——
-  // 经 local_drop_begin/append 落盘（远程侧落到 %TEMP%/myssh-drops 中转），再走既有
-  // sftp_upload 队列（进度/续传/审计/完成提示全复用）。文件夹拖入按 webkitGetAsEntry
-  // 递归保结构。
-  const osFileDrop = (side: Side) => (items: DataTransferItemList, dir: string) => {
-    void (async () => {
-      const files = await collectDroppedFiles(items);
-      if (files.length === 0) return;
-      // 字节流经 base64 分块落临时区，大文件要数秒：期间入队前无任何传输帧，
-      // 用 staging 计数让浮动指示器立刻给出「读取中」反馈（批次十补强）
-      useTransferStore.getState().beginStaging();
-      try {
-        if (side === 'remote') {
-          if (!sessionId) return;
-          const base = dir;
-          // 先逐级补远程目录（sftp_mkdir 不递归；已存在失败忽略）
-          const dirs = new Set<string>();
-          for (const f of files) {
-            const parts = f.rel.split('/').slice(0, -1);
-            for (let i = 1; i <= parts.length; i++) dirs.add(parts.slice(0, i).join('/'));
-          }
-          for (const d of [...dirs].sort()) {
-            await invoke('sftp_mkdir', { sessionId, path: joinRemote(base, d) }).catch(
-              () => undefined,
-            );
-          }
-          for (const f of files) {
-            try {
-              const tmp = await invoke<string>('local_drop_begin', {
-                destDir: null,
-                relPath: f.rel,
-              });
-              await fileToBase64Chunks(f.file, async (b64) => {
-                await invoke('local_drop_append', { path: tmp, dataB64: b64 });
-              });
-              // sftp_upload 的 remote 是目标目录（远端文件名取本地 basename，中转区已保留原名）
-              const relDir = f.rel.split('/').slice(0, -1).join('/');
-              await invoke('sftp_upload', {
-                sessionId,
-                local: tmp,
-                remote: relDir ? joinRemote(base, relDir) : base,
-              });
-            } catch (e) {
-              notify(`上传失败: ${e}`, 'error');
-            }
-          }
-          // 入队后的开始/完成/失败提示由 transfer-store 订阅差分统一发
-        } else {
-          const target = dir;
-          if (!target) {
-            notify('盘符枚举页无法接收文件，请先进入一个本地目录', 'warning');
-            return;
-          }
-          let ok = 0;
-          for (const f of files) {
-            try {
-              const dst = await invoke<string>('local_drop_begin', {
-                destDir: target,
-                relPath: f.rel,
-              });
-              await fileToBase64Chunks(f.file, async (b64) => {
-                await invoke('local_drop_append', { path: dst, dataB64: b64 });
-              });
-              ok++;
-            } catch (e) {
-              notify(`复制失败: ${e}`, 'error');
-            }
-          }
-          if (ok > 0) {
-            notify(`已复制 ${ok} 个项目`, 'success');
-            void refreshLocal();
-          }
-        }
-      } finally {
-        useTransferStore.getState().endStaging();
-      }
-    })();
-  };
 
   // 终端右键「打开 SFTP」且面板已开：消费导航请求定位到 cwd（批次六 9；不入历史栈）
   const navReq = useTransferStore((s) => s.navRequests[tabId]);
@@ -1367,6 +1310,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
 
   return (
     <div
+      ref={rootRef}
       className="flex shrink-0 flex-col border-t border-neutral-800 bg-neutral-900 text-xs"
       style={{ height }}
     >
@@ -1607,7 +1551,6 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             onRefresh={() => void refreshLocal()}
             onDropEntries={transferDrop('local')}
             onDropEntriesInto={transferDropInto('local')}
-            onDropOsFiles={osFileDrop('local')}
             fetchSuggestions={fetchSuggestions('local')}
             dropActive={html5DragSide === 'local'}
             onDropHover={(v) => setHtml5DragSide(v ? 'local' : null)}
@@ -1644,7 +1587,6 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             onRefresh={() => void refreshRemote()}
             onDropEntries={transferDrop('remote')}
             onDropEntriesInto={transferDropInto('remote')}
-            onDropOsFiles={osFileDrop('remote')}
             fetchSuggestions={fetchSuggestions('remote')}
             dropActive={html5DragSide === 'remote'}
             onDropHover={(v) => setHtml5DragSide(v ? 'remote' : null)}

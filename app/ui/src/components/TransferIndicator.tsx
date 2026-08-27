@@ -16,8 +16,6 @@ export function TransferIndicator() {
   const bySession = useTransferStore((s) => s.bySession);
   const drawerOpen = useTransferStore((s) => s.open);
   const setOpen = useTransferStore((s) => s.setOpen);
-  const staging = useTransferStore((s) => s.staging);
-
   const live = Object.values(bySession)
     .flat()
     .filter((t) => !t.history);
@@ -44,19 +42,6 @@ export function TransferIndicator() {
     const tm = window.setTimeout(() => setEdge(null), 3000);
     return () => window.clearTimeout(tm);
   }, [edge]);
-
-  // 拖放读取中（尚未入队）：立即给反馈，此时还不会有任何传输帧
-  if (!drawerOpen && staging > 0 && activeCount === 0) {
-    return (
-      <div
-        role="status"
-        className="myssh-row-in fixed right-4 bottom-12 z-40 flex items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-xs text-neutral-200 shadow-xl"
-      >
-        <span className="animate-pulse text-blue-400">⇅</span>
-        正在读取文件，准备传输…
-      </div>
-    );
-  }
 
   if (drawerOpen || (activeCount === 0 && edge === null)) return null;
 

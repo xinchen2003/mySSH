@@ -444,9 +444,8 @@ export const useAppStore = create<AppStore>((set, get) => {
         title: `${title} · mySSH`,
         width: 1200,
         height: 800,
-        // 默认 true 时 OS 文件拖放被原生 handler 截获（只发 tauri://drag-drop），
-        // SFTP 面板的 HTML5 drop 上传不生效；与主窗口 tauri.conf.json 一致关闭
-        dragDropEnabled: false,
+        // 与主窗口 tauri.conf.json 一致开启原生拖放（批次十三：真实路径 + 冲突确认）
+        dragDropEnabled: true,
       });
       void win.once('tauri://error', () => undefined);
     },

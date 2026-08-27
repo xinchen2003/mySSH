@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "mySSH",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "identifier": "dev.myssh.app",
   "build": {
     "frontendDist": "../../app/ui/dist",
@@ -16,7 +16,7 @@
         "title": "mySSH",
         "width": 1440,
         "height": 900,
-        "dragDropEnabled": false,
+        "dragDropEnabled": true,
         "windowEffects": { "effects": ["mica"], "state": "followsWindowActiveState" }
       }
     ],
