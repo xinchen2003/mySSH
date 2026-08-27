@@ -22,6 +22,12 @@ export function SettingsDialog() {
   const customJson =
     typeof settings['theme.customJson'] === 'string' ? settings['theme.customJson'] : '';
   const term = readTerminalSettings(settings);
+  // 批次十一 8：断线重连次数（0-20，默认 5）
+  const reconnectRaw = settings['terminal.reconnectAttempts'];
+  const reconnectAttempts =
+    typeof reconnectRaw === 'number' && reconnectRaw >= 0 && reconnectRaw <= 20
+      ? Math.trunc(reconnectRaw)
+      : 5;
   const menuFontRaw = settings['ui.menuFontSize'];
   const menuFont =
     typeof menuFontRaw === 'number' && [11, 12, 13, 14].includes(menuFontRaw)
@@ -101,11 +107,31 @@ export function SettingsDialog() {
             id="set-size"
             className={`${inputCls} w-20`}
             type="number"
-            min={10}
-            max={24}
+            min={8}
+            max={32}
             value={term.fontSize}
             onChange={(e) => setSetting('terminal.fontSize', Number(e.target.value))}
           />
+          <label htmlFor="set-reconnect">断线重连次数</label>
+          <span className="flex items-center gap-2">
+            <input
+              id="set-reconnect"
+              className={`${inputCls} w-20`}
+              type="number"
+              min={0}
+              max={20}
+              value={reconnectAttempts}
+              onChange={(e) =>
+                setSetting(
+                  'terminal.reconnectAttempts',
+                  Math.min(20, Math.max(0, Math.trunc(Number(e.target.value) || 0))),
+                )
+              }
+            />
+            <span className="text-neutral-500">
+              0-20，默认 5；已建立的会话重连耗尽提示按挂载时读取
+            </span>
+          </span>
           <label htmlFor="set-scroll">回滚行数</label>
           <span className="flex items-center gap-2">
             <input

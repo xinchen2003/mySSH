@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
+import { useAppStore } from '../state/app-store';
 
 /** 可编辑路径栏（批次五 11.1）：后退/前进/上一级/刷新 + 点击编辑。
  *  批次六：复制当前路径按钮；输入时基于父目录列表的模糊建议
@@ -38,6 +40,7 @@ export function PathBar(p: Props) {
   const sugTimer = useRef<number | null>(null);
   /** 已复制短暂反馈 */
   const [copied, setCopied] = useState(false);
+  const notify = useAppStore((s) => s.notify);
 
   useEffect(() => {
     if (editing) inputRef.current?.select();
@@ -110,10 +113,16 @@ export function PathBar(p: Props) {
 
   const copyPath = () => {
     if (!p.path) return;
-    void navigator.clipboard.writeText(p.path).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    });
+    // Tauri 剪贴板插件（批次十一 8）：webview navigator.clipboard 在无焦点/权限收紧时静默失败
+    void (async () => {
+      try {
+        await writeText(p.path);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      } catch (e) {
+        notify(`复制失败: ${e}`, 'error');
+      }
+    })();
   };
 
   const btn = 'rounded px-1 text-neutral-400 hover:bg-neutral-800 disabled:opacity-30';

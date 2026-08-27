@@ -151,6 +151,10 @@ interface AppStore {
   pendingCloseTabs: string[] | null;
   confirmCloseTab(): void;
   cancelCloseTab(): void;
+  /** 已关闭标签栈（批次十一：Ctrl+Shift+T 重开；仅 session 类标签可重连，新→旧，cap 10） */
+  closedTabs: { sessionId: string; title: string }[];
+  /** 弹栈重开最近关闭的标签（复用 connectBySession 重连） */
+  reopenClosedTab(): void;
   /** 请求关闭一组标签：确认守卫命中时汇总弹一次确认（§17.2 说明影响） */
   requestCloseTabs(ids: string[]): void;
   /** 断开标签全部连接但保留标签（pane 终态 closed，终端内容保留） */
@@ -261,6 +265,12 @@ export const useAppStore = create<AppStore>((set, get) => {
       tabs: next,
       activeId: activeId === id ? (next[next.length - 1]?.id ?? null) : activeId,
       bellTabs: s.bellTabs.filter((t) => t !== id),
+      // 批次十一：session 类标签压入已关闭栈（cap 10），供 Ctrl+Shift+T 重开；
+      // 快速连接（spec）无档案可重连，不入栈
+      closedTabs:
+        tab && tab.target.kind === 'session'
+          ? [...s.closedTabs, { sessionId: tab.target.sessionId, title: tab.title }].slice(-10)
+          : s.closedTabs,
     }));
   };
 
@@ -603,6 +613,15 @@ export const useAppStore = create<AppStore>((set, get) => {
       if (ids) for (const id of ids) doCloseTab(id);
     },
     cancelCloseTab: () => set({ pendingCloseTabs: null }),
+    closedTabs: [],
+    reopenClosedTab: () => {
+      const stack = get().closedTabs;
+      const top = stack[stack.length - 1];
+      if (!top) return;
+      set({ closedTabs: stack.slice(0, -1) });
+      // 档案可能已删除：connectBySession 照常开标签，连接失败走既有 error 终态
+      get().connectBySession(top.sessionId, top.title);
+    },
 
     requestCloseTabs: (ids) => {
       const { tabs, settings } = get();

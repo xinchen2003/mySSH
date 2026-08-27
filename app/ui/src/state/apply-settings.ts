@@ -29,7 +29,7 @@ const str = (v: unknown, dflt: string): string =>
 export function readTerminalSettings(s: Record<string, unknown>): TerminalSettings {
   return {
     fontFamily: str(s['terminal.fontFamily'], DEFAULT_TERMINAL.fontFamily),
-    fontSize: num(s['terminal.fontSize'], DEFAULT_TERMINAL.fontSize, 10, 24),
+    fontSize: num(s['terminal.fontSize'], DEFAULT_TERMINAL.fontSize, 8, 32),
     scrollback: num(s['terminal.scrollback'], DEFAULT_TERMINAL.scrollback, 1_000, 100_000),
   };
 }

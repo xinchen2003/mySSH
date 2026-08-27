@@ -16,6 +16,7 @@ import { keymapFromSettings, matchAction, matchCombo } from '../term/keymap';
 import type { SessionStateFrame } from '../term/types';
 import { SearchBar, type SearchOptions, type SearchResults } from '../components/SearchBar';
 import { ContextMenu, type MenuItem } from '../components/ContextMenu';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useTransferStore } from '../state/transfer-store';
 /**
  * pane 终端运行时（条目 6a）：跨布局变化（leaf↔split 重挂）保活的 xterm 实例。
@@ -69,6 +70,31 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
   const reconnectRef = useRef<() => void>(() => undefined);
   /** 右键菜单（批次四 10.2）；canCopy 在打开瞬间采样，菜单存续期间不刷新 */
   const [menu, setMenu] = useState<{ x: number; y: number; canCopy: boolean } | null>(null);
+  /** 多行粘贴确认（批次十一）：非空时渲染确认框，text 为待粘贴原文 */
+  const [pasteConfirm, setPasteConfirm] = useState<{ text: string; lines: number } | null>(null);
+
+  /** 统一粘贴入口（快捷键/右键直贴/菜单项三路共用）：去除尾部单个换行后仍含换行 → 确认；
+   *  单行直贴。确认框默认焦点在「取消」（ConfirmDialog 语义），防误回车批量执行命令 */
+  const confirmPaste = (text: string) => {
+    const stripped = text.replace(/\r?\n$/, '');
+    if (stripped.includes('\n')) {
+      setPasteConfirm({ text, lines: stripped.split('\n').length });
+      return;
+    }
+    termRegistry.get(pane.id)?.paste(text);
+  };
+
+  /** 统一读剪贴板（三条粘贴路径共用）：读取失败（如剪贴板被其他程序占用）toast 提示，
+   *  不再只写 console——用户按了粘贴没反应时必须知道原因 */
+  const readClipboard = () => {
+    void readText()
+      .then((text) => {
+        if (text) confirmPaste(text);
+      })
+      .catch(() => {
+        useAppStore.getState().notify('读取剪贴板失败：可能被其他程序占用', 'error');
+      });
+  };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -109,6 +135,10 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
     } else {
       const settings = useAppStore.getState().settings;
       const termOpts = readTerminalSettings(settings);
+      // 批次十一 8：断线重连次数可配（terminal.reconnectAttempts，0-20 默认 5；挂载时读一次）
+      const rcRaw = settings['terminal.reconnectAttempts'];
+      const reconnectAttempts =
+        typeof rcRaw === 'number' && rcRaw >= 0 && rcRaw <= 20 ? Math.trunc(rcRaw) : 5;
       const term = new Terminal({
         scrollback: termOpts.scrollback,
         allowProposedApi: true,
@@ -155,7 +185,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
             rtNew.term.write('\r\n\x1b[2m[连接已关闭]\x1b[0m\r\n');
             // 重连耗尽（后端发 closed 终态）→ 原位操作层；用户主动 exit 的关闭不打扰
             if (rtNew.sawReconnect) {
-              const msg = '连接中断，自动重连已耗尽（5 次尝试）';
+              const msg = `连接中断，自动重连已耗尽（${reconnectAttempts} 次尝试）`;
               rtNew.ui.setDead(msg);
               if (tab.target.kind === 'session')
                 useAppStore.getState().recordConnectFailure(tab.target.sessionId, msg);
@@ -209,13 +239,19 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
           return false;
         }
         if (matchAction(e, bindings, 'paste')) {
-          void readText()
-            .then((text) => {
-              if (text) term.paste(text);
-            })
-            .catch((err: unknown) => {
-              console.warn('paste failed', err);
-            });
+          readClipboard();
+          return false;
+        }
+        // 批次十一：全局动作（App.tsx window 处理器执行）在此吞键防落入远端——
+        // 返回 false 只挡 xterm 内部处理，DOM 事件照常冒泡到全局快捷键处理器
+        if (
+          matchAction(e, bindings, 'zoomIn') ||
+          matchAction(e, bindings, 'zoomOut') ||
+          matchAction(e, bindings, 'resetZoom') ||
+          matchAction(e, bindings, 'nextPane') ||
+          matchAction(e, bindings, 'reopenClosedTab') ||
+          (e.ctrlKey && !e.altKey && !e.shiftKey && /^[1-9]$/.test(e.key))
+        ) {
           return false;
         }
         return true;
@@ -252,13 +288,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       const s = useAppStore.getState();
       s.setActivePane(tab.id, pane.id);
       if (s.settings['terminal.rightClickPaste'] === true) {
-        void readText()
-          .then((text) => {
-            if (text) term.paste(text);
-          })
-          .catch((err: unknown) => {
-            console.warn('paste failed', err);
-          });
+        readClipboard();
         return;
       }
       runtime.ui.setMenu({ x: e.clientX, y: e.clientY, canCopy: term.hasSelection() });
@@ -297,7 +327,18 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
   }, []);
 
   return (
-    <div className="relative h-full w-full">
+    <div
+      className="relative h-full w-full"
+      onWheel={(e) => {
+        // 批次十一 3：Ctrl+滚轮字号缩放（与 keymap zoomIn/zoomOut 同一 settings 通道，钳 8-32）
+        if (!e.ctrlKey) return;
+        e.preventDefault();
+        const s = useAppStore.getState();
+        const cur = readTerminalSettings(s.settings).fontSize;
+        const next = Math.min(32, Math.max(8, cur + (e.deltaY < 0 ? 1 : -1)));
+        if (next !== cur) s.setSetting('terminal.fontSize', next);
+      }}
+    >
       <div ref={hostRef} className="h-full w-full p-1" />
       {dead && (
         <div className="absolute bottom-2 left-1/2 z-10 flex max-w-[95%] -translate-x-1/2 items-center gap-2 rounded border border-neutral-700 bg-neutral-900/95 px-3 py-1.5 text-xs shadow-lg">
@@ -371,6 +412,21 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
           items={termMenuItems(menu.canCopy)}
         />
       )}
+      {/* 批次十一 1：多行粘贴确认（默认焦点在取消，防误回车执行多条命令） */}
+      {pasteConfirm && (
+        <ConfirmDialog
+          title="确认粘贴多行文本？"
+          confirmLabel="粘贴"
+          onCancel={() => setPasteConfirm(null)}
+          onConfirm={() => {
+            termRegistry.get(pane.id)?.paste(pasteConfirm.text);
+            setPasteConfirm(null);
+          }}
+        >
+          <p className="mb-1">将粘贴 {pasteConfirm.lines} 行，可能包含多条命令。</p>
+          <p className="text-red-300">请确认内容可信后再粘贴。</p>
+        </ConfirmDialog>
+      )}
     </div>
   );
 
@@ -379,12 +435,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
     const term = termRegistry.get(pane.id);
     const s = useAppStore.getState();
     const isSession = tab.target.kind === 'session';
-    const paste = () =>
-      void readText()
-        .then((t) => {
-          if (t) term?.paste(t);
-        })
-        .catch((e: unknown) => console.warn('paste failed', e));
+    const paste = () => readClipboard();
     return [
       { label: '粘贴', icon: '⤵', onSelect: paste },
       {

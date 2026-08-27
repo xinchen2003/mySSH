@@ -221,3 +221,45 @@ export async function transferCmd(
     useAppStore.getState().notify(`操作失败: ${e}`, 'error');
   }
 }
+/** 父目录（本地 \ 统一按 / 处理；盘符根 C:/ 的父级是其自身） */
+function parentPath(p: string, remote: boolean): string {
+  const norm = p.replace(/\\/g, '/').replace(/\/+$/, '');
+  const idx = norm.lastIndexOf('/');
+  if (idx < 0) return remote ? '/' : '';
+  if (idx === 0) return '/';
+  if (idx === 2 && norm[1] === ':') return norm.slice(0, 3);
+  return norm.slice(0, idx);
+}
+
+/** 历史行一键重试（批次十一 2）：按记录的方向/路径重新入队（onExists=resume 断点续传）。
+ *  历史记录是逐文件完整路径，而 sftp_upload/download 的目标参数是目录，
+ *  故上传取 remote 父目录、下载取 local 父目录。会话档案已删则不可重试
+ *  （ensure_ctx 需从档案解析凭据）；成功后确保订阅存在以便看到进度。 */
+export async function retryHistoryTransfer(h: TransferHistoryView): Promise<void> {
+  const app = useAppStore.getState();
+  if (!app.sessions.some((s) => s.id === h.sessionId)) {
+    app.notify('原服务器档案已删除，无法重试', 'error');
+    return;
+  }
+  try {
+    if (h.direction === 'upload') {
+      await invoke('sftp_upload', {
+        sessionId: h.sessionId,
+        local: h.local,
+        remote: parentPath(h.remote, true),
+        onExists: 'resume',
+      });
+    } else {
+      await invoke('sftp_download', {
+        sessionId: h.sessionId,
+        remote: h.remote,
+        local: parentPath(h.local, false),
+        onExists: 'resume',
+      });
+    }
+    useTransferStore.getState().ensureSession(h.sessionId);
+    app.notify('已重新入队（断点续传）', 'success');
+  } catch (e) {
+    app.notify(`重试失败: ${e}`, 'error');
+  }
+}

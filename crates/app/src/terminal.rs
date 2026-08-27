@@ -117,10 +117,30 @@ struct TermSession {
     task: tauri::async_runtime::JoinHandle<()>,
 }
 
-/// 重连上限与退避：1/2/4/8/16s，5 次后判死
-const MAX_RECONNECT_ATTEMPTS: u32 = 5;
+/// 重连退避：1/2/4/8/16s 封顶
 fn reconnect_backoff(attempt: u32) -> Duration {
     Duration::from_secs(1u64 << (attempt - 1).min(4))
+}
+
+/// 重连次数上限：读 settings KV（terminal.reconnectAttempts，前端设置项 0-20，默认 5）。
+/// 每个重连周期读一次（运行中改设置即刻生效）；读不到/非法值回退默认，clamp 0-20。
+const DEFAULT_RECONNECT_ATTEMPTS: u32 = 5;
+const MAX_RECONNECT_ATTEMPTS: u32 = 20;
+async fn reconnect_attempts(store: &core_store::Store) -> u32 {
+    let raw = store
+        .settings()
+        .get("terminal.reconnectAttempts")
+        .await
+        .ok()
+        .flatten();
+    parse_reconnect_attempts(raw.as_deref())
+}
+
+/// 设置值解析：JSON 数值，clamp 0-20；缺失/非法一律回退默认
+fn parse_reconnect_attempts(raw: Option<&str>) -> u32 {
+    raw.and_then(|v| serde_json::from_str::<u64>(v).ok())
+        .map(|n| n.min(MAX_RECONNECT_ATTEMPTS as u64) as u32)
+        .unwrap_or(DEFAULT_RECONNECT_ATTEMPTS)
 }
 
 /// 全局终端管理器。Tauri 以 `Arc<TerminalManager>` 托管，
@@ -336,7 +356,7 @@ fn stop_session_tunnels_if_last(ctx: &SuperviseCtx) {
 }
 
 /// 会话监督器：读循环 → 意外断开则指数退避重连（同 events 决策桥仍可用）。
-/// 用户 term_close（表项摘除）或重连 5 次皆败 → 终态 closed。
+/// 用户 term_close（表项摘除）或重连次数耗尽（terminal.reconnectAttempts，默认 5） → 终态 closed。
 struct SuperviseCtx {
     tab_id: String,
     mgr: Arc<TerminalManager>,
@@ -394,10 +414,11 @@ async fn supervise(mut ctx: SuperviseCtx) {
 
 /// 指数退避重连；用户关闭（表项消失）立即放弃
 async fn reconnect(ctx: &SuperviseCtx) -> Option<(PtyReader, PtyWriter)> {
+    let max_attempts = reconnect_attempts(&ctx.store).await;
     let mut attempt = 0u32;
     loop {
         attempt += 1;
-        if attempt > MAX_RECONNECT_ATTEMPTS {
+        if attempt > max_attempts {
             return None;
         }
         let _ = ctx.events.send(json!({
@@ -606,4 +627,25 @@ async fn flush(
     }
     outstanding.fetch_add(buf.len() as i64, Ordering::Relaxed);
     let _ = data_ch.send(Response::new(buf));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_attempts_parse_fallback_and_clamp() {
+        // 缺失/非法 → 默认 5
+        assert_eq!(parse_reconnect_attempts(None), 5);
+        assert_eq!(parse_reconnect_attempts(Some("null")), 5);
+        assert_eq!(parse_reconnect_attempts(Some("\"abc\"")), 5);
+        assert_eq!(parse_reconnect_attempts(Some("-1")), 5);
+        assert_eq!(parse_reconnect_attempts(Some("3.5")), 5);
+        // 正常值
+        assert_eq!(parse_reconnect_attempts(Some("0")), 0);
+        assert_eq!(parse_reconnect_attempts(Some("7")), 7);
+        assert_eq!(parse_reconnect_attempts(Some("20")), 20);
+        // 超界 clamp 到 20
+        assert_eq!(parse_reconnect_attempts(Some("99")), 20);
+    }
 }

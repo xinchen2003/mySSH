@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Dialog } from './Dialog';
 import { useAppStore } from '../state/app-store';
+import { GROUP_KEYS, readStringList } from '../state/groups';
 
 const inputCls =
   'w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-200 outline-none focus:border-neutral-500';
@@ -22,6 +23,13 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
   const [user, setUser] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  // 批次十一 7：最近连接历史（sessions.recent 持久化于 settings KV），选中回填 host/port/user；
+  // 档案已删除的条目直接跳过；定位不变——回填后仍是不保存档案的临时连接
+  const sessions = useAppStore((s) => s.sessions);
+  const recentIds = useAppStore((s) => s.settings[GROUP_KEYS.recent]);
+  const recent = readStringList(recentIds)
+    .map((id) => sessions.find((r) => r.id === id))
+    .filter((r): r is (typeof sessions)[number] => r !== undefined);
 
   const submit = () => {
     const p = Number(port);
@@ -45,6 +53,30 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
   return (
     <Dialog title="快速连接" onClose={onClose} enterAction={submit} panelClass="w-96">
       <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2 text-xs text-neutral-400">
+        {recent.length > 0 && (
+          <>
+            <label htmlFor="qc-recent">最近连接</label>
+            <select
+              id="qc-recent"
+              className={inputCls}
+              value=""
+              onChange={(e) => {
+                const rec = recent.find((r) => r.id === e.target.value);
+                if (!rec) return;
+                setHost(rec.host);
+                setPort(String(rec.port));
+                setUser(rec.username);
+              }}
+            >
+              <option value="">从最近连接回填…</option>
+              {recent.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}（{r.username}@{r.host}:{r.port}）
+                </option>
+              ))}
+            </select>
+          </>
+        )}
         <label htmlFor="qc-host">主机</label>
         <input
           id="qc-host"

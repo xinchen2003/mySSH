@@ -6,6 +6,7 @@
 
 use std::borrow::Cow;
 use std::fmt;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -104,6 +105,23 @@ pub struct SshConnection {
     _hop_handles: Vec<client::Handle<ClientHandler>>,
 }
 
+/// 建连握手超时：TCP+SSH 握手与 ProxyJump 链路建立（逐段限时）。
+/// 防无响应主机/悬空通道把会话永久挂在「连接中」。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// 握手阶段限时。刻意不含 authenticate——keyboard-interactive 的
+/// 用户交互（输密码/OTP）耗时不确定，被 15s 掐断是回归。
+async fn handshake<T>(
+    target: String,
+    fut: impl Future<Output = Result<T, SshError>>,
+) -> Result<T, SshError> {
+    tokio::time::timeout(CONNECT_TIMEOUT, fut)
+        .await
+        .map_err(|_| SshError::ConnectTimeout {
+            target: format!("{target}（{}s）", CONNECT_TIMEOUT.as_secs()),
+        })?
+}
+
 impl SshConnection {
     pub async fn connect(opts: ConnectOptions) -> Result<Self, SshError> {
         let forward_routes: ForwardRoutes = Default::default();
@@ -134,33 +152,41 @@ impl SshConnection {
                 routes: Default::default(),
             };
             let hop_target = format!("跳板#{} {}:{}", i + 1, hop.host, hop.port);
-            let mut handle = match next_stream.take() {
-                None => client::connect(Arc::new(config), (hop.host.as_str(), hop.port), handler)
-                    .await
-                    .map_err(|e| SshError::Connect {
-                        target: hop_target.clone(),
-                        source: std::io::Error::other(e.to_string()),
-                    })?,
-                Some(s) => client::connect_stream(Arc::new(config), s, handler)
-                    .await
-                    .map_err(|e| SshError::Connect {
-                        target: hop_target.clone(),
-                        source: std::io::Error::other(e.to_string()),
-                    })?,
-            };
+            let mut handle = handshake(hop_target.clone(), async {
+                match next_stream.take() {
+                    None => {
+                        client::connect(Arc::new(config), (hop.host.as_str(), hop.port), handler)
+                            .await
+                            .map_err(|e| SshError::Connect {
+                                target: hop_target.clone(),
+                                source: std::io::Error::other(e.to_string()),
+                            })
+                    }
+                    Some(s) => client::connect_stream(Arc::new(config), s, handler)
+                        .await
+                        .map_err(|e| SshError::Connect {
+                            target: hop_target.clone(),
+                            source: std::io::Error::other(e.to_string()),
+                        }),
+                }
+            })
+            .await?;
             authenticate(&mut handle, &hop_opts).await?;
             // 到下一跳（或最终目标）的通道
             let (nh, np) = match opts.jump_chain.get(i + 1) {
                 Some(next) => (next.host.clone(), next.port as u32),
                 None => (opts.host.clone(), opts.port as u32),
             };
-            let ch = handle
-                .channel_open_direct_tcpip(nh.clone(), np, "127.0.0.1", 0)
-                .await
-                .map_err(|e| SshError::ChannelOpen {
-                    kind: "direct-tcpip(跳板)",
-                    reason: format!("{}:{np} via 跳板#{}: {e}", nh, i + 1),
-                })?;
+            let ch = handshake(hop_target.clone(), async {
+                handle
+                    .channel_open_direct_tcpip(nh.clone(), np, "127.0.0.1", 0)
+                    .await
+                    .map_err(|e| SshError::ChannelOpen {
+                        kind: "direct-tcpip(跳板)",
+                        reason: format!("{}:{np} via 跳板#{}: {e}", nh, i + 1),
+                    })
+            })
+            .await?;
             next_stream = Some(ch.into_stream());
             hop_handles.push(handle);
         }
@@ -172,24 +198,36 @@ impl SshConnection {
             port: opts.port,
             routes: forward_routes.clone(),
         };
-        let mut handle = match next_stream {
-            None => client::connect(
-                Arc::new(config),
-                (opts.host.as_str(), opts.port),
-                forward_handler,
-            )
-            .await
-            .map_err(|e| SshError::Connect {
-                target: format!("{}:{}", opts.host, opts.port),
-                source: std::io::Error::other(e.to_string()),
-            })?,
-            Some(s) => client::connect_stream(Arc::new(config), s, forward_handler)
+        let final_target = match &next_stream {
+            None => format!("{}:{}", opts.host, opts.port),
+            Some(_) => format!("{}:{}（经 {} 跳）", opts.host, opts.port, hop_handles.len()),
+        };
+        let mut handle = handshake(final_target, async {
+            match next_stream {
+                None => client::connect(
+                    Arc::new(config),
+                    (opts.host.as_str(), opts.port),
+                    forward_handler,
+                )
                 .await
                 .map_err(|e| SshError::Connect {
-                    target: format!("{}:{}（经 {} 跳）", opts.host, opts.port, hop_handles.len()),
+                    target: format!("{}:{}", opts.host, opts.port),
                     source: std::io::Error::other(e.to_string()),
-                })?,
-        };
+                }),
+                Some(s) => client::connect_stream(Arc::new(config), s, forward_handler)
+                    .await
+                    .map_err(|e| SshError::Connect {
+                        target: format!(
+                            "{}:{}（经 {} 跳）",
+                            opts.host,
+                            opts.port,
+                            hop_handles.len()
+                        ),
+                        source: std::io::Error::other(e.to_string()),
+                    }),
+            }
+        })
+        .await?;
 
         authenticate(&mut handle, &opts).await?;
         Ok(Self {

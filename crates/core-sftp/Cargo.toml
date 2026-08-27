@@ -13,8 +13,10 @@ bytes.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 russh-sftp = "2.4.0"
+serde.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 rand = "0.10.2"
 russh.workspace = true
 tokio.workspace = true

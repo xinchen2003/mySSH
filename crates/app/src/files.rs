@@ -1,4 +1,5 @@
 //! 受限文件读取：连接对话框选择私钥文件后读入内存（不持久化，Zeroizing 由 core-ssh 负责）。
+use serde_json::{json, Value};
 
 /// 私钥文件大小上限（PuTTY/OpenSSH 私钥均在数 KB 量级）
 const MAX_KEY_BYTES: u64 = 64 * 1024;
@@ -56,6 +57,36 @@ pub async fn open_local(path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn local_mkdir(path: String) -> Result<(), String> {
     std::fs::create_dir_all(&path).map_err(|e| format!("创建 {path} 失败: {e}"))
+}
+
+/// 本地元数据探测（冲突检测/新建前检查用；只读元数据，不读内容）。
+/// 与 local_mkdir 同级：本机文件管理语义，路径不做白名单。
+#[tauri::command]
+pub async fn local_stat(path: String) -> Result<Value, String> {
+    match std::fs::metadata(&path) {
+        Ok(m) => Ok(json!({ "exists": true, "size": m.len(), "isDir": m.is_dir() })),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(json!({ "exists": false, "size": 0, "isDir": false }))
+        }
+        Err(e) => Err(io_humanize(&e)),
+    }
+}
+
+/// 本地新建空文件（create_new 语义：已存在则报错，绝不截断；父目录须已存在）
+#[tauri::command]
+pub async fn local_touch(path: String) -> Result<(), String> {
+    std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+        .map(|_| ())
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("目标已存在: {path}")
+            } else {
+                io_humanize(&e)
+            }
+        })
 }
 /// 拖放导入·创建目标文件，返回绝对路径（HTML5 拖放的 File 对象无完整路径，
 /// 前端只能读字节流——先落盘，再走既有 sftp_upload 队列，进度/续传/审计全复用）。

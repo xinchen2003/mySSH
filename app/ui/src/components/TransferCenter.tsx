@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAppStore } from '../state/app-store';
-import { transferCmd, useTransferStore } from '../state/transfer-store';
+import { retryHistoryTransfer, transferCmd, useTransferStore } from '../state/transfer-store';
 import { usePanelWidth } from './panel-height';
 import type { TransferHistoryView, TransferView } from '../term/types';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -30,7 +30,7 @@ function baseName(path: string): string {
   return norm.split('/').pop() || path;
 }
 
-/** 历史记录行（只读：终态已定，无操作） */
+/** 历史记录行（失败/取消可一键重试续传；其余终态只读） */
 function HistoryRow({ h, serverName }: { h: TransferHistoryView; serverName: string }) {
   const src = h.direction === 'upload' ? h.local : h.remote;
   const dst = h.direction === 'upload' ? h.remote : h.local;
@@ -61,6 +61,15 @@ function HistoryRow({ h, serverName }: { h: TransferHistoryView; serverName: str
         {serverName}
       </span>
       <span className={`shrink-0 ${color}`}>{STATE_LABEL[h.state] ?? h.state}</span>
+      {(h.state === 'failed' || h.state === 'canceled') && (
+        <button
+          className="shrink-0 rounded px-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+          title="重试（断点续传）"
+          onClick={() => void retryHistoryTransfer(h)}
+        >
+          ↻
+        </button>
+      )}
       <span className="w-20 shrink-0 text-right text-neutral-400">{time}</span>
     </div>
   );

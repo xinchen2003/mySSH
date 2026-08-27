@@ -1,5 +1,10 @@
-import { useEffect, useState } from 'react';
-import { applyMenuSettings, applyTerminalSettings, applyTheme } from './state/apply-settings';
+import { useEffect, useRef, useState } from 'react';
+import {
+  applyMenuSettings,
+  applyTerminalSettings,
+  applyTheme,
+  readTerminalSettings,
+} from './state/apply-settings';
 import { keymapFromSettings, matchCombo } from './term/keymap';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { initIdPrefix } from './state/app-store';
@@ -45,6 +50,36 @@ export function App() {
     const st = t?.panes[pid]?.state;
     return st === 'connected' || st === 'connecting' || st === 'reconnecting';
   }).length;
+  // 批次十一 2：关窗守卫——有活跃连接时拦截窗口关闭，确认后才放行
+  const [closeGuardLive, setCloseGuardLive] = useState<number | null>(null);
+  /** 用户确认后置位：随后的 close() 再次触发 onCloseRequested 时直接放行 */
+  const allowCloseRef = useRef(false);
+  useEffect(() => {
+    const win = getCurrentWindow();
+    let unlisten: (() => void) | undefined;
+    win
+      .onCloseRequested((ev) => {
+        if (allowCloseRef.current) return;
+        const s = useAppStore.getState();
+        const live = s.tabs.reduce(
+          (n, t) =>
+            n +
+            paneIds(t.layout).filter((pid) => {
+              const st = t.panes[pid]?.state;
+              return st === 'connected' || st === 'connecting' || st === 'reconnecting';
+            }).length,
+          0,
+        );
+        if (live === 0) return;
+        ev.preventDefault();
+        setCloseGuardLive(live);
+      })
+      .then((u) => {
+        unlisten = u;
+      })
+      .catch(() => undefined);
+    return () => unlisten?.();
+  }, []);
 
   useEffect(() => {
     subscribeTunnels();
@@ -72,7 +107,30 @@ export function App() {
       else if (hit('settings')) s.toggleSettings();
       else if (hit('splitRow')) s.splitActive('row');
       else if (hit('splitCol')) s.splitActive('col');
-      else return;
+      else if (hit('zoomIn') || hit('zoomOut') || hit('resetZoom')) {
+        // 批次十一 3：字号缩放走 settings 通道（热改全终端 + 持久化），钳 8-32；reset 回 13
+        const cur = readTerminalSettings(s.settings).fontSize;
+        const next = hit('resetZoom')
+          ? 13
+          : Math.min(32, Math.max(8, cur + (hit('zoomIn') ? 1 : -1)));
+        if (next !== cur) s.setSetting('terminal.fontSize', next);
+      } else if (hit('nextPane')) {
+        // 批次十一 4：当前标签内循环切换 pane 焦点
+        if (active) {
+          const ids = paneIds(active.layout);
+          if (ids.length > 1) {
+            const i = ids.indexOf(active.activePaneId);
+            s.setActivePane(active.id, ids[(i + 1) % ids.length]);
+          }
+        }
+      } else if (hit('reopenClosedTab')) {
+        s.reopenClosedTab();
+      } else if (e.ctrlKey && !e.altKey && !e.shiftKey && /^[1-9]$/.test(e.key)) {
+        // 批次十一 5：Ctrl+1..9 跳第 N 个标签；超过数量忽略（不吞键，落回终端）
+        const idx = Number(e.key) - 1;
+        if (idx >= s.tabs.length) return;
+        s.setActive(s.tabs[idx].id);
+      } else return;
       e.preventDefault();
     };
     window.addEventListener('keydown', onKey);
@@ -238,6 +296,24 @@ export function App() {
             包含 {pendingCloseIds.length} 个窗格，其中 {pendingCloseLive} 个连接仍活跃。
           </p>
           <p className="text-red-300">关闭后，{pendingCloseLive} 个活跃连接将立即断开。</p>
+        </ConfirmDialog>
+      )}
+      {/* 批次十一 2：关窗守卫确认（默认焦点在取消） */}
+      {closeGuardLive !== null && (
+        <ConfirmDialog
+          title={`还有 ${closeGuardLive} 个活跃连接，确定退出？`}
+          confirmLabel="退出"
+          onCancel={() => setCloseGuardLive(null)}
+          onConfirm={() => {
+            setCloseGuardLive(null);
+            allowCloseRef.current = true;
+            void getCurrentWindow()
+              .close()
+              .catch(() => undefined);
+          }}
+        >
+          <p className="mb-1">退出后，{closeGuardLive} 个活跃连接将立即断开。</p>
+          <p className="text-red-300">此操作无法撤销。</p>
         </ConfirmDialog>
       )}
       <StatusBar />

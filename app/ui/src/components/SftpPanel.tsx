@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { useAppStore } from '../state/app-store';
 import type { FileEntry } from '../term/types';
 import { useTransferStore } from '../state/transfer-store';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ContextMenu, type MenuItem } from './ContextMenu';
+import { Dialog } from './Dialog';
 import { PathBar } from './PathBar';
 import {
   EMPTY_NAV_HIST,
@@ -66,10 +68,19 @@ function permsTitle(p?: number | null): string {
   return `拥有者：${seg((p >> 6) & 7)}；同组：${seg((p >> 3) & 7)}；其他：${seg(p & 7)}（八进制 ${fmtPerms(p)}）`;
 }
 
-/** 远程路径拼接（base='/' 不产生双斜杠） */
+/** 目录/名拼接（base='/' 或 '' 不产生双斜杠；本地 Windows 路径同样适用） */
 function joinRemote(base: string, rel: string): string {
   return base === '/' || base === '' ? `/${rel}` : `${base}/${rel}`;
 }
+
+/** 末段文件名（本地 \ 与远程 / 通用） */
+function baseNameOf(p: string): string {
+  const norm = p.replace(/\\/g, '/').replace(/\/+$/, '');
+  return norm.split('/').pop() || norm;
+}
+
+/** 目标已存在时的处理策略（sftp_upload/sftp_download 的 onExists 参数） */
+type OnExists = 'resume' | 'overwrite' | 'skip' | 'rename';
 
 /** 遍历拖放条目（webkitGetAsEntry 递归展开文件夹），rel 为相对拖入根的路径 */
 async function collectDroppedFiles(
@@ -163,6 +174,10 @@ interface PaneProps {
   onRowMenu: (e: FileEntry, x: number, y: number) => void;
   onClearSel: () => void;
   onSelectAll: () => void;
+  /** 方向键移动选中（批次十一 3；pane 按可见序算好目标行，父级只管选中） */
+  onArrowSelect: (e: FileEntry) => void;
+  /** Delete/F2 委托父级（删除确认/重命名输入态在父级）；Enter/Backspace/方向键 pane 内处理 */
+  onRowKey: (e: FileEntry, ev: React.KeyboardEvent) => void;
   /** 路径栏模糊建议（批次六 3） */
   fetchSuggestions: (input: string) => Promise<string[]>;
   /** 落点高亮：内部拖拽悬停 或 OS 文件悬停（批次六 1d） */
@@ -175,6 +190,42 @@ interface PaneProps {
 function FilePane(p: PaneProps) {
   // 行级落点（批次六 1b）：悬停的目录行路径；null=落当前目录
   const [rowDrop, setRowDrop] = useState<string | null>(null);
+  // 列排序（批次十一 4）：目录恒排文件前；点击同列切换升降序，点击异列升序
+  const [sortKey, setSortKey] = useState<'name' | 'size' | 'mtime'>('name');
+  const [sortAsc, setSortAsc] = useState(true);
+  // 即时过滤 + 隐藏文件开关（批次十一 5；会话内存态，不持久化）
+  const [filter, setFilter] = useState('');
+  const [showHidden, setShowHidden] = useState(false);
+
+  const visible = useMemo(() => {
+    let list = p.entries;
+    if (!showHidden) list = list.filter((e) => !e.name.startsWith('.'));
+    const f = filter.trim().toLowerCase();
+    if (f) list = list.filter((e) => e.name.toLowerCase().includes(f));
+    return [...list].sort((a, b) => {
+      const da = a.kind === 'dir' ? 0 : 1;
+      const db = b.kind === 'dir' ? 0 : 1;
+      if (da !== db) return da - db;
+      const c =
+        sortKey === 'name'
+          ? a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+          : sortKey === 'size'
+            ? a.size - b.size
+            : (a.mtime ?? 0) - (b.mtime ?? 0);
+      return sortAsc ? c : -c;
+    });
+  }, [p.entries, filter, showHidden, sortKey, sortAsc]);
+
+  const sortBy = (key: 'name' | 'size' | 'mtime') => {
+    if (sortKey === key) setSortAsc((v) => !v);
+    else {
+      setSortKey(key);
+      setSortAsc(true);
+    }
+  };
+  const sortMark = (key: 'name' | 'size' | 'mtime') =>
+    sortKey === key ? (sortAsc ? ' ▲' : ' ▼') : '';
+  const hbtn = 'cursor-pointer select-none hover:text-neutral-300';
   return (
     <div
       className={`flex min-h-0 flex-1 flex-col ${p.dropActive ? 'ring-2 ring-inset ring-blue-600' : ''}`}
@@ -220,6 +271,37 @@ function FilePane(p: PaneProps) {
         fetchSuggestions={p.fetchSuggestions}
       />
       {p.quickSlots}
+      {/* 过滤 + 隐藏文件开关（批次十一 5） */}
+      <div className="flex items-center gap-2 border-b border-neutral-800 px-2 py-0.5 text-neutral-500">
+        <input
+          className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-800 px-1.5 py-0.5 text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-blue-600"
+          placeholder="过滤…"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+        <label className="flex shrink-0 cursor-pointer items-center gap-1">
+          <input
+            type="checkbox"
+            checked={showHidden}
+            onChange={(e) => setShowHidden(e.target.checked)}
+          />
+          显示隐藏
+        </label>
+      </div>
+      {/* 列头（批次十一 4：名称/大小/修改时间可点排序，目录恒排文件前） */}
+      <div className="flex items-center gap-2 border-b border-neutral-800 px-2 py-0.5 text-neutral-500">
+        <span className="w-4 shrink-0" />
+        <button className={`${hbtn} min-w-0 flex-1 text-left`} onClick={() => sortBy('name')}>
+          名称{sortMark('name')}
+        </button>
+        <button className={`${hbtn} w-16 shrink-0 text-right`} onClick={() => sortBy('size')}>
+          大小{sortMark('size')}
+        </button>
+        <button className={`${hbtn} w-16 shrink-0 text-right`} onClick={() => sortBy('mtime')}>
+          修改时间{sortMark('mtime')}
+        </button>
+        {p.side === 'remote' && <span className="w-32 shrink-0 text-right">权限</span>}
+      </div>
       <div
         className="min-h-0 flex-1 overflow-y-auto outline-none"
         tabIndex={0}
@@ -233,9 +315,12 @@ function FilePane(p: PaneProps) {
           }
         }}
       >
-        {p.entries.map((e) => (
+        {visible.map((e) => (
           <div
             key={e.path}
+            role="option"
+            aria-selected={p.sel.has(e.path)}
+            tabIndex={0}
             draggable
             onDragStart={(ev) =>
               ev.dataTransfer.setData(
@@ -285,12 +370,42 @@ function FilePane(p: PaneProps) {
               ev.preventDefault();
               p.onRowMenu(e, ev.clientX, ev.clientY);
             }}
+            onKeyDown={(ev) => {
+              // 键盘导航（批次十一 3，风格对齐 Sidebar）：↑↓ 移选中且焦点跟随，
+              // Enter 打开/进目录，Backspace 回上级，Delete/F2 交父级确认/输入
+              if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+                ev.preventDefault();
+                const i = visible.findIndex((x) => x.path === e.path);
+                const next = visible[i + (ev.key === 'ArrowDown' ? 1 : -1)];
+                if (next) {
+                  p.onArrowSelect(next);
+                  const sib = (
+                    ev.key === 'ArrowDown'
+                      ? ev.currentTarget.nextElementSibling
+                      : ev.currentTarget.previousElementSibling
+                  ) as HTMLElement | null;
+                  sib?.focus();
+                }
+                return;
+              }
+              if (ev.key === 'Enter') {
+                ev.preventDefault();
+                p.onOpen(e);
+                return;
+              }
+              if (ev.key === 'Backspace') {
+                ev.preventDefault();
+                p.onUp();
+                return;
+              }
+              p.onRowKey(e, ev);
+            }}
             className={`flex cursor-pointer items-center gap-2 px-2 py-0.5 text-xs ${
               rowDrop === e.path
                 ? 'bg-blue-900/60 text-neutral-100 outline outline-1 outline-blue-600'
                 : p.sel.has(e.path)
-                  ? 'bg-neutral-700 text-neutral-100'
-                  : 'text-neutral-300 hover:bg-neutral-800'
+                  ? 'bg-neutral-700 text-neutral-100 outline-none'
+                  : 'text-neutral-300 outline-none hover:bg-neutral-800'
             }`}
           >
             <span className="w-4 shrink-0 text-center">
@@ -313,8 +428,10 @@ function FilePane(p: PaneProps) {
             )}
           </div>
         ))}
-        {!p.loading && p.entries.length === 0 && (
-          <div className="px-3 py-4 text-xs text-neutral-600">（空目录）</div>
+        {!p.loading && visible.length === 0 && (
+          <div className="px-3 py-4 text-xs text-neutral-600">
+            {p.entries.length === 0 ? '（空目录）' : '（无匹配项）'}
+          </div>
         )}
       </div>
     </div>
@@ -344,15 +461,22 @@ export function SftpPanel({ tabId }: { tabId: string }) {
   });
   const [followTerm, setFollowTerm] = useState(true);
   const [prompt, setPrompt] = useState<{
-    action: 'mkdir' | 'rename' | 'chmod' | 'move';
+    action: 'mkdir' | 'rename' | 'chmod' | 'move' | 'touch';
     side: Side;
     value: string;
   } | null>(null);
   /** 待确认删除的条目（11.2 批量；目录递归删除，无法恢复） */
   const [confirmDel, setConfirmDel] = useState<FileEntry[] | null>(null);
+  /** 覆盖确认（批次十一 1）：整批冲突统一策略；resolve(null)=取消入队 */
+  const [conflictAsk, setConflictAsk] = useState<{
+    count: number;
+    resolve: (policy: OnExists | null) => void;
+  } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; side: Side } | null>(null);
-  /** 本地常用路径（批次十 3）：chip 右键菜单目标 */
-  const [favMenu, setFavMenu] = useState<{ x: number; y: number; path: string } | null>(null);
+  /** 常用路径 chip 右键菜单目标（批次十 3 本地；批次十一 6 远程） */
+  const [favMenu, setFavMenu] = useState<{ x: number; y: number; path: string; side: Side } | null>(
+    null,
+  );
   const appSettings = useAppStore((s) => s.settings);
   const setSetting = useAppStore((s) => s.setSetting);
   /** 本会话传输快照（transfer-store 聚合；订阅由初始 effect 幂等建立） */
@@ -693,22 +817,107 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     }
   };
 
-  // ---------- 传输 ----------
+  /** 方向键移动选中（批次十一 3）：pane 已按可见序算好目标行，这里只管单选 */
+  const arrowSelect = (side: Side) => (entry: FileEntry) =>
+    setSel({ side, paths: new Set([entry.path]), anchor: entry.path });
 
-  const uploadPathsTo = (paths: string[], dir: string) => {
-    for (const p of paths) {
-      void invoke('sftp_upload', { sessionId, local: p, remote: dir }).catch((e) =>
-        notify(`上传失败: ${e}`, 'error'),
-      );
+  /** Delete/F2（批次十一 3）：Delete 走现有批量确认（选中集含焦点行则整集删除），F2 开重命名 */
+  const rowKey = (side: Side) => (entry: FileEntry, ev: React.KeyboardEvent) => {
+    if (ev.key === 'Delete') {
+      ev.preventDefault();
+      const inSel = sel.side === side && sel.paths.has(entry.path);
+      const targets = inSel ? selEntries(side) : [entry];
+      if (!inSel) setSel({ side, paths: new Set([entry.path]), anchor: entry.path });
+      if (targets.length > 0) setConfirmDel(targets);
+    } else if (ev.key === 'F2') {
+      ev.preventDefault();
+      setPrompt({ action: 'rename', side, value: entry.name });
     }
   };
 
-  const downloadPathsTo = (paths: string[], dir: string) => {
-    for (const p of paths) {
-      void invoke('sftp_download', { sessionId, remote: p, local: dir }).catch((e) =>
-        notify(`下载失败: ${e}`, 'error'),
-      );
+  // ---------- 传输 ----------
+
+  /** 覆盖确认（批次十一 1）：入队前逐个 stat 目标（sftp_stat 报错=不存在；local_stat 读 exists）。
+   *  无冲突返回 'none'（不弹窗、不传 onExists，保持默认续传）；有冲突整批弹一次策略对话框，
+   *  用户取消返回 null（整批不入队）。 */
+  const pickOnExists = async (
+    targets: string[],
+    statOne: (t: string) => Promise<boolean>,
+  ): Promise<OnExists | 'none' | null> => {
+    let conflicts = 0;
+    for (const t of targets) {
+      try {
+        if (await statOne(t)) conflicts++;
+      } catch {
+        // 目标不存在（sftp_stat 报错）→ 非冲突
+      }
     }
+    if (conflicts === 0) return 'none';
+    const { promise, resolve } = Promise.withResolvers<OnExists | null>();
+    setConflictAsk({ count: conflicts, resolve });
+    return promise;
+  };
+
+  const resolveConflict = (policy: OnExists | null) => {
+    conflictAsk?.resolve(policy);
+    setConflictAsk(null);
+  };
+
+  const uploadPathsTo = (paths: string[], dir: string) => {
+    void (async () => {
+      const policy = await pickOnExists(
+        paths.map((p) => joinRemote(dir, baseNameOf(p))),
+        async (t) => {
+          await invoke('sftp_stat', { sessionId, path: t });
+          return true;
+        },
+      );
+      if (policy === null) return;
+      let skipped = 0;
+      for (const p of paths) {
+        try {
+          const res = await invoke<{ transferIds: string[]; skipped: number }>('sftp_upload', {
+            sessionId,
+            local: p,
+            remote: dir,
+            ...(policy === 'none' ? {} : { onExists: policy }),
+          });
+          skipped += res.skipped;
+        } catch (e) {
+          notify(`上传失败: ${e}`, 'error');
+        }
+      }
+      if (skipped > 0) notify(`已跳过 ${skipped} 个已存在文件`, 'info');
+    })();
+  };
+
+  const downloadPathsTo = (paths: string[], dir: string) => {
+    void (async () => {
+      // 盘符枚举页（dir=''）无确定落点，跳过冲突检测
+      const policy =
+        dir === ''
+          ? 'none'
+          : await pickOnExists(
+              paths.map((p) => joinRemote(dir, baseNameOf(p))),
+              async (t) => (await invoke<{ exists: boolean }>('local_stat', { path: t })).exists,
+            );
+      if (policy === null) return;
+      let skipped = 0;
+      for (const p of paths) {
+        try {
+          const res = await invoke<{ transferIds: string[]; skipped: number }>('sftp_download', {
+            sessionId,
+            remote: p,
+            local: dir,
+            ...(policy === 'none' ? {} : { onExists: policy }),
+          });
+          skipped += res.skipped;
+        } catch (e) {
+          notify(`下载失败: ${e}`, 'error');
+        }
+      }
+      if (skipped > 0) notify(`已跳过 ${skipped} 个已存在文件`, 'info');
+    })();
   };
 
   const uploadPaths = (paths: string[]) => uploadPathsTo(paths, remotePath);
@@ -737,6 +946,11 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         if (prompt.side === 'remote')
           await invoke('sftp_mkdir', { sessionId, path: join(prompt.value) });
         else await invoke('local_mkdir', { path: join(prompt.value) });
+      } else if (prompt.action === 'touch') {
+        // 新建空文件（批次十一 7）：已存在则后端报错
+        if (prompt.side === 'remote')
+          await invoke('sftp_touch', { sessionId, path: join(prompt.value) });
+        else await invoke('local_touch', { path: join(prompt.value) });
       } else if (prompt.action === 'rename') {
         const one = selEntries(prompt.side)[0];
         if (!one) return;
@@ -799,14 +1013,18 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     setMenu({ x, y, side });
   };
 
-  /** 复制路径（批次六 2）：多选逐行拼接 */
+  /** 复制路径（批次六 2；批次十一 8 改 Tauri 剪贴板插件）：多选逐行拼接 */
   const copyPaths = (side: Side) => {
     const picked = selEntries(side);
     if (picked.length === 0) return;
-    void navigator.clipboard
-      .writeText(picked.map((e) => e.path).join('\n'))
-      .then(() => notify(`已复制 ${picked.length} 个路径`, 'success'))
-      .catch((e) => notify(`复制失败: ${e}`, 'error'));
+    void (async () => {
+      try {
+        await writeText(picked.map((e) => e.path).join('\n'));
+        notify(`已复制 ${picked.length} 个路径`, 'success');
+      } catch (e) {
+        notify(`复制失败: ${e}`, 'error');
+      }
+    })();
   };
 
   const menuItems = (side: Side): MenuItem[] => {
@@ -859,6 +1077,11 @@ export function SftpPanel({ tabId }: { tabId: string }) {
           icon: '＋',
           onSelect: () => setPrompt({ action: 'mkdir', side, value: '' }),
         },
+        {
+          label: '新建文件…',
+          icon: '＋',
+          onSelect: () => setPrompt({ action: 'touch', side, value: '' }),
+        },
         { label: '刷新', icon: '↻', onSelect: () => void refreshRemote() },
         'separator',
         {
@@ -910,6 +1133,11 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         label: '新建目录…',
         icon: '＋',
         onSelect: () => setPrompt({ action: 'mkdir', side, value: '' }),
+      },
+      {
+        label: '新建文件…',
+        icon: '＋',
+        onSelect: () => setPrompt({ action: 'touch', side, value: '' }),
       },
       { label: '刷新', icon: '↻', onSelect: () => void refreshLocal() },
       'separator',
@@ -995,6 +1223,35 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       localFavs.filter((x) => x !== p),
     );
 
+  // 远程收藏（批次十一 6）：与本地收藏同模式，按会话隔离（settings 值 Record<sessionId, string[]>）
+  const rawRemoteFavMap = appSettings['sftp.remoteFavorites'];
+  const remoteFavMap: Record<string, unknown> =
+    rawRemoteFavMap !== null &&
+    typeof rawRemoteFavMap === 'object' &&
+    !Array.isArray(rawRemoteFavMap)
+      ? (rawRemoteFavMap as Record<string, unknown>)
+      : {};
+  const remoteFavs: string[] = (
+    sessionId && Array.isArray(remoteFavMap[sessionId])
+      ? (remoteFavMap[sessionId] as unknown[])
+      : []
+  ).filter((x): x is string => typeof x === 'string' && x.trim() !== '');
+  const addRemoteFav = () => {
+    if (!sessionId || remoteFavs.includes(remotePath)) return;
+    setSetting('sftp.remoteFavorites', {
+      ...remoteFavMap,
+      [sessionId]: [...remoteFavs, remotePath],
+    });
+    notify(`已收藏远程路径: ${remotePath}`, 'success');
+  };
+  const removeRemoteFav = (p: string) => {
+    if (!sessionId) return;
+    setSetting('sftp.remoteFavorites', {
+      ...remoteFavMap,
+      [sessionId]: remoteFavs.filter((x) => x !== p),
+    });
+  };
+
   const qbtn =
     'rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-40';
   const localQuickSlots = (
@@ -1021,7 +1278,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
           onClick={() => void navSide('local', p)}
           onContextMenu={(e) => {
             e.preventDefault();
-            setFavMenu({ x: e.clientX, y: e.clientY, path: p });
+            setFavMenu({ x: e.clientX, y: e.clientY, path: p, side: 'local' });
           }}
         >
           {favLabel(p)}
@@ -1032,6 +1289,33 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         title={localPath ? `收藏当前路径: ${localPath}` : '先进入一个本地目录再收藏'}
         disabled={!localPath || localFavs.includes(localPath)}
         onClick={addLocalFav}
+      >
+        ☆ 收藏当前
+      </button>
+    </div>
+  );
+
+  const remoteQuickSlots = (
+    <div className="flex items-center gap-1 overflow-x-auto border-b border-neutral-800 px-2 py-0.5">
+      {remoteFavs.map((p) => (
+        <button
+          key={p}
+          className={`${qbtn} max-w-32 truncate`}
+          title={`${p}（右键移除）`}
+          onClick={() => void navSide('remote', p)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setFavMenu({ x: e.clientX, y: e.clientY, path: p, side: 'remote' });
+          }}
+        >
+          {favLabel(p)}
+        </button>
+      ))}
+      <button
+        className={`${qbtn} shrink-0`}
+        title={`收藏当前路径: ${remotePath}`}
+        disabled={remoteFavs.includes(remotePath)}
+        onClick={addRemoteFav}
       >
         ☆ 收藏当前
       </button>
@@ -1133,11 +1417,13 @@ export function SftpPanel({ tabId }: { tabId: string }) {
           <span className="text-neutral-400">
             {prompt.action === 'mkdir'
               ? `目录名（${prompt.side === 'local' ? '本地' : '远程'}）`
-              : prompt.action === 'rename'
-                ? '新名称'
-                : prompt.action === 'move'
-                  ? '目标目录'
-                  : '权限(八进制)'}
+              : prompt.action === 'touch'
+                ? `文件名（${prompt.side === 'local' ? '本地' : '远程'}）`
+                : prompt.action === 'rename'
+                  ? '新名称'
+                  : prompt.action === 'move'
+                    ? '目标目录'
+                    : '权限(八进制)'}
           </span>
           <input
             className="w-56 rounded border border-neutral-700 bg-neutral-800 px-1.5 py-0.5 text-neutral-200 outline-none focus:border-blue-600"
@@ -1196,22 +1482,72 @@ export function SftpPanel({ tabId }: { tabId: string }) {
           onClose={() => setMenu(null)}
         />
       )}
-      {/* 本地常用路径 chip 右键（批次十 3） */}
+      {/* 常用路径 chip 右键（批次十 3 本地；批次十一 6 远程） */}
       {favMenu && (
         <ContextMenu
           x={favMenu.x}
           y={favMenu.y}
           items={[
-            { label: '打开', icon: '▶', onSelect: () => void navSide('local', favMenu.path) },
+            { label: '打开', icon: '▶', onSelect: () => void navSide(favMenu.side, favMenu.path) },
             {
               label: '移除收藏',
               icon: '🗑',
               danger: true,
-              onSelect: () => removeLocalFav(favMenu.path),
+              onSelect: () =>
+                favMenu.side === 'local'
+                  ? removeLocalFav(favMenu.path)
+                  : removeRemoteFav(favMenu.path),
             },
           ]}
           onClose={() => setFavMenu(null)}
         />
+      )}
+
+      {/* 覆盖确认（批次十一 1）：整批冲突统一策略，默认聚焦续传；Esc/遮罩=取消整批 */}
+      {conflictAsk && (
+        <Dialog
+          title="目标已存在"
+          onClose={() => resolveConflict(null)}
+          panelClass="w-96 rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
+        >
+          <h2 className="mb-2 text-base font-semibold text-neutral-100">
+            目标已存在 {conflictAsk.count} 个文件
+          </h2>
+          <p className="mb-4 text-xs leading-5 text-neutral-400">
+            对本批全部冲突文件统一应用所选策略；取消则不开始传输。
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              data-autofocus
+              type="button"
+              className="rounded bg-blue-700 px-3 py-1 text-white hover:bg-blue-600"
+              onClick={() => resolveConflict('resume')}
+            >
+              续传
+            </button>
+            <button
+              type="button"
+              className="rounded px-3 py-1 text-neutral-300 hover:bg-neutral-800"
+              onClick={() => resolveConflict('overwrite')}
+            >
+              覆盖
+            </button>
+            <button
+              type="button"
+              className="rounded px-3 py-1 text-neutral-300 hover:bg-neutral-800"
+              onClick={() => resolveConflict('skip')}
+            >
+              跳过
+            </button>
+            <button
+              type="button"
+              className="rounded px-3 py-1 text-neutral-300 hover:bg-neutral-800"
+              onClick={() => resolveConflict('rename')}
+            >
+              自动重命名
+            </button>
+          </div>
+        </Dialog>
       )}
 
       {/* 双栏 */}
@@ -1241,6 +1577,8 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             quickSlots={localQuickSlots}
             onRowMenu={rowMenu('local')}
             onClearSel={clearSel}
+            onArrowSelect={arrowSelect('local')}
+            onRowKey={rowKey('local')}
             onSelectAll={() =>
               setSel({
                 side: 'local',
@@ -1273,8 +1611,11 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             fetchSuggestions={fetchSuggestions('remote')}
             dropActive={html5DragSide === 'remote'}
             onDropHover={(v) => setHtml5DragSide(v ? 'remote' : null)}
+            quickSlots={remoteQuickSlots}
             onRowMenu={rowMenu('remote')}
             onClearSel={clearSel}
+            onArrowSelect={arrowSelect('remote')}
+            onRowKey={rowKey('remote')}
             onSelectAll={() =>
               setSel({
                 side: 'remote',

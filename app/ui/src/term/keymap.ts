@@ -17,7 +17,9 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: 'paste', label: '粘贴', default: 'Ctrl+Shift+V', alias: 'Shift+Insert' },
   { id: 'palette', label: '命令面板', default: 'Ctrl+Shift+P' },
   { id: 'search', label: '终端内搜索', default: 'Ctrl+Shift+F' },
-  { id: 'newTab', label: '新建会话', default: 'Ctrl+Shift+T' },
+  { id: 'newTab', label: '新建会话', default: 'Ctrl+Shift+N' },
+  // 批次十一：Ctrl+Shift+T 让位给重开已关闭标签（浏览器/终端行业惯例），新建会话迁 Ctrl+Shift+N
+  { id: 'reopenClosedTab', label: '重开已关闭标签', default: 'Ctrl+Shift+T' },
   { id: 'closeTab', label: '关闭标签', default: 'Ctrl+Shift+W' },
   {
     id: 'nextTab',
@@ -49,6 +51,11 @@ export const KEY_ACTIONS: KeyAction[] = [
     default: 'Ctrl+Shift+ArrowDown',
     vim: 'Alt+S',
   },
+  // 批次十一：字号缩放 / 窗格焦点切换
+  { id: 'zoomIn', label: '放大字号', default: 'Ctrl+=' },
+  { id: 'zoomOut', label: '缩小字号', default: 'Ctrl+-' },
+  { id: 'resetZoom', label: '重置字号', default: 'Ctrl+0' },
+  { id: 'nextPane', label: '下一窗格', default: 'Ctrl+Alt+ArrowRight' },
 ];
 
 export type KeymapScheme = 'default' | 'vim' | 'emacs';

@@ -11,7 +11,9 @@ mod transfer;
 
 pub use client::{DirEntry, EntryKind, SftpClient};
 pub use error::SftpError;
-pub use transfer::{ProgressFn, TransferId, TransferInfo, TransferQueue, TransferState};
+pub use transfer::{
+    rename_candidate, OnExists, ProgressFn, TransferId, TransferInfo, TransferQueue, TransferState,
+};
 
 /// 传输方向
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

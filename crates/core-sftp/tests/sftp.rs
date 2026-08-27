@@ -530,7 +530,12 @@ async fn transfer_upload_download_integrity() {
     std::fs::write(&local_up, &payload).unwrap();
 
     let id = q
-        .enqueue_upload(local_up.clone(), "/up.bin".into(), payload.len() as u64)
+        .enqueue_upload(
+            local_up.clone(),
+            "/up.bin".into(),
+            payload.len() as u64,
+            core_sftp::OnExists::Resume,
+        )
         .await;
     let info = wait_done(&q, &id).await;
     assert_eq!(
@@ -545,7 +550,12 @@ async fn transfer_upload_download_integrity() {
     // 下载回本地另一路径
     let local_down = temp_root("xfer-local").join("down.bin");
     let id2 = q
-        .enqueue_download("/up.bin".into(), local_down.clone(), payload.len() as u64)
+        .enqueue_download(
+            "/up.bin".into(),
+            local_down.clone(),
+            payload.len() as u64,
+            core_sftp::OnExists::Resume,
+        )
         .await;
     let info2 = wait_done(&q, &id2).await;
     assert_eq!(
@@ -575,7 +585,12 @@ async fn download_resumes_from_local_offset() {
     std::fs::write(&local, &pattern(200_000)[..50_000]).unwrap();
 
     let id = q
-        .enqueue_download("/full.bin".into(), local.clone(), 200_000)
+        .enqueue_download(
+            "/full.bin".into(),
+            local.clone(),
+            200_000,
+            core_sftp::OnExists::Resume,
+        )
         .await;
     let info = wait_done(&q, &id).await;
     assert_eq!(
@@ -609,7 +624,12 @@ async fn pause_then_cancel_slow_upload() {
     let local = temp_root("slow-local").join("big.SLOW.bin");
     std::fs::write(&local, pattern(4 * 1024 * 1024)).unwrap(); // 16 块 × 50ms ≈ 800ms 窗口
     let id = q
-        .enqueue_upload(local, "/big.SLOW.bin".into(), 4 * 1024 * 1024)
+        .enqueue_upload(
+            local,
+            "/big.SLOW.bin".into(),
+            4 * 1024 * 1024,
+            core_sftp::OnExists::Resume,
+        )
         .await;
 
     // 等开跑后暂停
@@ -675,7 +695,12 @@ async fn retry_rejects_non_terminal_then_reruns() {
     let local = temp_root("retry-local").join("big.SLOW.bin");
     std::fs::write(&local, pattern(2 * 1024 * 1024)).unwrap();
     let id = q
-        .enqueue_upload(local, "/big.SLOW.bin".into(), 2 * 1024 * 1024)
+        .enqueue_upload(
+            local,
+            "/big.SLOW.bin".into(),
+            2 * 1024 * 1024,
+            core_sftp::OnExists::Resume,
+        )
         .await;
 
     // 非终态（Queued/Running）重试 → 拒绝
@@ -719,7 +744,12 @@ async fn remove_rejects_non_terminal() {
     let local = temp_root("rm-local").join("big.SLOW.bin");
     std::fs::write(&local, pattern(2 * 1024 * 1024)).unwrap();
     let id = q
-        .enqueue_upload(local, "/big.SLOW.bin".into(), 2 * 1024 * 1024)
+        .enqueue_upload(
+            local,
+            "/big.SLOW.bin".into(),
+            2 * 1024 * 1024,
+            core_sftp::OnExists::Resume,
+        )
         .await;
 
     // 进行中移除 → 拒绝
@@ -749,14 +779,26 @@ async fn clear_where_only_removes_matching_terminal() {
     // 一条快速上传 → Done
     let local_ok = temp_root("clear-local").join("ok.bin");
     std::fs::write(&local_ok, pattern(1024)).unwrap();
-    let id_done = q.enqueue_upload(local_ok, "/ok.bin".into(), 1024).await;
+    let id_done = q
+        .enqueue_upload(
+            local_ok,
+            "/ok.bin".into(),
+            1024,
+            core_sftp::OnExists::Resume,
+        )
+        .await;
     wait_done(&q, &id_done).await;
 
     // 一条慢速上传 → 取消 → Canceled
     let local_slow = temp_root("clear-local").join("big.SLOW.bin");
     std::fs::write(&local_slow, pattern(2 * 1024 * 1024)).unwrap();
     let id_canceled = q
-        .enqueue_upload(local_slow, "/big.SLOW.bin".into(), 2 * 1024 * 1024)
+        .enqueue_upload(
+            local_slow,
+            "/big.SLOW.bin".into(),
+            2 * 1024 * 1024,
+            core_sftp::OnExists::Resume,
+        )
         .await;
     q.cancel(&id_canceled).unwrap();
     wait_done(&q, &id_canceled).await;
@@ -772,7 +814,12 @@ async fn clear_where_only_removes_matching_terminal() {
     let local_slow2 = temp_root("clear-local").join("big2.SLOW.bin");
     std::fs::write(&local_slow2, pattern(2 * 1024 * 1024)).unwrap();
     let id_running = q
-        .enqueue_upload(local_slow2, "/big2.SLOW.bin".into(), 2 * 1024 * 1024)
+        .enqueue_upload(
+            local_slow2,
+            "/big2.SLOW.bin".into(),
+            2 * 1024 * 1024,
+            core_sftp::OnExists::Resume,
+        )
         .await;
     assert_eq!(q.clear_where(|_| true), 1, "只应清掉 Canceled 一条");
     assert!(q.get(&id_running).is_some(), "进行中条目不得被清理");
@@ -800,8 +847,13 @@ async fn pause_all_resume_all_flip_states() {
         let p = local.join(name);
         std::fs::write(&p, pattern(2 * 1024 * 1024)).unwrap();
         ids.push(
-            q.enqueue_upload(p, format!("/{name}"), 2 * 1024 * 1024)
-                .await,
+            q.enqueue_upload(
+                p,
+                format!("/{name}"),
+                2 * 1024 * 1024,
+                core_sftp::OnExists::Resume,
+            )
+            .await,
         );
     }
     for id in &ids {

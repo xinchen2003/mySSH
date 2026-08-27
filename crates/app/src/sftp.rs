@@ -17,7 +17,9 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tauri::ipc::Channel;
 
-use core_sftp::{DirEntry, EntryKind, SftpClient, TransferDirection, TransferQueue};
+use core_sftp::{
+    rename_candidate, DirEntry, EntryKind, OnExists, SftpClient, TransferDirection, TransferQueue,
+};
 use core_store::Store;
 
 use crate::sessions::SessionManagerState;
@@ -266,6 +268,30 @@ pub async fn sftp_chmod(
     Ok(())
 }
 
+/// 远端新建空文件（已存在则报错，绝不截断）。
+/// create 立即 shutdown + drop：无写数据，仅触发 CREATE 落地。
+#[tauri::command]
+pub async fn sftp_touch(
+    session_id: String,
+    path: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<(), String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    if ctx.client.stat(&path).await.is_ok() {
+        return Err(format!("目标已存在: {path}"));
+    }
+    use tokio::io::AsyncWriteExt;
+    let mut f = ctx
+        .client
+        .open_write_at(&path, 0)
+        .await
+        .map_err(|e| e.to_string())?;
+    f.shutdown().await.map_err(|e| e.to_string())?;
+    audit(&sessions.store, &session_id, "sftp_touch", &path).await;
+    Ok(())
+}
+
 // ---------- 本地浏览 ----------
 /// 解析远端家目录绝对路径（SFTP 面板初始定位 / 权限失败回退用，批次六）。
 /// 优先 expand-path@openssh.com 扩展（~ → .）；老服务器无此扩展时回退 REALPATH(.)
@@ -398,20 +424,86 @@ fn transfer_to_json(t: &core_sftp::TransferInfo) -> Value {
         "state": t.state.as_str(),
         "bytesDone": t.bytes_done,
         "bytesTotal": t.bytes_total,
+        "onExists": t.on_exists.as_str(),
         "retries": t.retries,
         "error": t.error,
     })
 }
 
-/// 上传：local 文件/目录 → remote 目标目录（remote 为目录路径，文件名取本地名）
+/// 解析 onExists 参数（缺省 resume，保持既有续传行为）
+fn parse_on_exists(raw: Option<String>) -> Result<OnExists, String> {
+    match raw.as_deref() {
+        None | Some("resume") => Ok(OnExists::Resume),
+        Some("overwrite") => Ok(OnExists::Overwrite),
+        Some("skip") => Ok(OnExists::Skip),
+        Some("rename") => Ok(OnExists::Rename),
+        Some(other) => Err(format!(
+            "未知 onExists 策略: {other}（仅支持 resume/overwrite/skip/rename）"
+        )),
+    }
+}
+
+/// 远端目标冲突解析：Ok(None) = skip；Ok(Some((最终路径, 运行期模式))) = 入队
+async fn resolve_remote_target(
+    ctx: &SftpCtx,
+    target: &str,
+    policy: OnExists,
+) -> Result<Option<(String, OnExists)>, String> {
+    if ctx.client.stat(target).await.is_err() {
+        // 不存在（或不可 stat）：直接入队，运行期续传逻辑自负盈亏
+        return Ok(Some((target.to_string(), policy.runtime())));
+    }
+    match policy {
+        OnExists::Resume | OnExists::Overwrite => Ok(Some((target.to_string(), policy))),
+        OnExists::Skip => Ok(None),
+        OnExists::Rename => {
+            for n in 1..1000 {
+                let cand = rename_candidate(target, n);
+                if ctx.client.stat(&cand).await.is_err() {
+                    return Ok(Some((cand, OnExists::Resume)));
+                }
+            }
+            Err(format!("自动改名失败: {target} 的 name-N 候选均被占用"))
+        }
+    }
+}
+
+/// 本地目标冲突解析（与远端同策略；存在性看 std::fs）
+fn resolve_local_target(
+    target: &Path,
+    policy: OnExists,
+) -> Result<Option<(PathBuf, OnExists)>, String> {
+    if !target.exists() {
+        return Ok(Some((target.to_path_buf(), policy.runtime())));
+    }
+    match policy {
+        OnExists::Resume | OnExists::Overwrite => Ok(Some((target.to_path_buf(), policy))),
+        OnExists::Skip => Ok(None),
+        OnExists::Rename => {
+            let s = target.to_string_lossy();
+            for n in 1..1000 {
+                let cand = rename_candidate(&s, n);
+                if !Path::new(&cand).exists() {
+                    return Ok(Some((PathBuf::from(cand), OnExists::Resume)));
+                }
+            }
+            Err(format!("自动改名失败: {} 的 name-N 候选均被占用", s))
+        }
+    }
+}
+
+/// 上传：local 文件/目录 → remote 目标目录（remote 为目录路径，文件名取本地名）。
+/// on_exists 冲突策略逐文件生效（目录递归展开后每个文件独立判定），返回 skipped 计数。
 #[tauri::command]
 pub async fn sftp_upload(
     session_id: String,
     local: String,
     remote: String,
+    on_exists: Option<String>,
     state: tauri::State<'_, Arc<SftpManagerState>>,
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<Value, String> {
+    let policy = parse_on_exists(on_exists)?;
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
     ctx.queue
         .set_progress_callback(persist_terminal(sessions.store.clone(), session_id.clone()));
@@ -422,37 +514,49 @@ pub async fn sftp_upload(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unnamed".into());
     let mut ids = Vec::new();
+    let mut skipped = 0u32;
     if meta.is_dir() {
         // 递归展开：远端 mkdir 链 + 逐文件入队
         enqueue_dir_upload(
             &ctx,
             &local_path,
             &format!("{remote}/{base_name}"),
+            policy,
             &mut ids,
+            &mut skipped,
         )
         .await?;
+    } else if let Some((path, mode)) =
+        resolve_remote_target(&ctx, &format!("{remote}/{base_name}"), policy).await?
+    {
+        ids.push(
+            ctx.queue
+                .enqueue_upload(local_path, path, meta.len(), mode)
+                .await,
+        );
     } else {
-        let id = ctx
-            .queue
-            .enqueue_upload(local_path, format!("{remote}/{base_name}"), meta.len())
-            .await;
-        ids.push(id);
+        skipped += 1;
     }
     audit(
         &sessions.store,
         &session_id,
         "sftp_upload",
-        &format!("{local} -> {remote}（{} 个任务）", ids.len()),
+        &format!(
+            "{local} -> {remote}（{} 个任务，跳过 {skipped}）",
+            ids.len()
+        ),
     )
     .await;
-    Ok(json!({ "transferIds": ids }))
+    Ok(json!({ "transferIds": ids, "skipped": skipped }))
 }
 
 async fn enqueue_dir_upload(
     ctx: &SftpCtx,
     local_dir: &Path,
     remote_dir: &str,
+    policy: OnExists,
     ids: &mut Vec<String>,
+    skipped: &mut u32,
 ) -> Result<(), String> {
     ctx.client
         .mkdir(remote_dir)
@@ -473,23 +577,31 @@ async fn enqueue_dir_upload(
         let remote = format!("{remote_dir}/{name}");
         let meta = e.metadata().map_err(|e| e.to_string())?;
         if meta.is_dir() {
-            Box::pin(enqueue_dir_upload(ctx, &p, &remote, ids)).await?;
+            Box::pin(enqueue_dir_upload(ctx, &p, &remote, policy, ids, skipped)).await?;
         } else if meta.is_file() {
-            ids.push(ctx.queue.enqueue_upload(p, remote, meta.len()).await);
+            match resolve_remote_target(ctx, &remote, policy).await? {
+                Some((path, mode)) => {
+                    ids.push(ctx.queue.enqueue_upload(p, path, meta.len(), mode).await);
+                }
+                None => *skipped += 1,
+            }
         }
     }
     Ok(())
 }
 
-/// 下载：remote 文件/目录 → local 目标目录
+/// 下载：remote 文件/目录 → local 目标目录。
+/// on_exists 冲突策略逐文件生效（目录递归展开后每个文件独立判定），返回 skipped 计数。
 #[tauri::command]
 pub async fn sftp_download(
     session_id: String,
     remote: String,
     local: String,
+    on_exists: Option<String>,
     state: tauri::State<'_, Arc<SftpManagerState>>,
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<Value, String> {
+    let policy = parse_on_exists(on_exists)?;
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
     ctx.queue
         .set_progress_callback(persist_terminal(sessions.store.clone(), session_id.clone()));
@@ -497,33 +609,52 @@ pub async fn sftp_download(
     let base_name = st.name.clone();
     let local_base = PathBuf::from(&local);
     let mut ids = Vec::new();
+    let mut skipped = 0u32;
     if st.kind == EntryKind::Dir {
         let target = local_base.join(&base_name);
         std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
-        Box::pin(enqueue_dir_download(&ctx, &remote, &target, &mut ids)).await?;
+        Box::pin(enqueue_dir_download(
+            &ctx,
+            &remote,
+            &target,
+            policy,
+            &mut ids,
+            &mut skipped,
+        ))
+        .await?;
     } else {
         std::fs::create_dir_all(&local_base).map_err(|e| e.to_string())?;
-        let id = ctx
-            .queue
-            .enqueue_download(remote.clone(), local_base.join(&base_name), st.size)
-            .await;
-        ids.push(id);
+        match resolve_local_target(&local_base.join(&base_name), policy)? {
+            Some((path, mode)) => {
+                ids.push(
+                    ctx.queue
+                        .enqueue_download(remote.clone(), path, st.size, mode)
+                        .await,
+                );
+            }
+            None => skipped += 1,
+        }
     }
     audit(
         &sessions.store,
         &session_id,
         "sftp_download",
-        &format!("{remote} -> {local}（{} 个任务）", ids.len()),
+        &format!(
+            "{remote} -> {local}（{} 个任务，跳过 {skipped}）",
+            ids.len()
+        ),
     )
     .await;
-    Ok(json!({ "transferIds": ids }))
+    Ok(json!({ "transferIds": ids, "skipped": skipped }))
 }
 
 async fn enqueue_dir_download(
     ctx: &SftpCtx,
     remote_dir: &str,
     local_dir: &Path,
+    policy: OnExists,
     ids: &mut Vec<String>,
+    skipped: &mut u32,
 ) -> Result<(), String> {
     let entries = ctx
         .client
@@ -535,11 +666,17 @@ async fn enqueue_dir_download(
         match e.kind {
             EntryKind::Dir => {
                 std::fs::create_dir_all(&local).map_err(|e| e.to_string())?;
-                Box::pin(enqueue_dir_download(ctx, &e.path, &local, ids)).await?;
+                Box::pin(enqueue_dir_download(
+                    ctx, &e.path, &local, policy, ids, skipped,
+                ))
+                .await?;
             }
-            EntryKind::File => {
-                ids.push(ctx.queue.enqueue_download(e.path, local, e.size).await);
-            }
+            EntryKind::File => match resolve_local_target(&local, policy)? {
+                Some((path, mode)) => {
+                    ids.push(ctx.queue.enqueue_download(e.path, path, e.size, mode).await);
+                }
+                None => *skipped += 1,
+            },
             // 软链接/其他：跳过（规格书「软链接识别」= 不盲目跟随）
             _ => {}
         }
@@ -776,9 +913,10 @@ pub async fn sftp_edit_open(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let local = dir.join(&st.name);
     // 下载（同步等待完成——编辑前置动作，用户感知为打开耗时）
+    // 临时区目录唯一（myssh-edit-<seq>），目标必不存在 → 策略无冲突，传 Resume
     let id = ctx
         .queue
-        .enqueue_download(remote.clone(), local.clone(), st.size)
+        .enqueue_download(remote.clone(), local.clone(), st.size, OnExists::Resume)
         .await;
     let deadline = Instant::now() + std::time::Duration::from_secs(120);
     loop {

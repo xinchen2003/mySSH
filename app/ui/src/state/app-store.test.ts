@@ -47,6 +47,7 @@ beforeEach(() => {
     notices: [],
     pendingCloseTabs: null,
     pendingDeleteSession: null,
+    closedTabs: [],
     settings: {},
     sessions: [],
     broadcastEnabled: false,
@@ -491,5 +492,58 @@ describe('广播输入（UX-11）', () => {
     w.mockClear();
     handler({ payload: { v: 1, source: 'main', data: 'echo x\n' } }); // 本窗口回环
     expect(w).not.toHaveBeenCalled();
+  });
+});
+
+describe('重开已关闭标签（批次十一）', () => {
+  beforeEach(() => {
+    // connectBySession → recordRecent → setSetting 会 invoke('settings_set')，需可 thenable
+    vi.mocked(invoke).mockResolvedValue([]);
+  });
+
+  /** 直接关闭（跳过确认守卫：先把 pane 置 closed） */
+  const closeDirect = (id: string) => {
+    const t = state().tabs.find((x) => x.id === id);
+    if (t) state().setPaneState(t.id, t.activePaneId, 'closed');
+    state().closeTab(id);
+  };
+
+  it('session 标签关闭后压栈，reopenClosedTab 弹栈按原档案/标题重连', () => {
+    const s = state();
+    s.connectBySession('s1', 'web-01');
+    closeDirect(state().tabs[0].id);
+    expect(state().tabs).toHaveLength(0);
+    expect(state().closedTabs).toEqual([{ sessionId: 's1', title: 'web-01' }]);
+
+    state().reopenClosedTab();
+    expect(state().closedTabs).toEqual([]);
+    expect(state().tabs).toHaveLength(1);
+    const t = state().tabs[0];
+    expect(t.title).toBe('web-01');
+    expect(t.target).toEqual({ kind: 'session', sessionId: 's1' });
+  });
+
+  it('快速连接（spec）标签不入栈；空栈 reopen 无操作', () => {
+    const s = state();
+    s.connect(spec);
+    closeDirect(state().tabs[0].id);
+    expect(state().closedTabs).toEqual([]);
+
+    state().reopenClosedTab();
+    expect(state().tabs).toHaveLength(0);
+  });
+
+  it('栈上限 10：溢出丢弃最旧；后关的先重开', () => {
+    const s = state();
+    for (let i = 1; i <= 11; i++) {
+      s.connectBySession(`s${i}`, `host-${i}`);
+      closeDirect(state().tabs[state().tabs.length - 1].id);
+    }
+    expect(state().closedTabs).toHaveLength(10);
+    expect(state().closedTabs[0].sessionId).toBe('s2'); // s1 被挤出
+
+    state().reopenClosedTab();
+    expect(state().tabs[0].title).toBe('host-11'); // 最近关闭的先重开
+    expect(state().closedTabs).toHaveLength(9);
   });
 });
