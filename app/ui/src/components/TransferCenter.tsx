@@ -91,7 +91,13 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
     });
   }
   const flash = seen.flash;
-  const pct = t.bytesTotal > 0 ? Math.min(100, (t.bytesDone / t.bytesTotal) * 100) : 0;
+  // 0 字节文件完成时应显示 100%（bytesTotal=0 会让公式恒得 0，「0% 完成」误导）
+  const pct =
+    t.state === 'done'
+      ? 100
+      : t.bytesTotal > 0
+        ? Math.min(100, (t.bytesDone / t.bytesTotal) * 100)
+        : 0;
   // upload: 源=本地 目标=远程；download: 源=远程 目标=本地
   const src = t.direction === 'upload' ? t.local : t.remote;
   const dst = t.direction === 'upload' ? t.remote : t.local;

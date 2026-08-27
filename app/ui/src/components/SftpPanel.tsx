@@ -616,6 +616,43 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     return () => clearInterval(timer);
   }, [followTerm, sessionId, tabId]);
 
+  // 批次十二：传输达终态自动刷新目标栏（上传→远程栏，下载→本地栏；失败/取消可能留有
+  // 残件，一并刷新）。此前上传完列表不动，用户看不到新文件。500ms 防抖合并批量完成；
+  // seenTerminal 去重——队列保留终态项，后续每帧都会再带一次。
+  const seenTerminalRef = useRef<Set<string>>(new Set());
+  const refreshTimerRef = useRef<{ local?: number; remote?: number }>({});
+  useEffect(() => {
+    const transfers = sessionTransfers ?? [];
+    let remote = false;
+    let local = false;
+    for (const t of transfers) {
+      if (t.history || (t.state !== 'done' && t.state !== 'failed' && t.state !== 'canceled'))
+        continue;
+      if (seenTerminalRef.current.has(t.id)) continue;
+      seenTerminalRef.current.add(t.id);
+      if (t.direction === 'upload') remote = true;
+      else local = true;
+    }
+    if (seenTerminalRef.current.size > 1000) seenTerminalRef.current.clear();
+    const timers = refreshTimerRef.current;
+    const schedule = (side: 'local' | 'remote') => {
+      if (timers[side]) window.clearTimeout(timers[side]);
+      timers[side] = window.setTimeout(() => {
+        if (side === 'remote') void refreshRemoteRef.current();
+        else void refreshLocalRef.current();
+      }, 500);
+    };
+    if (remote) schedule('remote');
+    if (local) schedule('local');
+  }, [sessionTransfers]);
+  useEffect(() => {
+    const timers = refreshTimerRef.current;
+    return () => {
+      if (timers.local) window.clearTimeout(timers.local);
+      if (timers.remote) window.clearTimeout(timers.remote);
+    };
+  }, []);
+
   // OS 文件拖入（批次六 1）：远程栏 → 上传（落目录行进该子目录）；本地栏 → 写进当前本地目录。
   // dragDropEnabled=false 后走 HTML5 drop：File 对象无完整路径，只能读字节流——
   // 经 local_drop_begin/append 落盘（远程侧落到 %TEMP%/myssh-drops 中转），再走既有
