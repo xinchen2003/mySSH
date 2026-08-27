@@ -7,7 +7,7 @@ import {
 } from './state/apply-settings';
 import { keymapFromSettings, matchCombo } from './term/keymap';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { initIdPrefix } from './state/app-store';
+import { initIdPrefix, isLocalTarget } from './state/app-store';
 import { invoke } from '@tauri-apps/api/core';
 import { Sidebar } from './components/Sidebar';
 import { TabBar } from './components/TabBar';
@@ -101,8 +101,10 @@ export function App() {
           const d = hit('nextTab') ? 1 : -1;
           s.setActive(s.tabs[(i + d + s.tabs.length) % s.tabs.length].id);
         }
-      } else if (hit('sftp') && active?.target.kind === 'session') s.toggleSftp(active.id);
-      else if (hit('metrics') && active?.target.kind === 'session') s.toggleMetrics(active.id);
+      } else if (hit('sftp') && active?.target.kind === 'session' && !isLocalTarget(active.target))
+        s.toggleSftp(active.id);
+      else if (hit('metrics') && active?.target.kind === 'session' && !isLocalTarget(active.target))
+        s.toggleMetrics(active.id);
       else if (hit('tunnels')) s.toggleTunnelPanel();
       else if (hit('settings')) s.toggleSettings();
       else if (hit('splitRow')) s.splitActive('row');

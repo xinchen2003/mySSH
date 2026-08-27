@@ -386,8 +386,12 @@ export function SftpPanel({ tabId }: { tabId: string }) {
   const tabs = useAppStore((s) => s.tabs);
   const toggleSftp = useAppStore((s) => s.toggleSftp);
   const notify = useAppStore((s) => s.notify);
+  const sessions = useAppStore((s) => s.sessions);
   const tab = tabs.find((t) => t.id === tabId);
-  const sessionId = tab?.target.kind === 'session' ? tab.target.sessionId : null;
+  const rawSessionId = tab?.target.kind === 'session' ? tab.target.sessionId : null;
+  // 本地会话：SFTP 无意义（本机文件即左栏），按无会话处理走守卫页
+  const isLocalSession = sessions.find((r) => r.id === rawSessionId)?.kind === 'local';
+  const sessionId = isLocalSession ? null : rawSessionId;
 
   const [localPath, setLocalPath] = useState('');
   const [remotePath, setRemotePath] = useState('/');
@@ -687,7 +691,9 @@ export function SftpPanel({ tabId }: { tabId: string }) {
   if (!sessionId) {
     return (
       <div className="border-t border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-500">
-        SFTP 仅支持存储档案会话（内联连接无档案可解析凭据）
+        {isLocalSession
+          ? '本地会话无需 SFTP——文件就在本机，终端里直接操作即可'
+          : 'SFTP 仅支持存储档案会话（内联连接无档案可解析凭据）'}
         <button className="ml-2 text-neutral-400" onClick={() => toggleSftp(tabId)}>
           关闭
         </button>

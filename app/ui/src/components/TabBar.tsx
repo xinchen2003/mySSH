@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useAppStore, type Tab } from '../state/app-store';
+import { isLocalTarget, useAppStore, type Tab } from '../state/app-store';
 import { ContextMenu, type MenuItem } from './ContextMenu';
 
 const STATE_DOT: Record<string, string> = {
@@ -28,6 +28,8 @@ export function TabBar() {
     const idx = s.tabs.findIndex((x) => x.id === t.id);
     const isSession = t.target.kind === 'session';
     const sessionId = t.target.kind === 'session' ? t.target.sessionId : null;
+    // 本地会话禁用 SSH 专属入口（SFTP/监控/隧道）；分屏/分离窗口可用
+    const isRemote = isSession && !isLocalTarget(t.target);
     return [
       { label: '重新连接', icon: '▶', onSelect: () => s.reconnectTab(t.id) },
       { label: '断开', icon: '⏻', onSelect: () => s.disconnectTab(t.id) },
@@ -35,7 +37,7 @@ export function TabBar() {
       {
         label: '打开 SFTP',
         icon: '⇅',
-        disabled: !isSession,
+        disabled: !isRemote,
         onSelect: () => {
           s.setActive(t.id);
           if (!s.sftpOpen[t.id]) s.toggleSftp(t.id);
@@ -44,7 +46,7 @@ export function TabBar() {
       {
         label: '打开监控',
         icon: '∿',
-        disabled: !isSession,
+        disabled: !isRemote,
         onSelect: () => {
           s.setActive(t.id);
           if (!s.metricsOpen[t.id]) s.toggleMetrics(t.id);
@@ -53,6 +55,7 @@ export function TabBar() {
       {
         label: '管理隧道',
         icon: '⇄',
+        disabled: isSession && !isRemote,
         onSelect: () => {
           if (!s.tunnelPanelOpen) s.toggleTunnelPanel();
         },

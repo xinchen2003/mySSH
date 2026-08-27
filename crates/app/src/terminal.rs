@@ -103,10 +103,65 @@ pub(crate) fn jump_chain_from(chain: &[JumpHopSpec]) -> Vec<core_ssh::JumpHop> {
         })
         .collect()
 }
+/// 读半抽象：SSH 通道 或 本地 PTY（批次十四 本地会话）
+enum AnyReader {
+    Ssh(PtyReader),
+    Local(crate::local_pty::LocalReader),
+}
+
+impl AnyReader {
+    async fn next_data(&mut self) -> Option<bytes::Bytes> {
+        match self {
+            Self::Ssh(r) => r.next_data().await,
+            Self::Local(r) => r.next_data().await,
+        }
+    }
+}
+
+/// 写半抽象：同上；统一 term_input/term_resize/term_close 的调用面
+enum AnyWriter {
+    Ssh(PtyWriter),
+    Local(crate::local_pty::LocalWriter),
+}
+
+impl AnyWriter {
+    async fn write(&self, data: &[u8]) -> Result<(), String> {
+        match self {
+            Self::Ssh(w) => w.write(data).await.map_err(|e| e.to_string()),
+            Self::Local(w) => w.write(data).await,
+        }
+    }
+
+    async fn resize(&self, cols: u32, rows: u32) -> Result<(), String> {
+        match self {
+            Self::Ssh(w) => w.resize(cols, rows).await.map_err(|e| e.to_string()),
+            Self::Local(w) => w.resize(cols, rows).await,
+        }
+    }
+
+    async fn close(&self) -> Result<(), String> {
+        match self {
+            Self::Ssh(w) => w.close().await.map_err(|e| e.to_string()),
+            Self::Local(w) => w.close().await,
+        }
+    }
+}
+
+/// 重连语义的后端分支：SSH 持连接参数可重连；本地进程退出即终态
+enum Backend {
+    Ssh(Box<SshReconnect>),
+    Local,
+}
+/// SSH 重连所需的连接参数（Box 收敛 Backend 两变体体积差）
+struct SshReconnect {
+    opts: ConnectOptions,
+    term: String,
+    command: Option<String>,
+}
 
 struct TermSession {
     /// 重连时整枚替换（sessions 锁内 swap）
-    writer: Arc<PtyWriter>,
+    writer: Arc<AnyWriter>,
     /// 来源会话档案 id（内联 spec 连接为 None）：随会话隧道的归属键
     session_id: Option<String>,
     credits: Arc<Semaphore>,
@@ -186,12 +241,56 @@ pub async fn term_open(
     let mgr = state.inner().clone();
     let tab_id = next_id("t", &TAB_SEQ);
 
-    // 二选一：内联 spec（临时连接）或 sessionId（存储档案解析）
+    // 二选一：内联 spec（临时连接）或 sessionId（存储档案解析；可能是本地会话）
     let via_session = session_id.clone();
-    let spec = match (spec, session_id) {
-        (Some(s), None) => s,
-        (None, Some(id)) => crate::sessions::resolve_session_spec(&sessions.store, &id).await?,
+    let target = match (spec, session_id) {
+        (Some(s), None) => crate::sessions::ResolvedTarget::Ssh(s),
+        (None, Some(id)) => crate::sessions::resolve_session_target(&sessions.store, &id).await?,
         _ => return Err("term_open 需要且仅需 spec 或 sessionId 之一".into()),
+    };
+    let spec = match target {
+        crate::sessions::ResolvedTarget::Ssh(s) => s,
+        crate::sessions::ResolvedTarget::Local(ls) => {
+            // 本地会话：ConPTY 直连读循环；无 SSH 连接/hostkey/KI/随会话隧道
+            let pty = tauri::async_runtime::spawn_blocking(move || {
+                crate::local_pty::spawn(&ls, cols, rows)
+            })
+            .await
+            .map_err(|e| format!("本地终端任务失败: {e}"))??;
+            let shell = pty.shell.clone();
+            let credits = Arc::new(Semaphore::new(CREDIT_HIGH as usize));
+            let outstanding = Arc::new(AtomicI64::new(0));
+            let task = tauri::async_runtime::spawn(supervise(SuperviseCtx {
+                tab_id: tab_id.clone(),
+                mgr: mgr.clone(),
+                session_id: via_session.clone(),
+                tunnel_mgr: tunnels_state.mgr.clone(),
+                store: sessions.store.clone(),
+                backend: Backend::Local,
+                data,
+                events: events.clone(),
+                credits: credits.clone(),
+                outstanding: outstanding.clone(),
+                reader: AnyReader::Local(pty.reader),
+            }));
+            mgr.sessions.lock().insert(
+                tab_id.clone(),
+                TermSession {
+                    writer: Arc::new(AnyWriter::Local(pty.writer)),
+                    session_id: via_session,
+                    credits,
+                    outstanding,
+                    cols: AtomicU64::new(cols as u64),
+                    rows: AtomicU64::new(rows as u64),
+                    task,
+                },
+            );
+            let _ = events.send(json!({
+                "v": 1, "type": "session_state", "tabId": tab_id, "state": "connected",
+                "kind": "local", "shell": shell,
+            }));
+            return Ok(json!({ "tabId": tab_id }));
+        }
     };
 
     let auth = auth_method_from(&spec.auth);
@@ -304,20 +403,22 @@ pub async fn term_open(
         session_id: via_session.clone(),
         tunnel_mgr: tunnels_state.mgr.clone(),
         store: sessions.store.clone(),
-        opts,
-        term,
-        command: spec.command.clone(),
+        backend: Backend::Ssh(Box::new(SshReconnect {
+            opts,
+            term,
+            command: spec.command.clone(),
+        })),
         data,
         events: events.clone(),
         credits: credits.clone(),
         outstanding: outstanding.clone(),
-        reader,
+        reader: AnyReader::Ssh(reader),
     }));
 
     mgr.sessions.lock().insert(
         tab_id.clone(),
         TermSession {
-            writer: Arc::new(writer),
+            writer: Arc::new(AnyWriter::Ssh(writer)),
             session_id: via_session,
             credits,
             outstanding,
@@ -364,14 +465,12 @@ struct SuperviseCtx {
     session_id: Option<String>,
     tunnel_mgr: Arc<core_tunnel::TunnelManager>,
     store: Arc<core_store::Store>,
-    opts: ConnectOptions,
-    term: String,
-    command: Option<String>,
+    backend: Backend,
     data: Channel<Response>,
     events: Channel<Value>,
     credits: Arc<Semaphore>,
     outstanding: Arc<AtomicI64>,
-    reader: PtyReader,
+    reader: AnyReader,
 }
 
 async fn supervise(mut ctx: SuperviseCtx) {
@@ -380,6 +479,17 @@ async fn supervise(mut ctx: SuperviseCtx) {
 
         // 用户主动关闭：表项已被 term_close 摘除 → 静默退出
         if !ctx.mgr.sessions.lock().contains_key(&ctx.tab_id) {
+            return;
+        }
+
+        // 本地 PTY：进程退出即终态 closed——exit 是用户意图，不做自动重开
+        if matches!(ctx.backend, Backend::Local) {
+            let _ = ctx.events.send(json!({
+                "v": 1, "type": "session_state",
+                "tabId": ctx.tab_id, "state": "closed",
+            }));
+            ctx.mgr.sessions.lock().remove(&ctx.tab_id);
+            stop_session_tunnels_if_last(&ctx);
             return;
         }
 
@@ -400,7 +510,7 @@ async fn supervise(mut ctx: SuperviseCtx) {
         {
             let mut sessions = ctx.mgr.sessions.lock();
             match sessions.get_mut(&ctx.tab_id) {
-                Some(s) => s.writer = Arc::new(writer),
+                Some(s) => s.writer = Arc::new(AnyWriter::Ssh(writer)),
                 None => return,
             }
         }
@@ -408,12 +518,16 @@ async fn supervise(mut ctx: SuperviseCtx) {
             "v": 1, "type": "session_state",
             "tabId": ctx.tab_id, "state": "connected", "reconnected": true,
         }));
-        ctx.reader = reader;
+        ctx.reader = AnyReader::Ssh(reader);
     }
 }
 
 /// 指数退避重连；用户关闭（表项消失）立即放弃
 async fn reconnect(ctx: &SuperviseCtx) -> Option<(PtyReader, PtyWriter)> {
+    let Backend::Ssh(rc) = &ctx.backend else {
+        return None; // 本地会话不进重连路径（supervise 已短路）
+    };
+    let (opts, term, command) = (&rc.opts, &rc.term, &rc.command);
     let max_attempts = reconnect_attempts(&ctx.store).await;
     let mut attempt = 0u32;
     loop {
@@ -439,13 +553,10 @@ async fn reconnect(ctx: &SuperviseCtx) -> Option<(PtyReader, PtyWriter)> {
                 None => return None,
             }
         };
-        let Ok(conn) = SshConnection::connect(ctx.opts.clone()).await else {
+        let Ok(conn) = SshConnection::connect(opts.clone()).await else {
             continue;
         };
-        if let Ok(pty) = conn
-            .open_pty(&ctx.term, cols, rows, ctx.command.as_deref())
-            .await
-        {
+        if let Ok(pty) = conn.open_pty(term, cols, rows, command.as_deref()).await {
             return Some(pty.split());
         }
     }
@@ -572,7 +683,7 @@ pub async fn ki_respond(
 /// 信用耗尽即停止 next_data() → russh 不再确认窗口 → 服务端停发，内存不堆积。
 /// EOF/Close 时冲净残余即返回——断线语义与重连由 supervise() 负责。
 async fn read_loop(
-    reader: &mut PtyReader,
+    reader: &mut AnyReader,
     data_ch: &Channel<Response>,
     credits: &Arc<Semaphore>,
     outstanding: &Arc<AtomicI64>,

@@ -11,11 +11,17 @@ export type AuthSpec =
 export interface SessionRecord {
   id: string;
   name: string;
+  /** 会话类型；缺省 ssh（旧数据/旧导出无此字段） */
+  kind?: 'ssh' | 'local';
   host: string;
   port: number;
   username: string;
   authType: 'password' | 'publickey' | 'keyboard-interactive' | 'agent';
   keyPath?: string | null;
+  /** local：启动 shell（powershell|pwsh|cmd 或自定义路径）；null/缺省 = 自动 */
+  shell?: string | null;
+  /** local：启动目录；null/缺省 = 用户主目录 */
+  workdir?: string | null;
   /** ProxyJump 链：session id 数组（就近→最远）；空 = 直连 */
   jumpChain: string[];
   groupPath: string;
@@ -166,6 +172,9 @@ export interface SessionStateFrame {
   attempt?: number;
   /** true = 断线重连成功（区别于首次连接） */
   reconnected?: boolean;
+  /** local 会话连接成功帧携带：'local' + 实际启动的 shell 程序名 */
+  kind?: 'local';
+  shell?: string;
 }
 
 export type TermEvent =

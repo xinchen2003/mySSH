@@ -479,7 +479,11 @@ export function Sidebar() {
           selected ? 'bg-neutral-700' : 'hover:bg-neutral-800 focus:bg-neutral-800'
         }`}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
-        title={`${rec.username}@${rec.host}:${rec.port}`}
+        title={
+          rec.kind === 'local'
+            ? `本地终端${rec.workdir ? ` · ${rec.workdir}` : ''}`
+            : `${rec.username}@${rec.host}:${rec.port}`
+        }
       >
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1 text-sm text-neutral-200">
@@ -488,6 +492,11 @@ export function Sidebar() {
             )}
             {favorites.has(rec.id) && <span className="shrink-0 text-amber-400">★</span>}
             <span className="truncate">{rec.name}</span>
+            {rec.kind === 'local' && (
+              <span className="shrink-0 rounded bg-neutral-700 px-1 text-[10px] text-neutral-300">
+                本地
+              </span>
+            )}
             {failed.has(rec.id) && (
               <span className="shrink-0 text-red-400" title={`最近失败: ${failed.get(rec.id)}`}>
                 ⚠
@@ -495,8 +504,10 @@ export function Sidebar() {
             )}
           </span>
           <span className="block truncate text-xs text-neutral-500">
-            {rec.username}@{rec.host}:{rec.port}
-            {rec.jumpChain.length > 0 && ` · ${rec.jumpChain.length} 跳`}
+            {rec.kind === 'local'
+              ? rec.workdir || rec.shell || '本机终端'
+              : `${rec.username}@${rec.host}:${rec.port}`}
+            {rec.kind !== 'local' && rec.jumpChain.length > 0 && ` · ${rec.jumpChain.length} 跳`}
           </span>
         </span>
         <span className="hidden shrink-0 gap-1 group-hover:flex group-focus-within:flex">

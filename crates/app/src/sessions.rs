@@ -481,6 +481,35 @@ pub async fn resolve_session_spec(
     let mut visited = std::collections::HashSet::new();
     resolve_spec_inner(store, session_id, &mut visited).await
 }
+/// term_open 的解析结果：SSH 连接参数 或 本地 PTY 参数（批次十四 本地会话）
+pub enum ResolvedTarget {
+    Ssh(crate::terminal::TermOpenSpec),
+    Local(crate::local_pty::LocalShellSpec),
+}
+
+/// sessionId → ResolvedTarget：local 会话在此分流（不触碰凭据/跳板解析）。
+/// SSH 专属调用方（sftp/monitor/tunnel）继续用 resolve_session_spec——本地会话在那里报错。
+pub async fn resolve_session_target(
+    store: &Store,
+    session_id: &str,
+) -> Result<ResolvedTarget, String> {
+    let rec = store
+        .sessions()
+        .get(session_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if rec.kind == core_store::SessionKind::Local {
+        return Ok(ResolvedTarget::Local(crate::local_pty::LocalShellSpec {
+            shell: rec.shell.clone(),
+            workdir: rec.workdir.clone(),
+            command: rec.command.clone(),
+        }));
+    }
+    let mut visited = std::collections::HashSet::new();
+    Ok(ResolvedTarget::Ssh(
+        resolve_spec_inner(store, session_id, &mut visited).await?,
+    ))
+}
 
 /// 单跳深度上限：防环兜底（visited 集已严格防环，此为异常防御）
 const MAX_JUMP_DEPTH: usize = 8;
@@ -501,6 +530,9 @@ async fn resolve_spec_inner(
         .get(session_id)
         .await
         .map_err(|e| e.to_string())?;
+    if rec.kind == core_store::SessionKind::Local {
+        return Err(format!("会话 {} 是本地终端，不支持 SSH 连接", rec.name));
+    }
     let auth = resolve_auth(store, &rec).await?;
     // 逐跳解析（就近→最远）；跳板的跳板递归展开拍平——
     // 若跳 A 自身配了跳板 B，则链为 B..A（B 更靠近本机）

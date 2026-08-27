@@ -148,7 +148,11 @@ export function MetricsPanel({ tabId }: { tabId: string }) {
   const tabs = useAppStore((s) => s.tabs);
   const toggleMetrics = useAppStore((s) => s.toggleMetrics);
   const tab = tabs.find((t) => t.id === tabId);
-  const sessionId = tab?.target.kind === 'session' ? tab.target.sessionId : null;
+  const sessions = useAppStore((s) => s.sessions);
+  const rawSessionId = tab?.target.kind === 'session' ? tab.target.sessionId : null;
+  // 本地会话无远程主机可监控：按无会话处理（return null）
+  const sessionId =
+    sessions.find((r) => r.id === rawSessionId)?.kind === 'local' ? null : rawSessionId;
 
   const [buf, setBuf] = useState<MetricsSnapshot[]>([]);
   const [error, setError] = useState<string | null>(null);

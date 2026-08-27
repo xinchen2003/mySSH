@@ -85,6 +85,12 @@ function ConnectForm({
 
   const [tab, setTab] = useState<EditorTab>('basic');
   const [name, setName] = useState(initial?.name ?? '');
+  // 会话类型：创建后锁定（认证/凭据/隧道语义完全不同，互转会留下脏数据）
+  const [sessKind, setSessKind] = useState<'ssh' | 'local'>(initial?.kind ?? 'ssh');
+  // local 表单字段
+  const [workdir, setWorkdir] = useState(initial?.workdir ?? '');
+  const [shell, setShell] = useState(initial?.shell ?? '');
+  const [command, setCommand] = useState(initial?.command ?? '');
   const [nameTouched, setNameTouched] = useState(false);
   const [color, setColor] = useState<string | null>(initial?.color ?? null);
   const [host, setHost] = useState(initial?.host ?? '127.0.0.1');
@@ -153,6 +159,33 @@ function ConnectForm({
     setError(null);
     setBusy(true);
     try {
+      if (sessKind === 'local') {
+        // 本地会话：无认证/凭据；host/port/username/authType 存占位值（DB 列 NOT NULL）
+        const id = initial?.id ?? `s-${Date.now()}`;
+        const record: SessionRecord = {
+          id,
+          name: name.trim() || '本地终端',
+          kind: 'local',
+          host: 'localhost',
+          port: 0,
+          username: '',
+          authType: 'password',
+          keyPath: null,
+          shell: shell || null,
+          workdir: workdir.trim() || null,
+          jumpChain: [],
+          groupPath: presetGroup ?? initial?.groupPath ?? '',
+          color,
+          tags: initial?.tags ?? [],
+          command: command.trim() || null,
+          createdAt: initial?.createdAt ?? '',
+          updatedAt: '',
+        };
+        await invoke('session_upsert', { record });
+        await loadSessions();
+        connectBySession(id, record.name);
+        return;
+      }
       let auth: AuthSpec;
       if (kind === 'password') auth = { type: 'password', password };
       else if (kind === 'agent') auth = { type: 'agent' };
@@ -210,37 +243,67 @@ function ConnectForm({
 
   return (
     <Dialog
-      title={initial ? '编辑会话' : '新建 SSH 连接'}
+      title={initial ? '编辑会话' : sessKind === 'local' ? '新建本地终端' : '新建 SSH 连接'}
       onClose={close}
       closeOnBackdrop={false}
       backdropClass="z-10"
       panelClass="w-[26rem] rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
     >
-      <h2 className="mb-2 text-base font-semibold">{initial ? '编辑会话' : '新建 SSH 连接'}</h2>
+      <h2 className="mb-2 text-base font-semibold">
+        {initial ? '编辑会话' : sessKind === 'local' ? '新建本地终端' : '新建 SSH 连接'}
+      </h2>
+      {/* 会话类型（批次十四）：本地终端 = 本机 PTY，适合跑 AI agent 等命令行工具 */}
+      {!initial && (
+        <div className="mb-3 flex gap-1">
+          {(
+            [
+              ['ssh', 'SSH 服务器'],
+              ['local', '本地终端'],
+            ] as const
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              className={`rounded px-2.5 py-1 text-xs ${
+                sessKind === k
+                  ? 'bg-blue-600 text-white'
+                  : 'border border-neutral-700 text-neutral-400 hover:text-neutral-200'
+              }`}
+              onClick={() => {
+                setSessKind(k);
+                setTab('basic');
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* §9.1 双入口之一：服务器编辑器标签页 */}
       <div className="mb-3 flex gap-1 border-b border-neutral-800" role="tablist">
-        {(Object.keys(TAB_LABEL) as EditorTab[]).map((t) => (
-          <button
-            key={t}
-            role="tab"
-            aria-selected={tab === t}
-            className={`px-2.5 py-1 text-xs ${
-              tab === t
-                ? 'border-b-2 border-blue-500 text-neutral-100'
-                : 'text-neutral-500 hover:text-neutral-300'
-            }`}
-            onClick={() => setTab(t)}
-          >
-            {TAB_LABEL[t]}
-          </button>
-        ))}
+        {(Object.keys(TAB_LABEL) as EditorTab[])
+          .filter((t) => sessKind === 'ssh' || t === 'basic')
+          .map((t) => (
+            <button
+              key={t}
+              role="tab"
+              aria-selected={tab === t}
+              className={`px-2.5 py-1 text-xs ${
+                tab === t
+                  ? 'border-b-2 border-blue-500 text-neutral-100'
+                  : 'text-neutral-500 hover:text-neutral-300'
+              }`}
+              onClick={() => setTab(t)}
+            >
+              {TAB_LABEL[t]}
+            </button>
+          ))}
       </div>
 
       <div className="flex min-h-56 flex-col gap-2">
         {tab === 'basic' && (
           <>
-            {save && (
+            {(save || sessKind === 'local') && (
               <label>
                 <span className="mb-0.5 block text-xs text-neutral-400">名称</span>
                 <input
@@ -250,11 +313,11 @@ function ConnectForm({
                     setNameTouched(true);
                     setName(e.target.value);
                   }}
-                  placeholder="缺省取 用户@主机"
+                  placeholder="缺省取 用户@主机（本地终端缺省取「本地终端」）"
                 />
               </label>
             )}
-            {save && (
+            {(save || sessKind === 'local') && (
               <div>
                 <span className="mb-0.5 block text-xs text-neutral-400">标签颜色</span>
                 <div className="flex items-center gap-1.5">
@@ -289,49 +352,95 @@ function ConnectForm({
                 </div>
               </div>
             )}
-            <div className="flex gap-2">
-              <label className="flex-1">
-                <span className="mb-0.5 block text-xs text-neutral-400">主机</span>
-                <input
-                  className={input}
-                  value={host}
-                  onChange={(e) => {
-                    setHost(e.target.value);
-                    followName(user, e.target.value);
-                  }}
-                  autoFocus
-                />
-              </label>
-              <label className="w-20">
-                <span className="mb-0.5 block text-xs text-neutral-400">端口</span>
-                <input
-                  className={input}
-                  type="number"
-                  value={port}
-                  onChange={(e) => setPort(Number(e.target.value) || 22)}
-                />
-              </label>
-            </div>
-            <label>
-              <span className="mb-0.5 block text-xs text-neutral-400">用户名</span>
-              <input
-                className={input}
-                value={user}
-                onChange={(e) => {
-                  setUser(e.target.value);
-                  followName(e.target.value, host);
-                }}
-              />
-            </label>
-            <label className="mt-1 flex items-center gap-2 text-xs text-neutral-400">
-              <input
-                type="checkbox"
-                checked={save}
-                onChange={(e) => setSave(e.target.checked)}
-                disabled={initial !== null}
-              />
-              保存会话（密码/passphrase 存加密保险库）
-            </label>
+            {sessKind === 'local' && (
+              <>
+                <label>
+                  <span className="mb-0.5 block text-xs text-neutral-400">
+                    启动目录（可空，缺省为用户主目录）
+                  </span>
+                  <input
+                    className={input}
+                    value={workdir}
+                    onChange={(e) => setWorkdir(e.target.value)}
+                    placeholder="D:\projects\my-app"
+                  />
+                </label>
+                <label>
+                  <span className="mb-0.5 block text-xs text-neutral-400">Shell</span>
+                  <select
+                    className={input}
+                    value={shell}
+                    onChange={(e) => setShell(e.target.value)}
+                  >
+                    <option value="">自动（优先 PowerShell 7）</option>
+                    <option value="pwsh">PowerShell 7（pwsh）</option>
+                    <option value="powershell">Windows PowerShell</option>
+                    <option value="cmd">命令提示符（cmd）</option>
+                  </select>
+                </label>
+                <label>
+                  <span className="mb-0.5 block text-xs text-neutral-400">
+                    启动命令（可空；执行后保持交互，适合 AI agent）
+                  </span>
+                  <input
+                    className={input}
+                    value={command}
+                    onChange={(e) => setCommand(e.target.value)}
+                    placeholder="如 claude；留空 = 直接进入 shell"
+                  />
+                </label>
+                <p className="text-xs text-neutral-500">
+                  本地会话在本机打开终端；SFTP / 监控 / 隧道等远程功能不适用。
+                </p>
+              </>
+            )}
+            {sessKind === 'ssh' && (
+              <>
+                <div className="flex gap-2">
+                  <label className="flex-1">
+                    <span className="mb-0.5 block text-xs text-neutral-400">主机</span>
+                    <input
+                      className={input}
+                      value={host}
+                      onChange={(e) => {
+                        setHost(e.target.value);
+                        followName(user, e.target.value);
+                      }}
+                      autoFocus
+                    />
+                  </label>
+                  <label className="w-20">
+                    <span className="mb-0.5 block text-xs text-neutral-400">端口</span>
+                    <input
+                      className={input}
+                      type="number"
+                      value={port}
+                      onChange={(e) => setPort(Number(e.target.value) || 22)}
+                    />
+                  </label>
+                </div>
+                <label>
+                  <span className="mb-0.5 block text-xs text-neutral-400">用户名</span>
+                  <input
+                    className={input}
+                    value={user}
+                    onChange={(e) => {
+                      setUser(e.target.value);
+                      followName(e.target.value, host);
+                    }}
+                  />
+                </label>
+                <label className="mt-1 flex items-center gap-2 text-xs text-neutral-400">
+                  <input
+                    type="checkbox"
+                    checked={save}
+                    onChange={(e) => setSave(e.target.checked)}
+                    disabled={initial !== null}
+                  />
+                  保存会话（密码/passphrase 存加密保险库）
+                </label>
+              </>
+            )}
           </>
         )}
 
@@ -415,13 +524,15 @@ function ConnectForm({
 
       <div className="mt-2 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
-          <button
-            className="shrink-0 rounded border border-neutral-700 px-3 py-1 text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
-            onClick={() => void testConnect()}
-            disabled={busy || test.phase === 'testing' || !host.trim() || !user.trim()}
-          >
-            {test.phase === 'testing' ? '测试中…' : '测试连接'}
-          </button>
+          {sessKind === 'ssh' && (
+            <button
+              className="shrink-0 rounded border border-neutral-700 px-3 py-1 text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+              onClick={() => void testConnect()}
+              disabled={busy || test.phase === 'testing' || !host.trim() || !user.trim()}
+            >
+              {test.phase === 'testing' ? '测试中…' : '测试连接'}
+            </button>
+          )}
           {test.phase === 'ok' && (
             <span className="truncate text-xs text-green-400">
               ✓ 连接成功{test.latencyMs !== null ? `（${test.latencyMs}ms）` : ''}
@@ -443,9 +554,9 @@ function ConnectForm({
           <button
             className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500 disabled:opacity-50"
             onClick={() => void submit()}
-            disabled={busy || !host.trim() || !user.trim()}
+            disabled={busy || (sessKind === 'ssh' && (!host.trim() || !user.trim()))}
           >
-            {save ? '保存并连接' : '连接'}
+            {sessKind === 'local' ? '保存并打开' : save ? '保存并连接' : '连接'}
           </button>
         </div>
       </div>
@@ -607,7 +718,9 @@ function JumpChainEditor({
   excludeId: string | null;
 }) {
   const sessions = useAppStore((s) => s.sessions);
-  const candidates = sessions.filter((s) => s.id !== excludeId && !chain.includes(s.id));
+  const candidates = sessions.filter(
+    (s) => s.id !== excludeId && !chain.includes(s.id) && s.kind !== 'local',
+  );
   const nameOf = (id: string) => sessions.find((s) => s.id === id)?.name ?? id;
 
   return (

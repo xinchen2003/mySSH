@@ -5,7 +5,7 @@ import { fuzzyMatchAny } from '../term/fuzzy';
 import { KEY_ACTIONS, keymapFromSettings } from '../term/keymap';
 import { reconnectRegistry } from '../term/registry';
 import { BUILTIN_THEMES } from '../term/themes';
-import { useAppStore } from '../state/app-store';
+import { isLocalTarget, useAppStore } from '../state/app-store';
 import { GROUP_KEYS, readStringList, sshCommand } from '../state/groups';
 
 /**
@@ -60,10 +60,20 @@ export function CommandPalette() {
   const importConfigFile = useAppStore((s) => s.importConfigFile);
   const toggleSftpActive = () => {
     const s = useAppStore.getState();
+    const tab = s.tabs.find((t) => t.id === s.activeId);
+    if (tab && isLocalTarget(tab.target)) {
+      s.notify('本地会话不支持 SFTP', 'warning');
+      return;
+    }
     if (s.activeId) s.toggleSftp(s.activeId);
   };
   const toggleMetricsActive = () => {
     const s = useAppStore.getState();
+    const tab = s.tabs.find((t) => t.id === s.activeId);
+    if (tab && isLocalTarget(tab.target)) {
+      s.notify('本地会话不支持服务器监控', 'warning');
+      return;
+    }
     if (s.activeId) s.toggleMetrics(s.activeId);
   };
 
@@ -177,6 +187,10 @@ export function CommandPalette() {
           const rec = sid ? s.sessions.find((x) => x.id === sid) : undefined;
           if (!rec) {
             s.notify('当前标签不是服务器档案连接', 'warning');
+            return;
+          }
+          if (rec.kind === 'local') {
+            s.notify('本地会话没有 SSH 命令', 'warning');
             return;
           }
           void writeText(sshCommand(rec, s.sessions)).then(

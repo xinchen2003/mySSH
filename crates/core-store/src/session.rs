@@ -36,18 +36,52 @@ impl AuthType {
         }
     }
 }
+/// 会话类型：ssh = 远程 SSH；local = 本机 PTY（ConPTY），host/port/username/auth_type 存占位值
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionKind {
+    #[default]
+    Ssh,
+    Local,
+}
+
+impl SessionKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ssh => "ssh",
+            Self::Local => "local",
+        }
+    }
+
+    fn parse(s: &str) -> Result<Self, StoreError> {
+        match s {
+            "ssh" => Ok(Self::Ssh),
+            "local" => Ok(Self::Local),
+            other => Err(StoreError::Corrupt(format!("kind: {other}"))),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRecord {
     pub id: String,
     pub name: String,
+    /// 会话类型（旧导出包络无此字段，默认 ssh）
+    #[serde(default)]
+    pub kind: SessionKind,
     pub host: String,
     pub port: u16,
     #[serde(rename = "username")]
     pub user: String,
     pub auth_type: AuthType,
     pub key_path: Option<String>,
+    /// local：启动的 shell（powershell|pwsh|cmd 或自定义路径）；None = 自动（pwsh→powershell→cmd）
+    #[serde(default)]
+    pub shell: Option<String>,
+    /// local：启动目录；None = 用户主目录
+    #[serde(default)]
+    pub workdir: Option<String>,
     /// ProxyJump 链：session id 数组（就近→最远）；空 = 直连
     #[serde(default)]
     pub jump_chain: Vec<String>,
@@ -65,8 +99,8 @@ pub struct SessionRepo {
     pool: SqlitePool,
 }
 
-const LIST_SQL: &str = "SELECT id,name,host,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color FROM sessions ORDER BY group_path, name";
-const GET_SQL: &str = "SELECT id,name,host,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color FROM sessions WHERE id = ?";
+const LIST_SQL: &str = "SELECT id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color FROM sessions ORDER BY group_path, name";
+const GET_SQL: &str = "SELECT id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color FROM sessions WHERE id = ?";
 
 impl SessionRepo {
     pub(crate) fn new(pool: SqlitePool) -> Self {
@@ -98,10 +132,10 @@ impl SessionRepo {
         let jump_chain = serde_json::to_string(&rec.jump_chain)
             .map_err(|e| StoreError::Corrupt(e.to_string()))?;
         sqlx::query(
-            "INSERT INTO sessions (id,name,host,port,username,auth_type,key_path,group_path,color,tags,command,jump_chain,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+            "INSERT INTO sessions (id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,color,tags,command,jump_chain,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
              ON CONFLICT(id) DO UPDATE SET
-               name=excluded.name, host=excluded.host, port=excluded.port,
+               name=excluded.name, kind=excluded.kind, host=excluded.host, shell=excluded.shell, workdir=excluded.workdir, port=excluded.port,
                username=excluded.username, auth_type=excluded.auth_type,
                key_path=excluded.key_path, group_path=excluded.group_path,
                color=excluded.color,
@@ -110,7 +144,10 @@ impl SessionRepo {
         )
         .bind(&rec.id)
         .bind(&rec.name)
+        .bind(rec.kind.as_str())
         .bind(&rec.host)
+        .bind(&rec.shell)
+        .bind(&rec.workdir)
         .bind(rec.port as i64)
         .bind(&rec.user)
         .bind(rec.auth_type.as_str())
@@ -271,7 +308,10 @@ fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<SessionRecord, StoreEr
     Ok(SessionRecord {
         id: row.get("id"),
         name: row.get("name"),
+        kind: SessionKind::parse(row.get("kind"))?,
         host: row.get("host"),
+        shell: row.get("shell"),
+        workdir: row.get("workdir"),
         port: row.get::<i64, _>("port") as u16,
         user: row.get("username"),
         auth_type: AuthType::parse(row.get("auth_type"))?,

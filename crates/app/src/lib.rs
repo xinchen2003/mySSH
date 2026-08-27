@@ -2,6 +2,7 @@
 //! 命令契约见 docs/design/03-ipc-contract.md（逐里程碑补齐）。
 
 mod files;
+mod local_pty;
 mod logging;
 mod monitor;
 mod sessions;

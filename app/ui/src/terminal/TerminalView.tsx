@@ -8,7 +8,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
-import { useAppStore, type Pane, type Tab } from '../state/app-store';
+import { isLocalTarget, useAppStore, type Pane, type Tab } from '../state/app-store';
 import { fitRegistry, reconnectRegistry, termRegistry } from '../term/registry';
 import { resolveTheme } from '../term/themes';
 import { readTerminalSettings } from '../state/apply-settings';
@@ -435,6 +435,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
     const term = termRegistry.get(pane.id);
     const s = useAppStore.getState();
     const isSession = tab.target.kind === 'session';
+    const isRemote = isSession && !isLocalTarget(tab.target);
     const paste = () => readClipboard();
     return [
       { label: '粘贴', icon: '⤵', onSelect: paste },
@@ -463,7 +464,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       {
         label: '打开 SFTP',
         icon: '⇅',
-        disabled: !isSession,
+        disabled: !isRemote,
         onSelect: () => {
           if (!s.sftpOpen[tab.id]) s.toggleSftp(tab.id);
           // 面板已开时定位到终端 cwd（SftpPanel 消费 navRequests，不入历史栈）

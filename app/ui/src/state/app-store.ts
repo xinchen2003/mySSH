@@ -108,6 +108,13 @@ function targetHasCommand(target: ConnectTarget): boolean {
   const rec = useAppStore.getState().sessions.find((r) => r.id === target.sessionId);
   return !!rec?.command;
 }
+/** 目标是否为本地会话（session 档案 kind==='local'）；spec/档案缺失一律按远程处理。
+ *  本地会话禁用：OSC 7 注入、initialCwd cd（POSIX 语法）、SFTP/监控/隧道等 SSH 专属功能 */
+export function isLocalTarget(target: ConnectTarget): boolean {
+  if (target.kind !== 'session') return false;
+  const rec = useAppStore.getState().sessions.find((r) => r.id === target.sessionId);
+  return rec?.kind === 'local';
+}
 
 interface AppStore {
   tabs: Tab[];
@@ -290,8 +297,10 @@ export const useAppStore = create<AppStore>((set, get) => {
           const p = tab?.panes[id];
           // shell 集成：每次连上（含重连，新 shell 进程）都注入 OSC 7 钩子；
           // 先于 initialCwd 的 cd，使 cd 后 cwd 即刻上报
-          if (tab && p && !targetHasCommand(tab.target)) injectOsc7(p.session);
-          if (p?.initialCwd && !ev.reconnected) {
+          // 本地会话是 Windows shell（cmd/PowerShell），POSIX 钩子与 cd 注入都会污染输入——整段跳过
+          if (tab && p && !targetHasCommand(tab.target) && !isLocalTarget(tab.target))
+            injectOsc7(p.session);
+          if (p?.initialCwd && !ev.reconnected && tab && !isLocalTarget(tab.target)) {
             const cwd = p.initialCwd;
             set((s) => ({
               tabs: s.tabs.map((t) =>

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { useAppStore } from '../state/app-store';
+import { isLocalTarget, useAppStore } from '../state/app-store';
 import { initBroadcastReceiver } from '../term/broadcast';
 import { useTransferStore } from '../state/transfer-store';
 import { keymapFromSettings } from '../term/keymap';
@@ -43,6 +43,8 @@ export function AppToolbar() {
 
   const activeTab = tabs.find((t) => t.id === activeId);
   const isSession = activeTab?.target.kind === 'session';
+  // 本地会话（kind==='local'）：SFTP/监控等 SSH 专属功能禁用；分屏/分离窗口/广播天然可用
+  const isRemote = isSession && !(activeTab && isLocalTarget(activeTab.target));
 
   // 快捷键提示：跟随设置中的方案/自定义绑定
   const bindings = keymapFromSettings(settings);
@@ -71,9 +73,9 @@ export function AppToolbar() {
 
       <ToolBtn
         label="SFTP 文件管理"
-        tooltip={`SFTP 文件管理（仅档案会话）${kb('sftp')}`}
+        tooltip={`SFTP 文件管理（仅远程会话）${kb('sftp')}`}
         active={!!activeTab && !!sftpOpen[activeTab.id]}
-        disabled={!isSession}
+        disabled={!isRemote}
         onClick={() => activeTab && toggleSftp(activeTab.id)}
       >
         📂
@@ -82,7 +84,7 @@ export function AppToolbar() {
         label="服务器监控"
         tooltip={`服务器监控（CPU/内存/网络/磁盘/进程）${kb('metrics')}`}
         active={!!activeTab && !!metricsOpen[activeTab.id]}
-        disabled={!isSession}
+        disabled={!isRemote}
         onClick={() => activeTab && toggleMetrics(activeTab.id)}
       >
         📈

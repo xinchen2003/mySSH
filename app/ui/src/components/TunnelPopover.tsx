@@ -97,6 +97,8 @@ export function TunnelPopover({
 
   // 按服务器分组（保持会话列表顺序；孤儿定义的会话已删 → 末组）
   const grouped = new Map<string, TunnelDef[]>();
+  // 隧道是 SSH 能力：新建默认目标排除本地会话
+  const sshSessions = sessions.filter((s) => s.kind !== 'local');
   for (const d of tunnelDefs) {
     const list = grouped.get(d.sessionId) ?? [];
     list.push(d);
@@ -149,8 +151,10 @@ export function TunnelPopover({
         <span className="flex-1" />
         <button
           className="shrink-0 rounded border border-neutral-700 px-2 py-0.5 text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
-          disabled={sessions.length === 0}
-          onClick={() => sessions.length > 0 && setEditor({ sessionId: sessions[0].id, def: null })}
+          disabled={sshSessions.length === 0}
+          onClick={() =>
+            sshSessions.length > 0 && setEditor({ sessionId: sshSessions[0].id, def: null })
+          }
         >
           ＋ 新建隧道
         </button>
