@@ -173,8 +173,6 @@ interface AppStore {
   connectOrActivate(sessionId: string, title: string): void;
   /** 标签分离：新窗口连接（TabBar ⧉ 与右键菜单共用） */
   connectInNewWindow(sessionId: string, title: string): void;
-  /** 连接（或激活）并打开 SFTP 面板 */
-  connectAndOpenSftp(sessionId: string, title: string): void;
   /** 复制服务器档案（新 id + 「副本」后缀） */
   duplicateSession(rec: SessionRecord): Promise<void>;
   /** 收藏切换（KV: sessions.favorites） */
@@ -451,12 +449,6 @@ export const useAppStore = create<AppStore>((set, get) => {
         dragDropEnabled: false,
       });
       void win.once('tauri://error', () => undefined);
-    },
-
-    connectAndOpenSftp: (sessionId, title) => {
-      get().connectOrActivate(sessionId, title);
-      const id = get().activeId;
-      if (id && !get().sftpOpen[id]) get().toggleSftp(id);
     },
 
     duplicateSession: async (rec) => {

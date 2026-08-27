@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react';
-import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../state/app-store';
 import { fuzzyMatchAny } from '../term/fuzzy';
@@ -19,7 +18,6 @@ import {
   readStringList,
   rewritePathOnDeleteKeep,
   rewritePathOnRename,
-  sshCommand,
   GROUP_KEYS,
   type VirtualView,
 } from '../state/groups';
@@ -31,8 +29,7 @@ type ConnectMode = 'connect' | 'new-tab';
 type Prompt =
   | { mode: 'group-new'; parent: string; input: string }
   | { mode: 'group-rename'; path: string; input: string }
-  | { mode: 'rename'; id: string; input: string }
-  | { mode: 'move-to'; ids: string[]; input: string };
+  | { mode: 'rename'; id: string; input: string };
 
 const VIRTUAL_LABELS: { id: VirtualView; label: string }[] = [
   { id: 'favorites', label: '收藏' },
@@ -313,19 +310,6 @@ export function Sidebar() {
   const sessionMenu = (rec: SessionRecord): MenuItem[] => {
     const fav = favorites.has(rec.id);
     return [
-      { label: '连接', icon: '▶', onSelect: () => connect(rec) },
-      { label: '在新标签连接', icon: '↗', onSelect: () => connect(rec, 'new-tab') },
-      {
-        label: '在新窗口连接',
-        icon: '⬈',
-        onSelect: () => s().connectInNewWindow(rec.id, rec.name),
-      },
-      {
-        label: '连接并打开 SFTP',
-        icon: '⇅',
-        onSelect: () => s().connectAndOpenSftp(rec.id, rec.name),
-      },
-      'separator',
       { label: '编辑', icon: '⚙', onSelect: () => openConnect(rec) },
       {
         label: '重命名…',
@@ -334,42 +318,9 @@ export function Sidebar() {
       },
       { label: '复制服务器', icon: '❐', onSelect: () => void s().duplicateSession(rec) },
       {
-        label: '移动到分组…',
-        icon: '➜',
-        onSelect: () => setPrompt({ mode: 'move-to', ids: [rec.id], input: rec.groupPath }),
-      },
-      {
         label: fav ? '取消收藏' : '添加收藏',
         icon: fav ? '☆' : '★',
         onSelect: () => s().toggleFavorite(rec.id),
-      },
-      'separator',
-      {
-        label: '复制主机地址',
-        icon: '⧉',
-        onSelect: () =>
-          void writeText(`${rec.username}@${rec.host}:${rec.port}`).then(
-            () => s().notify('已复制主机地址', 'success'),
-            (e) => s().notify(`复制失败: ${e}`, 'error'),
-          ),
-      },
-      {
-        label: '复制 SSH 命令',
-        icon: '⧉',
-        onSelect: () =>
-          void writeText(sshCommand(rec, sessions)).then(
-            () => s().notify('已复制 SSH 命令', 'success'),
-            (e) => s().notify(`复制失败: ${e}`, 'error'),
-          ),
-      },
-      {
-        label: '导出（复制 JSON）',
-        icon: '⧉',
-        onSelect: () =>
-          void writeText(JSON.stringify(rec, null, 2)).then(
-            () => s().notify('会话 JSON 已复制到剪贴板', 'success'),
-            (e) => s().notify(`导出失败: ${e}`, 'error'),
-          ),
       },
       'separator',
       { label: '删除', icon: '🗑', danger: true, onSelect: () => s().requestDeleteSession(rec) },
@@ -378,26 +329,10 @@ export function Sidebar() {
 
   const batchMenu = (ids: string[]): MenuItem[] => [
     {
-      label: `移动到分组…（${ids.length}）`,
-      icon: '➜',
-      onSelect: () => setPrompt({ mode: 'move-to', ids, input: '' }),
-    },
-    {
       label: `添加收藏（${ids.length}）`,
       icon: '★',
       onSelect: () => {
         for (const id of ids) if (!favorites.has(id)) s().toggleFavorite(id);
-      },
-    },
-    {
-      label: `导出（复制 JSON，${ids.length}）`,
-      icon: '⧉',
-      onSelect: () => {
-        const recs = sessions.filter((x) => ids.includes(x.id));
-        void writeText(JSON.stringify(recs, null, 2)).then(
-          () => s().notify(`已复制 ${recs.length} 台服务器 JSON`, 'success'),
-          (e) => s().notify(`导出失败: ${e}`, 'error'),
-        );
       },
     },
     'separator',
@@ -880,24 +815,6 @@ export function Sidebar() {
                 />
               </>
             )}
-            {prompt.mode === 'move-to' && (
-              <>
-                <div className="mb-2">移动 {prompt.ids.length} 台服务器到分组（留空 = 未分组）</div>
-                <input
-                  className="mb-2 w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
-                  placeholder="如：生产/Web"
-                  list="myssh-group-paths"
-                  value={prompt.input}
-                  onChange={(e) => setPrompt({ ...prompt, input: e.target.value })}
-                  autoFocus
-                />
-                <datalist id="myssh-group-paths">
-                  {collectGroupPaths(tree).map((p) => (
-                    <option key={p} value={p} />
-                  ))}
-                </datalist>
-              </>
-            )}
             <div className="flex justify-end gap-2">
               <button
                 className="rounded px-2 py-1 text-neutral-400 hover:bg-neutral-800"
@@ -913,7 +830,6 @@ export function Sidebar() {
                   if (p.mode === 'group-new') createGroup(p.parent, p.input);
                   else if (p.mode === 'group-rename') void renameGroup(p.path, p.input);
                   else if (p.mode === 'rename') void renameSession(p.id, p.input);
-                  else void moveSessions(p.ids, p.input);
                 }}
               >
                 确定
