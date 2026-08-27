@@ -10,6 +10,7 @@ Tauri 2（Rust 后端 + WebView2）+ React 前端。
 
 - **终端**：多标签 + 任意方向分屏、标签拖拽重排/分离为独立窗口、断线自动重连、真彩色 / Unicode 宽字符 / 鼠标上报 / 括号粘贴 / 搜索 / 超链接；终端间输入广播（可选按服务器过滤）
 - **会话管理**：分组树（嵌套分组、拖拽移动）、标签、收藏、模糊搜索、命令面板（Ctrl+Shift+P）；密码 / 公钥（OpenSSH + .ppk）/ keyboard-interactive（2FA）/ agent 认证；多级跳板机；known_hosts 首次连接与密钥变更弹窗确认
+- **本地会话**：ConPTY 承载本机终端（PowerShell / PowerShell 7 / CMD），与 SSH 会话并列；支持自定义启动目录与启动命令（如连接后自动拉起 AI agent CLI）；共用多标签 / 分屏 / 分离窗口 / 输入广播，SSH 专属功能（SFTP / 监控 / 隧道）自动禁用
 - **凭据安全**：Windows DPAPI 加密保险库，凭据永不明文落盘、不出现在日志与导出明文包中
 - **隧道**：本地 / 远程 / 动态 SOCKS5 端口转发，开机自启、随会话自动建立、断线自动恢复；独立的 SSH 连接（与交互终端传输层隔离，大流量不卡终端）
 - **SFTP**：左右分栏文件管理器，本地/远程双向拖拽、OS 文件直接拖入上传（含文件夹递归）；队列化传输（并发控制、断点续传、失败重试）、跨会话传输历史；与终端当前目录联动（OSC 7）；远程文件直编（本地编辑器打开、保存自动回传）
@@ -25,6 +26,7 @@ Tauri 2（Rust 后端 + WebView2）+ React 前端。
 | 前端 | TypeScript + React 19 + Vite + zustand + Tailwind 4 |
 | 终端渲染 | xterm.js 6 + WebGL addon（canvas 降级） |
 | SSH | russh 0.62 / russh-sftp 2.4 |
+| 本地终端 | portable-pty（ConPTY） |
 | 存储 | SQLite（sqlx）+ DPAPI 凭据保险库 |
 | 异步 | tokio |
 

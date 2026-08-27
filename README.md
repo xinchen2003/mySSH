@@ -9,6 +9,7 @@ Built with Tauri 2 (Rust backend + WebView2) and a React frontend.
 ## Features
 
 - **Terminal**: tabs, split panes in any direction, drag tabs out into separate windows, auto-reconnect, true color / wide Unicode / mouse reporting / bracketed paste / search / hyperlinks; optional input broadcasting across terminals (filterable by server)
+- **Local sessions**: native Windows shells (PowerShell / PowerShell 7 / CMD) via ConPTY alongside SSH sessions — custom startup directory and startup command (e.g. launch an AI agent CLI on connect); shares tabs, splits, detached windows and input broadcasting; SSH-only features (SFTP / monitoring / tunnels) are automatically disabled
 - **Sessions**: nested group tree (drag & drop), tags, favorites, fuzzy search, command palette (Ctrl+Shift+P); password / public-key (OpenSSH & .ppk) / keyboard-interactive (2FA) / agent auth; multi-hop ProxyJump; known_hosts confirmation on first connect and key change
 - **Credential safety**: Windows DPAPI vault — credentials never hit disk in plaintext, never appear in logs or plaintext exports
 - **Tunnels**: local / remote / dynamic SOCKS5 forwarding, auto-start, auto-recover on disconnect; runs on a dedicated SSH connection isolated from interactive terminals
@@ -25,6 +26,7 @@ Built with Tauri 2 (Rust backend + WebView2) and a React frontend.
 | Frontend | TypeScript + React 19 + Vite + zustand + Tailwind 4 |
 | Terminal | xterm.js 6 + WebGL addon (canvas fallback) |
 | SSH | russh 0.62 / russh-sftp 2.4 |
+| Local shell | portable-pty (ConPTY) |
 | Storage | SQLite (sqlx) + DPAPI credential vault |
 | Async | tokio |
 
