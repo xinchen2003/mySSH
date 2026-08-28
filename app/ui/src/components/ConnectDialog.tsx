@@ -107,7 +107,8 @@ function ConnectForm({
   const [jumpChain, setJumpChain] = useState<string[]>(initial?.jumpChain ?? []);
   const [keyPath, setKeyPath] = useState(initial?.keyPath ?? '');
   const [passphrase, setPassphrase] = useState('');
-  const [save, setSave] = useState(initial !== null);
+  // 本对话框是完整编辑器，默认落库（一次性连接走 QuickConnectDialog）；默认保存后名称/颜色设置可见
+  const [save, setSave] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [test, setTest] = useState<TestState>({ phase: 'idle' });
@@ -155,7 +156,8 @@ function ConnectForm({
     }
   };
 
-  const submit = async () => {
+  /** connectAfter=false 时仅落库不发起连接（服务器暂不可达也应能保存） */
+  const submit = async (connectAfter: boolean) => {
     setError(null);
     setBusy(true);
     try {
@@ -186,17 +188,17 @@ function ConnectForm({
         connectBySession(id, record.name);
         return;
       }
-      let auth: AuthSpec;
-      if (kind === 'password') auth = { type: 'password', password };
-      else if (kind === 'agent') auth = { type: 'agent' };
-      else if (kind === 'keyboardInteractive') auth = { type: 'keyboardInteractive' };
-      else {
-        if (!keyPath.trim()) throw new Error('请填写私钥文件路径');
-        const keyPem = await invoke<string>('read_private_key', { path: keyPath.trim() });
-        auth = { type: 'publicKey', keyPem, passphrase: passphrase || null };
-      }
-
       if (!save) {
+        // 临时连接（不落库）：认证材料现取，公钥需读文件
+        let auth: AuthSpec;
+        if (kind === 'password') auth = { type: 'password', password };
+        else if (kind === 'agent') auth = { type: 'agent' };
+        else if (kind === 'keyboardInteractive') auth = { type: 'keyboardInteractive' };
+        else {
+          if (!keyPath.trim()) throw new Error('请填写私钥文件路径');
+          const keyPem = await invoke<string>('read_private_key', { path: keyPath.trim() });
+          auth = { type: 'publicKey', keyPem, passphrase: passphrase || null };
+        }
         connect({ host: host.trim(), port, user: user.trim(), auth });
         return;
       }
@@ -225,13 +227,15 @@ function ConnectForm({
         createdAt: initial?.createdAt ?? '',
         updatedAt: '',
       };
+      // 保存路径不读私钥、不要求可达：认证在真正连接时才解析
       await invoke('session_upsert', { record });
       if (kind === 'password' && password)
         await invoke('cred_set', { sessionId: id, kind: 'password', secret: password });
       if (kind === 'publicKey' && passphrase)
         await invoke('cred_set', { sessionId: id, kind: 'keyPassphrase', secret: passphrase });
       await loadSessions();
-      connectBySession(id, record.name);
+      if (connectAfter) connectBySession(id, record.name);
+      else close();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -579,9 +583,18 @@ function ConnectForm({
           >
             取消
           </button>
+          {sessKind === 'ssh' && save && (
+            <button
+              className="rounded border border-neutral-700 px-3 py-1 text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+              onClick={() => void submit(false)}
+              disabled={busy || !host.trim() || !user.trim()}
+            >
+              仅保存
+            </button>
+          )}
           <button
             className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500 disabled:opacity-50"
-            onClick={() => void submit()}
+            onClick={() => void submit(true)}
             disabled={busy || (sessKind === 'ssh' && (!host.trim() || !user.trim()))}
           >
             {sessKind === 'local' ? '保存并打开' : save ? '保存并连接' : '连接'}
