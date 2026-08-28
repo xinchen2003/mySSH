@@ -179,6 +179,19 @@ export function TunnelPopover({
             <div className="mt-1 mb-0.5 font-semibold text-neutral-300">{sessionLabel(sid)}</div>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse whitespace-nowrap">
+                <thead className="border-b border-neutral-800 text-neutral-500">
+                  <tr>
+                    <th className="py-0.5 pr-3 text-left font-normal">名称</th>
+                    <th className="pr-3 text-left font-normal">类型</th>
+                    <th className="pr-3 text-left font-normal">地址</th>
+                    <th className="pr-3 text-left font-normal">状态</th>
+                    <th className="pr-3 text-left font-normal">启动方式</th>
+                    <th className="pr-3 text-left font-normal">速率</th>
+                    <th className="pr-3 text-left font-normal">连接</th>
+                    <th className="pr-3 text-left font-normal">错误</th>
+                    <th className="text-left font-normal">操作</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {defs.map((d) => {
                     const rt = runtimeById.get(d.id);
@@ -215,10 +228,10 @@ export function TunnelPopover({
                         <td className="pr-3 text-neutral-400">
                           {START_MODE_LABEL[startModeOf(d)]}
                         </td>
-                        <td className="pr-3">
+                        <td className="pr-3 tabular-nums">
                           {rt ? `↑${fmtRate(rt.rateUp)} ↓${fmtRate(rt.rateDown)}` : '—'}
                         </td>
-                        <td className="pr-3">{rt ? `${rt.activeConns} 连接` : '—'}</td>
+                        <td className="pr-3 tabular-nums">{rt ? `${rt.activeConns} 连接` : '—'}</td>
                         <td
                           className="max-w-48 truncate pr-3 text-red-400"
                           title={rt?.lastError ?? undefined}
@@ -275,6 +288,15 @@ export function TunnelPopover({
           <div className="mt-1 mb-0.5 font-semibold text-neutral-300">临时（未持久化）</div>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse whitespace-nowrap">
+              <thead className="border-b border-neutral-800 text-neutral-500">
+                <tr>
+                  <th className="py-0.5 pr-3 text-left font-normal">类型</th>
+                  <th className="pr-3 text-left font-normal">地址</th>
+                  <th className="pr-3 text-left font-normal">状态</th>
+                  <th className="pr-3 text-left font-normal">速率</th>
+                  <th className="text-left font-normal">操作</th>
+                </tr>
+              </thead>
               <tbody>
                 {adhoc.map((t) => (
                   <tr key={t.tunnelId} className="border-t border-neutral-800/60 text-neutral-400">
@@ -287,7 +309,7 @@ export function TunnelPopover({
                       {t.target ? ` → ${t.target}` : ''}
                     </td>
                     <td className="pr-3">{STATUS_LABEL[t.status] ?? t.status}</td>
-                    <td className="pr-3">
+                    <td className="pr-3 tabular-nums">
                       ↑{fmtRate(t.rateUp)} ↓{fmtRate(t.rateDown)}
                     </td>
                     <td>

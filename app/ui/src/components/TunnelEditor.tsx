@@ -206,6 +206,8 @@ export function TunnelEditor({
           <span className="mb-0.5 block text-xs text-neutral-400">绑定地址</span>
           <input
             className={input}
+            spellCheck={false}
+            autoComplete="off"
             value={draft.bindHost}
             onChange={(e) => patch({ bindHost: e.target.value })}
           />
@@ -234,6 +236,8 @@ export function TunnelEditor({
             <span className="mb-0.5 block text-xs text-neutral-400">目标地址</span>
             <input
               className={input}
+              spellCheck={false}
+              autoComplete="off"
               value={draft.targetHost}
               onChange={(e) => patch({ targetHost: e.target.value })}
             />
@@ -309,7 +313,11 @@ export function TunnelEditor({
         </div>
       )}
 
-      {error && <p className="mb-2 text-xs text-red-400">{error}</p>}
+      {error && (
+        <p aria-live="polite" className="mb-2 text-xs text-red-400">
+          {error}
+        </p>
+      )}
 
       <div className="flex justify-end gap-2">
         <button

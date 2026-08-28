@@ -342,8 +342,9 @@ export function CommandPalette() {
           <input
             ref={inputRef}
             autoFocus
-            className="w-full border-b border-neutral-800 bg-neutral-900 px-4 py-3 text-sm text-neutral-200 outline-none"
+            className="w-full border-b border-neutral-800 bg-neutral-900 px-4 py-3 text-sm text-neutral-200 outline-none focus-visible:ring-1 focus-visible:ring-neutral-500"
             placeholder={pending.input?.placeholder}
+            aria-label={pending.input?.placeholder ?? '命令参数输入'}
             type={pending.input?.secret ? 'password' : 'text'}
             value={subInput}
             onChange={(e) => setSubInput(e.target.value)}
@@ -353,8 +354,9 @@ export function CommandPalette() {
           <input
             ref={inputRef}
             autoFocus
-            className="w-full border-b border-neutral-800 bg-neutral-900 px-4 py-3 text-sm text-neutral-200 outline-none"
+            className="w-full border-b border-neutral-800 bg-neutral-900 px-4 py-3 text-sm text-neutral-200 outline-none focus-visible:ring-1 focus-visible:ring-neutral-500"
             placeholder="检索会话、分组或命令…"
+            aria-label="检索会话、分组或命令"
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
@@ -364,7 +366,11 @@ export function CommandPalette() {
           />
         )}
         {!pending && (
-          <ul className="max-h-80 overflow-y-auto py-1">
+          <ul
+            className="max-h-80 overflow-y-auto py-1"
+            role="listbox"
+            aria-activedescendant={items[index] ? `cp-opt-${index}` : undefined}
+          >
             {items.length === 0 && <li className="px-4 py-3 text-xs text-neutral-600">无匹配</li>}
             {items.map((item, i) => (
               <li
@@ -385,17 +391,20 @@ export function CommandPalette() {
                   className={`flex w-full items-center justify-between px-4 py-2 text-left text-sm ${
                     i === index ? 'bg-blue-600/30 text-neutral-100' : 'text-neutral-300'
                   }`}
+                  role="option"
+                  aria-selected={i === index}
+                  id={`cp-opt-${i}`}
                   onMouseEnter={() => setIndex(i)}
                   onClick={() => execute(item)}
                 >
-                  <span>
+                  <span className="min-w-0 truncate">
                     {item.kind === 'session'
                       ? item.label
                       : item.kind === 'group'
                         ? `📁 ${item.path}`
                         : item.action.label}
                   </span>
-                  <span className="text-xs text-neutral-500">
+                  <span className="shrink-0 text-xs text-neutral-500">
                     {item.kind === 'session'
                       ? item.hint
                       : item.kind === 'group'

@@ -216,6 +216,7 @@ export function App() {
           <button
             className="rounded px-1 hover:bg-neutral-800"
             onClick={toggleSidebar}
+            aria-label="会话侧栏"
             title="会话侧栏"
           >
             ☰

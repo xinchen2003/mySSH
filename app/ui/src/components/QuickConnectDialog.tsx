@@ -4,7 +4,7 @@ import { useAppStore } from '../state/app-store';
 import { GROUP_KEYS, readStringList } from '../state/groups';
 
 const inputCls =
-  'w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-200 outline-none focus:border-neutral-500';
+  'w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-200 outline-none focus:border-neutral-500 focus-visible:ring-1 focus-visible:ring-neutral-500';
 
 /**
  * 快速连接（12.5 空态）：不保存档案的临时连接。
@@ -82,6 +82,8 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
           id="qc-host"
           data-autofocus
           className={inputCls}
+          autoComplete="off"
+          spellCheck={false}
           placeholder="192.168.1.10 或 server.example.com"
           value={host}
           onChange={(e) => setHost(e.target.value)}
@@ -90,6 +92,7 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
         <input
           id="qc-port"
           className={inputCls}
+          inputMode="numeric"
           value={port}
           onChange={(e) => setPort(e.target.value)}
         />
@@ -97,6 +100,8 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
         <input
           id="qc-user"
           className={inputCls}
+          autoComplete="username"
+          spellCheck={false}
           value={user}
           onChange={(e) => setUser(e.target.value)}
         />
@@ -105,12 +110,17 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
           id="qc-pass"
           type="password"
           className={inputCls}
+          autoComplete="current-password"
           placeholder="留空则连接时询问"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
       </div>
-      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+      {error && (
+        <p aria-live="polite" className="mt-2 text-xs text-red-400">
+          {error}
+        </p>
+      )}
       <p className="mt-2 text-xs text-neutral-600">临时连接，不保存为服务器档案。</p>
       <div className="mt-3 flex justify-end gap-2 text-xs">
         <button

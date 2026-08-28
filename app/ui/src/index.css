@@ -120,3 +120,15 @@ html[data-ui='light'] .hover\:text-neutral-100:hover {
 .myssh-flash-fail {
   animation: myssh-flash-fail 1.2s ease-out;
 }
+
+/* 减少动态（无障碍）：停掉全部自定义装饰动画与 Tailwind pulse */
+@media (prefers-reduced-motion: reduce) {
+  .myssh-stripes,
+  .myssh-row-in,
+  .myssh-flash-done,
+  .myssh-flash-fail,
+  .myssh-progress-running,
+  .animate-pulse {
+    animation: none;
+  }
+}

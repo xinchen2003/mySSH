@@ -45,9 +45,9 @@ export function StatusBar() {
       role="status"
       aria-label="状态栏"
     >
-      <span>连接 {live}</span>
-      <span>隧道 {runningTunnels}</span>
-      {transferActive !== null && <span>传输 {transferActive}</span>}
+      <span className="tabular-nums">连接 {live}</span>
+      <span className="tabular-nums">隧道 {runningTunnels}</span>
+      {transferActive !== null && <span className="tabular-nums">传输 {transferActive}</span>}
       <span className="ml-auto flex items-center gap-1.5 truncate">
         {activeTab && activePane && (
           <>
@@ -60,7 +60,7 @@ export function StatusBar() {
                     : 'bg-neutral-600'
               }`}
             />
-            <span className="truncate">{activeTab.title}</span>
+            <span className="min-w-0 truncate">{activeTab.title}</span>
             <span className="text-neutral-600">{PANE_STATE_TEXT[activePane.state]}</span>
           </>
         )}

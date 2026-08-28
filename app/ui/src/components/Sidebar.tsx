@@ -507,7 +507,11 @@ export function Sidebar() {
         className={`group flex cursor-pointer items-center rounded px-1 py-1 outline-none ${
           selected ? 'bg-neutral-700' : 'hover:bg-neutral-800 focus:bg-neutral-800'
         }`}
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
+        style={{
+          paddingLeft: `${depth * 12 + 8}px`,
+          contentVisibility: 'auto',
+          containIntrinsicSize: 'auto 44px',
+        }}
         title={
           rec.kind === 'local'
             ? `本地终端${rec.workdir ? ` · ${rec.workdir}` : ''}`
@@ -543,6 +547,7 @@ export function Sidebar() {
           <button
             className="rounded px-1 text-xs text-neutral-400 hover:text-green-400"
             title="连接"
+            aria-label="连接"
             onClick={(e) => {
               e.stopPropagation();
               connect(rec);
@@ -562,6 +567,7 @@ export function Sidebar() {
           <button
             className="rounded px-1 text-xs text-neutral-500 hover:text-neutral-200"
             title="更多操作"
+            aria-label="更多操作"
             onClick={(e) => {
               e.stopPropagation();
               selectForMenu(rec);
@@ -632,6 +638,7 @@ export function Sidebar() {
           <button
             className="rounded px-0.5 hover:text-neutral-200"
             title="新建子分组"
+            aria-label="新建子分组"
             onClick={() => setPrompt({ mode: 'group-new', parent: path, input: '' })}
           >
             ＋
@@ -639,6 +646,7 @@ export function Sidebar() {
           <button
             className="rounded px-0.5 hover:text-neutral-200"
             title="重命名"
+            aria-label="重命名分组"
             onClick={() =>
               setPrompt({ mode: 'group-rename', path, input: path.split('/').pop() ?? path })
             }
@@ -648,6 +656,7 @@ export function Sidebar() {
           <button
             className="rounded px-0.5 hover:text-red-400"
             title="删除分组"
+            aria-label="删除分组"
             onClick={() => {
               if (count > 0) setGroupDel({ path, count });
               else {
@@ -673,6 +682,17 @@ export function Sidebar() {
       <div
         className="absolute top-0 right-0 z-20 h-full w-1 cursor-col-resize hover:bg-blue-500/50"
         onPointerDown={startResize}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整侧栏宽度"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+          e.preventDefault();
+          const delta = e.key === 'ArrowRight' ? 16 : -16;
+          const next = Math.min(SIDEBAR_W.max, Math.max(SIDEBAR_W.min, width + delta));
+          void setSetting('ui.sidebarWidth', next);
+        }}
       />
       <div className="px-3 py-2 text-xs text-neutral-400">
         <span>会话</span>
@@ -682,6 +702,7 @@ export function Sidebar() {
         <input
           className="w-full rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 outline-none placeholder:text-neutral-600 focus:border-neutral-600"
           placeholder="搜索会话…"
+          aria-label="搜索会话"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -714,6 +735,7 @@ export function Sidebar() {
 
       <div
         className={`flex-1 overflow-y-auto px-1 pb-2 ${dropTarget === '' ? 'ring-1 ring-inset ring-blue-500' : ''}`}
+        role="listbox"
         onDragOver={(e) => {
           e.preventDefault();
           setDropTarget('');
@@ -834,7 +856,15 @@ export function Sidebar() {
       {/* 输入小弹层 */}
       {prompt && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60">
-          <div className="w-72 rounded-lg border border-neutral-700 bg-neutral-900 p-3 text-xs text-neutral-200 shadow-xl">
+          <div
+            className="w-72 rounded-lg border border-neutral-700 bg-neutral-900 p-3 text-xs text-neutral-200 shadow-xl"
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setPrompt(null);
+              }
+            }}
+          >
             {(prompt.mode === 'group-new' || prompt.mode === 'group-rename') && (
               <>
                 <div className="mb-2">
@@ -845,6 +875,7 @@ export function Sidebar() {
                 <input
                   className="mb-2 w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
                   placeholder="分组名（单层，不含 /）"
+                  aria-label="分组名"
                   value={prompt.input}
                   onChange={(e) => setPrompt({ ...prompt, input: e.target.value })}
                   autoFocus
@@ -857,6 +888,7 @@ export function Sidebar() {
                 <input
                   className="mb-2 w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
                   placeholder="新名称"
+                  aria-label="新名称"
                   value={prompt.input}
                   onChange={(e) => setPrompt({ ...prompt, input: e.target.value })}
                   autoFocus

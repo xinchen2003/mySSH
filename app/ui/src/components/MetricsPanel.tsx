@@ -18,11 +18,18 @@ interface Series {
   max?: number;
 }
 
+/** 数字部分格式化（模块级缓存；观感同 toFixed(1)/toFixed(0)） */
+const num1 = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+const num0 = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+
 const fmtBps = (v: number): string => {
-  if (v >= 1 << 30) return `${(v / (1 << 30)).toFixed(1)}G`;
-  if (v >= 1 << 20) return `${(v / (1 << 20)).toFixed(1)}M`;
-  if (v >= 1024) return `${(v / 1024).toFixed(0)}K`;
-  return `${v.toFixed(0)}`;
+  if (v >= 1 << 30) return `${num1.format(v / (1 << 30))}G`;
+  if (v >= 1 << 20) return `${num1.format(v / (1 << 20))}M`;
+  if (v >= 1024) return `${num0.format(v / 1024)}K`;
+  return num0.format(v);
 };
 
 const sumOpt = (xs: (number | null | undefined)[]): number | null =>
@@ -214,6 +221,7 @@ export function MetricsPanel({ tabId }: { tabId: string }) {
             value={intervalMs}
             onChange={(e) => setIntervalMs(Number(e.target.value))}
             title="采集间隔"
+            aria-label="采集间隔"
           >
             <option value={2000}>2s</option>
             <option value={5000}>5s</option>
@@ -247,10 +255,10 @@ export function MetricsPanel({ tabId }: { tabId: string }) {
           <tbody>
             {(latest?.procs ?? []).slice(0, 15).map((p) => (
               <tr key={p.pid} className="border-t border-neutral-800/50">
-                <td className="px-2">{p.pid}</td>
-                <td className="px-2">{fmtBps(p.rssKb * 1024)}</td>
-                <td className="px-2">{p.cpuPct.toFixed(1)}</td>
-                <td className="px-2">{p.memPct.toFixed(1)}</td>
+                <td className="px-2 tabular-nums">{p.pid}</td>
+                <td className="px-2 tabular-nums">{fmtBps(p.rssKb * 1024)}</td>
+                <td className="px-2 tabular-nums">{p.cpuPct.toFixed(1)}</td>
+                <td className="px-2 tabular-nums">{p.memPct.toFixed(1)}</td>
                 <td className="truncate px-2" title={p.comm}>
                   {p.comm}
                 </td>

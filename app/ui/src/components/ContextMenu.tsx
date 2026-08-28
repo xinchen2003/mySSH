@@ -43,6 +43,10 @@ export function ContextMenu({
     const ny = Math.min(y, window.innerHeight - r.height - 4);
     setPos({ x: Math.max(4, nx), y: Math.max(4, ny) });
   }, [x, y]);
+  // 打开即聚焦容器（tabIndex=-1），配合 aria-activedescendant 暴露当前项
+  useEffect(() => {
+    ref.current?.focus();
+  }, []);
 
   const run = useCallback(
     (idx: number) => {
@@ -90,16 +94,19 @@ export function ContextMenu({
     <div
       ref={ref}
       role="menu"
-      className="fixed z-50 min-w-40 rounded border border-neutral-700 bg-neutral-900 py-1 shadow-xl"
+      tabIndex={-1}
+      aria-activedescendant={active >= 0 ? `myssh-menu-item-${active}` : undefined}
+      className="fixed z-50 min-w-40 rounded outline-none border border-neutral-700 bg-neutral-900 py-1 shadow-xl"
       style={{ left: pos.x, top: pos.y }}
     >
       {items.map((it, i) =>
         it === 'separator' ? (
-          <div key={i} className="my-1 border-t border-neutral-800" />
+          <div key={i} role="separator" className="my-1 border-t border-neutral-800" />
         ) : (
           <button
             key={i}
             role="menuitem"
+            id={`myssh-menu-item-${i}`}
             aria-disabled={it.disabled || undefined}
             disabled={it.disabled}
             className={`flex w-full items-center gap-2 px-3 py-1.5 text-left ${

@@ -128,9 +128,15 @@ export function isWildcardBind(host: string): boolean {
   return h === '0.0.0.0' || h === '::' || h === '*';
 }
 
+/** 速率数字部分格式化（模块级缓存；观感同 toFixed(1)） */
+const rateNum = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+
 export function fmtRate(bytesPerSec: number): string {
-  if (bytesPerSec >= 1 << 20) return `${(bytesPerSec / (1 << 20)).toFixed(1)} MB/s`;
-  if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+  if (bytesPerSec >= 1 << 20) return `${rateNum.format(bytesPerSec / (1 << 20))} MB/s`;
+  if (bytesPerSec >= 1024) return `${rateNum.format(bytesPerSec / 1024)} KB/s`;
   return `${bytesPerSec} B/s`;
 }
 

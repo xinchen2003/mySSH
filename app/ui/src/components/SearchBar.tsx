@@ -39,8 +39,9 @@ export function SearchBar({
     <div className="absolute top-1 right-3 z-10 flex items-center gap-1 rounded border border-neutral-700 bg-neutral-900/95 px-2 py-1 shadow-lg">
       <input
         ref={inputRef}
-        className="w-48 rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-200 outline-none"
+        className="w-48 rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-200 outline-none focus-visible:ring-1 focus-visible:ring-neutral-500"
         placeholder="搜索回滚…"
+        aria-label="搜索终端输出"
         onChange={() => find('next')}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
@@ -76,7 +77,11 @@ export function SearchBar({
       >
         ⌗词
       </button>
-      <span className="min-w-10 text-center text-xs text-neutral-500" data-testid="search-count">
+      <span
+        className="min-w-10 text-center text-xs tabular-nums text-neutral-500"
+        aria-live="polite"
+        data-testid="search-count"
+      >
         {results
           ? results.count === 0 || results.index < 0
             ? '无结果'
@@ -87,6 +92,7 @@ export function SearchBar({
         className="px-1 text-xs text-neutral-400 hover:text-neutral-100"
         onClick={() => find('prev')}
         title="上一个 (Shift+Enter)"
+        aria-label="上一个"
       >
         ↑
       </button>
@@ -94,6 +100,7 @@ export function SearchBar({
         className="px-1 text-xs text-neutral-400 hover:text-neutral-100"
         onClick={() => find('next')}
         title="下一个 (Enter)"
+        aria-label="下一个"
       >
         ↓
       </button>
@@ -101,6 +108,7 @@ export function SearchBar({
         className="px-1 text-xs text-neutral-400 hover:text-neutral-100"
         onClick={onClose}
         title="关闭 (Esc)"
+        aria-label="关闭搜索"
       >
         ×
       </button>

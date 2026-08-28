@@ -109,7 +109,7 @@ export function Dialog({
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        className={panelClass}
+        className={`overscroll-contain ${panelClass ?? ''}`}
         onClick={(e) => e.stopPropagation()}
       >
         {children}

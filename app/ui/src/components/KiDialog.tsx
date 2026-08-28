@@ -48,6 +48,8 @@ function KiForm({ pending }: { pending: KiChallengeFrame }) {
             <input
               className="w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
               type={p.echo ? 'text' : 'password'}
+              spellCheck={false}
+              autoComplete={p.echo ? 'one-time-code' : 'current-password'}
               value={answers[i] ?? ''}
               onChange={(e) =>
                 setAnswers((prev) => prev.map((a, j) => (j === i ? e.target.value : a)))

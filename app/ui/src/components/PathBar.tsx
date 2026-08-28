@@ -128,16 +128,22 @@ export function PathBar(p: Props) {
   const btn = 'rounded px-1 text-neutral-400 hover:bg-neutral-800 disabled:opacity-30';
   return (
     <div className="flex items-center gap-1 border-b border-neutral-800 px-2 py-1 text-xs text-neutral-500">
-      <button className={btn} onClick={p.onBack} disabled={!p.canBack} title="后退">
+      <button
+        className={btn}
+        onClick={p.onBack}
+        disabled={!p.canBack}
+        title="后退"
+        aria-label="后退"
+      >
         ←
       </button>
-      <button className={btn} onClick={p.onFwd} disabled={!p.canFwd} title="前进">
+      <button className={btn} onClick={p.onFwd} disabled={!p.canFwd} title="前进" aria-label="前进">
         →
       </button>
-      <button className={btn} onClick={p.onUp} title="上一级">
+      <button className={btn} onClick={p.onUp} title="上一级" aria-label="上一级">
         ↑
       </button>
-      <button className={btn} onClick={p.onRefresh} title="刷新">
+      <button className={btn} onClick={p.onRefresh} title="刷新" aria-label="刷新">
         ⟳
       </button>
       {editing ? (
@@ -189,6 +195,8 @@ export function PathBar(p: Props) {
               {sugs.map((s, i) => (
                 <div
                   key={s}
+                  role="option"
+                  aria-selected={i === activeSug}
                   className={`cursor-pointer truncate px-2 py-0.5 font-mono ${
                     i === activeSug
                       ? 'bg-neutral-700 text-neutral-100'
@@ -210,19 +218,21 @@ export function PathBar(p: Props) {
           {error && <span className="mt-0.5 text-red-400">路径无效或不可读</span>}
         </span>
       ) : (
-        <span
-          className="min-w-0 flex-1 cursor-text truncate rounded px-1 py-0.5 font-mono text-neutral-400 hover:bg-neutral-800"
+        <button
+          type="button"
+          className="min-w-0 flex-1 cursor-text truncate rounded px-1 py-0.5 text-left font-mono text-neutral-400 hover:bg-neutral-800"
           title={`${p.path || p.placeholder}（点击编辑）`}
           onClick={() => setDraft(p.path)}
         >
           {p.path || p.placeholder}
-        </span>
+        </button>
       )}
       <button
         className={btn}
         onClick={copyPath}
         disabled={!p.path}
         title={copied ? '已复制' : '复制当前路径'}
+        aria-label={copied ? '已复制' : '复制当前路径'}
       >
         {copied ? '✓' : '⧉'}
       </button>

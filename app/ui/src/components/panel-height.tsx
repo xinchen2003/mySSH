@@ -7,6 +7,11 @@ import { useAppStore } from '../state/app-store';
 export const PANEL_MIN_H = 140;
 export const PANEL_MAX_H = 600;
 
+/** 高度夹取：PANEL_MIN_H..PANEL_MAX_H（拖拽与键盘调幅共用） */
+function clampH(h: number): number {
+  return Math.min(PANEL_MAX_H, Math.max(PANEL_MIN_H, h));
+}
+
 export function usePanelHeight(settingKey: string, defaultH: number) {
   const saved = useAppStore((s) => s.settings[settingKey]);
   const setSetting = useAppStore((s) => s.setSetting);
@@ -23,7 +28,7 @@ export function usePanelHeight(settingKey: string, defaultH: number) {
         if (!d) return;
         // 拖拽条在面板顶边：向上拖 = 变高
         const next = d.startH + (d.startY - ev.clientY);
-        setHeight(Math.min(PANEL_MAX_H, Math.max(PANEL_MIN_H, next)));
+        setHeight(clampH(next));
       };
       const up = (ev: PointerEvent) => {
         window.removeEventListener('pointermove', move);
@@ -31,10 +36,7 @@ export function usePanelHeight(settingKey: string, defaultH: number) {
         const d = dragRef.current;
         dragRef.current = null;
         if (!d) return;
-        const next = Math.min(
-          PANEL_MAX_H,
-          Math.max(PANEL_MIN_H, d.startH + (d.startY - ev.clientY)),
-        );
+        const next = clampH(d.startH + (d.startY - ev.clientY));
         setHeight(next);
         setSetting(settingKey, next);
       };
@@ -44,10 +46,28 @@ export function usePanelHeight(settingKey: string, defaultH: number) {
     [height, settingKey, setSetting],
   );
 
+  // 键盘调幅（与拖拽同 clamp）：↑ 增高 / ↓ 降低，步长 16px（约 2 行终端文本）
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      const delta = e.key === 'ArrowUp' ? 16 : e.key === 'ArrowDown' ? -16 : 0;
+      if (!delta) return;
+      e.preventDefault();
+      const next = clampH(height + delta);
+      setHeight(next);
+      setSetting(settingKey, next);
+    },
+    [height, settingKey, setSetting],
+  );
+
   const handle = (
     <div
-      className="h-1 shrink-0 cursor-row-resize bg-neutral-800 hover:bg-blue-700"
+      role="separator"
+      tabIndex={0}
+      aria-orientation="horizontal"
+      aria-label="调整面板高度"
+      className="h-1 shrink-0 cursor-row-resize bg-neutral-800 hover:bg-blue-700 focus-visible:ring-1 focus-visible:ring-neutral-500"
       onPointerDown={onPointerDown}
+      onKeyDown={onKeyDown}
       title="拖拽调整面板高度"
     />
   );
@@ -100,10 +120,28 @@ export function usePanelWidth(settingKey: string, defaultW: number) {
     [width, settingKey, setSetting],
   );
 
+  // 键盘调幅（与拖拽同 clampW）：← 变宽 / → 变窄，步长 16px
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      const delta = e.key === 'ArrowLeft' ? 16 : e.key === 'ArrowRight' ? -16 : 0;
+      if (!delta) return;
+      e.preventDefault();
+      const next = clampW(width + delta);
+      setWidth(next);
+      setSetting(settingKey, next);
+    },
+    [width, settingKey, setSetting],
+  );
+
   const widthHandle = (
     <div
-      className="absolute inset-y-0 left-0 z-10 w-1 cursor-col-resize hover:bg-blue-700"
+      role="separator"
+      tabIndex={0}
+      aria-orientation="vertical"
+      aria-label="调整面板宽度"
+      className="absolute inset-y-0 left-0 z-10 w-1 cursor-col-resize hover:bg-blue-700 focus-visible:ring-1 focus-visible:ring-neutral-500"
       onPointerDown={onPointerDown}
+      onKeyDown={onKeyDown}
       title="拖拽调整面板宽度"
     />
   );

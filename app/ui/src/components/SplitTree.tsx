@@ -112,11 +112,24 @@ function Divider({ tabId, node }: { tabId: string; node: Extract<LayoutNode, { k
     window.addEventListener('pointerup', up);
   };
 
+  // 键盘可达：方向键以 0.05 步长调整占比（钳制复用 setSplitRatio 内的 setRatio）
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const dec = horizontal ? 'ArrowLeft' : 'ArrowUp';
+    const inc = horizontal ? 'ArrowRight' : 'ArrowDown';
+    if (e.key !== dec && e.key !== inc) return;
+    e.preventDefault();
+    setSplitRatio(tabId, node.id, node.ratio + (e.key === inc ? 0.05 : -0.05));
+  };
+
   return (
     <div
       ref={ref}
+      role="separator"
+      tabIndex={0}
+      aria-orientation={horizontal ? 'vertical' : 'horizontal'}
       onPointerDown={onPointerDown}
-      className={`shrink-0 bg-neutral-700/60 transition-colors hover:bg-blue-500 ${
+      onKeyDown={onKeyDown}
+      className={`shrink-0 bg-neutral-700/60 transition-colors hover:bg-blue-500 focus-visible:ring-1 focus-visible:ring-neutral-500 ${
         horizontal ? 'w-1 cursor-col-resize' : 'h-1 cursor-row-resize'
       }`}
     />

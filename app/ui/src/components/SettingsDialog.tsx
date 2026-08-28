@@ -5,7 +5,7 @@ import { readTerminalSettings } from '../state/apply-settings';
 import { Dialog } from './Dialog';
 
 const inputCls =
-  'rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-200 outline-none focus:border-blue-500';
+  'rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-200 outline-none focus:border-blue-500 focus-visible:ring-1 focus-visible:ring-neutral-500';
 
 /** 终端字体候选（等宽）；document.fonts.check 探测系统已装，探测失败则全量列出 */
 const FONT_CANDIDATES = [
@@ -58,7 +58,7 @@ export function SettingsDialog() {
     <Dialog
       title="设置"
       onClose={toggleSettings}
-      panelClass="max-h-[80vh] w-[560px] overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-xs text-neutral-300 shadow-xl"
+      panelClass="max-h-[80vh] overscroll-contain w-[560px] overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-xs text-neutral-300 shadow-xl"
     >
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-neutral-100">设置</h2>
@@ -76,6 +76,7 @@ export function SettingsDialog() {
         <div className="flex items-center gap-2">
           <select
             className={inputCls}
+            aria-label="主题"
             value={theme}
             onChange={(e) => setSetting('theme', e.target.value)}
           >
@@ -92,6 +93,8 @@ export function SettingsDialog() {
         {theme === 'custom' && (
           <textarea
             className={`${inputCls} mt-2 h-28 w-full font-mono`}
+            aria-label="自定义主题 JSON"
+            spellCheck={false}
             placeholder='{"ui":"dark","background":"#1e1e1e","foreground":"#d4d4d4",…}'
             value={customJson}
             onChange={(e) => setSetting('theme.customJson', e.target.value)}

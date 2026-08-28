@@ -1,11 +1,21 @@
 import { useEffect, useState } from 'react';
 import { useTransferStore } from '../state/transfer-store';
 
+/** 数字部分格式化（模块级缓存；观感同 toFixed(1)/toFixed(2)） */
+const sizeNum1 = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+const sizeNum2 = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
 function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} K`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1048576).toFixed(1)} M`;
-  return `${(n / 1073741824).toFixed(2)} G`;
+  if (n < 1024 * 1024) return `${sizeNum1.format(n / 1024)} K`;
+  if (n < 1024 * 1024 * 1024) return `${sizeNum1.format(n / 1048576)} M`;
+  return `${sizeNum2.format(n / 1073741824)} G`;
 }
 
 /** 浮动传输指示器（批次十补强）：抽屉收起时持续可见的传输反馈。
@@ -79,10 +89,10 @@ export function TransferIndicator() {
     >
       <div className="flex items-center gap-2">
         <span className="animate-pulse text-blue-400">⇅</span>
-        <span className="min-w-0 flex-1 truncate">
+        <span className="min-w-0 flex-1 truncate tabular-nums">
           传输中 {activeCount} 项 · {fmtSize(sumDone)} / {fmtSize(sumTotal)}
         </span>
-        <span className="shrink-0 text-neutral-400">{pct.toFixed(0)}%</span>
+        <span className="shrink-0 text-neutral-400 tabular-nums">{pct.toFixed(0)}%</span>
       </div>
       <div className="h-1.5 overflow-hidden rounded bg-neutral-800">
         <div
@@ -90,7 +100,9 @@ export function TransferIndicator() {
           style={{ width: `${pct}%` }}
         />
       </div>
-      {sumRate > 0 && <div className="text-right text-neutral-400">{fmtSize(sumRate)}/s</div>}
+      {sumRate > 0 && (
+        <div className="text-right text-neutral-400 tabular-nums">{fmtSize(sumRate)}/s</div>
+      )}
     </button>
   );
 }

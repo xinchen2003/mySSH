@@ -9,11 +9,37 @@ import { ConfirmDialog } from './ConfirmDialog';
  *  SftpPanel 只保留摘要入口，完整列表与逐任务控制集中在此。
  *  打开时为当前窗口全部 session 标签建立订阅（transfer-store 惰性去重）。 */
 
+/** 数字部分格式化（模块级缓存；观感同 toFixed(1)/toFixed(2)） */
+const sizeNum1 = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+const sizeNum2 = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
 function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} K`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1048576).toFixed(1)} M`;
-  return `${(n / 1073741824).toFixed(2)} G`;
+  if (n < 1024 * 1024) return `${sizeNum1.format(n / 1024)} K`;
+  if (n < 1024 * 1024 * 1024) return `${sizeNum1.format(n / 1048576)} M`;
+  return `${sizeNum2.format(n / 1073741824)} G`;
+}
+
+/** 历史时间列格式化（MM-DD HH:mm 观感；模块级缓存） */
+const histTimeFmt = new Intl.DateTimeFormat('en-US', {
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+/** Intl → 固定 MM-DD HH:mm（不随语言环境分隔符漂移） */
+function fmtHistTime(d: Date): string {
+  const parts = histTimeFmt.formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  return `${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
 }
 
 const STATE_LABEL: Record<TransferView['state'], string> = {
@@ -36,10 +62,7 @@ function HistoryRow({ h, serverName }: { h: TransferHistoryView; serverName: str
   const dst = h.direction === 'upload' ? h.remote : h.local;
   // SQLite UTC 时间串 → 本地 MM-DD HH:mm
   const d = new Date(`${h.updatedAt.replace(' ', 'T')}Z`);
-  const p2 = (n: number) => String(n).padStart(2, '0');
-  const time = Number.isNaN(d.getTime())
-    ? h.updatedAt
-    : `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  const time = Number.isNaN(d.getTime()) ? h.updatedAt : fmtHistTime(d);
   const color =
     h.state === 'done'
       ? 'text-green-500'
@@ -50,6 +73,8 @@ function HistoryRow({ h, serverName }: { h: TransferHistoryView; serverName: str
     <div
       className="flex items-center gap-2 py-0.5 text-neutral-400"
       title={`${src}\n→ ${dst}\n${serverName}${h.error ? `\n${h.error}` : ''}`}
+      // 历史列表行：屏外行跳过渲染（行高 py-0.5 + text-xs ≈ 20px）
+      style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 20px' }}
     >
       <span title={h.direction === 'upload' ? '上传' : '下载'}>
         {h.direction === 'upload' ? '⬆' : '⬇'}
@@ -65,6 +90,7 @@ function HistoryRow({ h, serverName }: { h: TransferHistoryView; serverName: str
         <button
           className="shrink-0 rounded px-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
           title="重试（断点续传）"
+          aria-label="重试（断点续传）"
           onClick={() => void retryHistoryTransfer(h)}
         >
           ↻
@@ -130,14 +156,15 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
             style={{ width: `${pct}%` }}
           />
         </div>
-        <span className="w-10 shrink-0 text-right">{pct.toFixed(0)}%</span>
-        <span className="w-16 shrink-0 text-right text-neutral-400">
+        <span className="w-10 shrink-0 text-right tabular-nums">{pct.toFixed(0)}%</span>
+        <span className="w-16 shrink-0 text-right text-neutral-400 tabular-nums">
           {t.state === 'running' ? `${fmtSize(t.rate ?? 0)}/s` : STATE_LABEL[t.state]}
         </span>
         {!t.history && t.state === 'running' && (
           <button
             className={btn}
             title="暂停"
+            aria-label="暂停"
             onClick={() => void transferCmd(sessionId, 'transfer_pause', { transferId: t.id })}
           >
             ⏸
@@ -147,6 +174,7 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
           <button
             className={btn}
             title="继续"
+            aria-label="继续"
             onClick={() => void transferCmd(sessionId, 'transfer_resume', { transferId: t.id })}
           >
             ▶
@@ -156,6 +184,7 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
           <button
             className={btn}
             title="取消"
+            aria-label="取消"
             onClick={() => void transferCmd(sessionId, 'transfer_cancel', { transferId: t.id })}
           >
             ✕
@@ -165,13 +194,19 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
           <button
             className={btn}
             title="重试（从断点续传）"
+            aria-label="重试（从断点续传）"
             onClick={() => void transferCmd(sessionId, 'transfer_retry', { transferId: t.id })}
           >
             ↻
           </button>
         )}
         {!t.history && t.error && (
-          <button className={btn} title="查看错误" onClick={() => setShowErr((v) => !v)}>
+          <button
+            className={btn}
+            title="查看错误"
+            aria-label="查看错误"
+            onClick={() => setShowErr((v) => !v)}
+          >
             ⓘ
           </button>
         )}
@@ -179,6 +214,7 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
           <button
             className={btn}
             title="从队列移除"
+            aria-label="从队列移除"
             onClick={() => void transferCmd(sessionId, 'transfer_remove', { transferId: t.id })}
           >
             🗑

@@ -44,10 +44,18 @@ function fmtSize(n: number): string {
   return `${(n / 1073741824).toFixed(2)} G`;
 }
 
+/** 修改时间列格式化（M/D HH:mm 观感；模块级缓存避免逐行新建） */
+const timeFmt = new Intl.DateTimeFormat('zh-CN', {
+  month: 'numeric',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
 function fmtTime(unix?: number | null): string {
   if (!unix) return '';
-  const d = new Date(unix * 1000);
-  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return timeFmt.format(new Date(unix * 1000));
 }
 
 function fmtPerms(p?: number | null): string {
@@ -220,6 +228,7 @@ function FilePane(p: PaneProps) {
       {/* 过滤 + 隐藏文件开关（批次十一 5） */}
       <div className="flex items-center gap-2 border-b border-neutral-800 px-2 py-0.5 text-neutral-500">
         <input
+          aria-label="过滤文件"
           className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-800 px-1.5 py-0.5 text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-blue-600"
           placeholder="过滤…"
           value={filter}
@@ -249,7 +258,7 @@ function FilePane(p: PaneProps) {
         {p.side === 'remote' && <span className="w-32 shrink-0 text-right">权限</span>}
       </div>
       <div
-        className="min-h-0 flex-1 overflow-y-auto outline-none"
+        className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-1 focus-visible:ring-neutral-500"
         tabIndex={0}
         onClick={(e) => {
           if (e.target === e.currentTarget) p.onClearSel();
@@ -266,6 +275,8 @@ function FilePane(p: PaneProps) {
             key={e.path}
             role="option"
             aria-selected={p.sel.has(e.path)}
+            // 大行数列表：屏外行跳过渲染（行高 py-0.5 + text-xs ≈ 20px）
+            style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 20px' }}
             data-dir-row={e.kind === 'dir' ? e.path : undefined}
             tabIndex={0}
             draggable
@@ -348,8 +359,8 @@ function FilePane(p: PaneProps) {
               rowDrop === e.path
                 ? 'bg-blue-900/60 text-neutral-100 outline outline-1 outline-blue-600'
                 : p.sel.has(e.path)
-                  ? 'bg-neutral-700 text-neutral-100 outline-none'
-                  : 'text-neutral-300 outline-none hover:bg-neutral-800'
+                  ? 'bg-neutral-700 text-neutral-100 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-neutral-500'
+                  : 'text-neutral-300 outline-none hover:bg-neutral-800 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-neutral-500'
             }`}
           >
             <span className="w-4 shrink-0 text-center">
@@ -358,10 +369,12 @@ function FilePane(p: PaneProps) {
             <span className="min-w-0 flex-1 truncate" title={e.name}>
               {e.name}
             </span>
-            <span className="w-16 shrink-0 text-right text-neutral-500">
+            <span className="w-16 shrink-0 text-right text-neutral-500 tabular-nums">
               {e.kind === 'dir' ? '' : fmtSize(e.size)}
             </span>
-            <span className="w-16 shrink-0 text-right text-neutral-600">{fmtTime(e.mtime)}</span>
+            <span className="w-16 shrink-0 text-right text-neutral-600 tabular-nums">
+              {fmtTime(e.mtime)}
+            </span>
             {p.side === 'remote' && (
               <span
                 className="w-32 shrink-0 text-right text-neutral-600"
@@ -1391,7 +1404,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         <button
           className="ml-auto rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-800"
           onClick={() => toggleSftp(tabId)}
-          aria-label="close sftp"
+          aria-label="关闭 SFTP"
         >
           ×
         </button>

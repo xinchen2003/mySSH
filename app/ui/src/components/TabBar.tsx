@@ -132,11 +132,19 @@ export function TabBar() {
                 ? { backgroundColor: `${sessionColor}${t.id === activeId ? '66' : '40'}` }
                 : undefined
             }
-            className={`group flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs ${
+            className={`group flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs focus-visible:ring-1 focus-visible:ring-neutral-500 ${
               t.id === activeId
                 ? `${sessionColor ? '' : 'bg-neutral-700 '}text-neutral-100`
                 : 'text-neutral-400 hover:bg-neutral-800'
             }`}
+            role="tab"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setActive(t.id);
+              }
+            }}
             onClick={() => setActive(t.id)}
             onAuxClick={(e) => {
               // 中键关闭（批次四 10.3）；走 closeTab 确认守卫
@@ -157,7 +165,7 @@ export function TabBar() {
               <span className="h-1.5 w-1.5 rounded-full bg-blue-400" title="终端响铃" />
             )}
             <button
-              className="ml-1 hidden text-neutral-500 hover:text-neutral-200 group-hover:inline"
+              className="ml-1 hidden group-focus-within:inline text-neutral-500 hover:text-neutral-200 group-hover:inline"
               onClick={(e) => {
                 e.stopPropagation();
                 closeTab(t.id);

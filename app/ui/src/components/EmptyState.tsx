@@ -55,8 +55,8 @@ export function EmptyState() {
                     className="flex w-full items-center justify-between rounded px-3 py-1.5 text-left text-sm text-neutral-300 hover:bg-neutral-800"
                     onClick={() => connectBySession(s.id, s.name)}
                   >
-                    <span className="truncate">{s.name}</span>
-                    <span className="text-xs text-neutral-600">
+                    <span className="min-w-0 truncate">{s.name}</span>
+                    <span className="shrink-0 text-xs text-neutral-600">
                       {s.username}@{s.host}:{s.port}
                     </span>
                   </button>

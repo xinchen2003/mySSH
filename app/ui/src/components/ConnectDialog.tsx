@@ -374,6 +374,7 @@ function ConnectForm({
                   <input
                     className={input}
                     value={workdir}
+                    spellCheck={false}
                     onChange={(e) => setWorkdir(e.target.value)}
                     placeholder="D:\projects\my-app"
                   />
@@ -398,6 +399,7 @@ function ConnectForm({
                   <input
                     className={input}
                     value={command}
+                    spellCheck={false}
                     onChange={(e) => setCommand(e.target.value)}
                     placeholder="如 claude；留空 = 直接进入 shell"
                   />
@@ -415,6 +417,8 @@ function ConnectForm({
                     <input
                       className={input}
                       value={host}
+                      autoComplete="off"
+                      spellCheck={false}
                       onChange={(e) => {
                         setHost(e.target.value);
                         followName(user, e.target.value);
@@ -437,6 +441,8 @@ function ConnectForm({
                   <input
                     className={input}
                     value={user}
+                    autoComplete="username"
+                    spellCheck={false}
                     onChange={(e) => {
                       setUser(e.target.value);
                       followName(e.target.value, host);
@@ -481,6 +487,8 @@ function ConnectForm({
                   className={input}
                   type="password"
                   value={password}
+                  autoComplete={initial ? 'current-password' : 'new-password'}
+                  spellCheck={false}
                   onChange={(e) => setPassword(e.target.value)}
                 />
               </label>
@@ -492,6 +500,8 @@ function ConnectForm({
                   <input
                     className={input}
                     value={keyPath}
+                    autoComplete="off"
+                    spellCheck={false}
                     onChange={(e) => setKeyPath(e.target.value)}
                     placeholder="C:\Users\…\.ssh\id_ed25519 或 .ppk"
                   />
@@ -502,6 +512,7 @@ function ConnectForm({
                     className={input}
                     type="password"
                     value={passphrase}
+                    spellCheck={false}
                     onChange={(e) => setPassphrase(e.target.value)}
                   />
                 </label>
@@ -532,7 +543,11 @@ function ConnectForm({
             </p>
           ))}
 
-        {error && <p className="text-xs text-red-400">{error}</p>}
+        {error && (
+          <p aria-live="polite" className="text-xs text-red-400">
+            {error}
+          </p>
+        )}
       </div>
 
       <div className="mt-2 flex items-center justify-between gap-2">
@@ -547,12 +562,12 @@ function ConnectForm({
             </button>
           )}
           {test.phase === 'ok' && (
-            <span className="truncate text-xs text-green-400">
+            <span aria-live="polite" className="truncate text-xs text-green-400">
               ✓ 连接成功{test.latencyMs !== null ? `（${test.latencyMs}ms）` : ''}
             </span>
           )}
           {test.phase === 'err' && (
-            <span className="truncate text-xs text-red-400" title={test.message}>
+            <span aria-live="polite" className="truncate text-xs text-red-400" title={test.message}>
               ✗ {test.message}
             </span>
           )}
