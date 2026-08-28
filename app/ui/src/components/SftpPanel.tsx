@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { listen } from '@tauri-apps/api/event';
-import { useAppStore } from '../state/app-store';
+import { isLocalTarget, useAppStore } from '../state/app-store';
 import type { FileEntry } from '../term/types';
 import { useTransferStore } from '../state/transfer-store';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -386,11 +386,10 @@ export function SftpPanel({ tabId }: { tabId: string }) {
   const tabs = useAppStore((s) => s.tabs);
   const toggleSftp = useAppStore((s) => s.toggleSftp);
   const notify = useAppStore((s) => s.notify);
-  const sessions = useAppStore((s) => s.sessions);
   const tab = tabs.find((t) => t.id === tabId);
   const rawSessionId = tab?.target.kind === 'session' ? tab.target.sessionId : null;
   // 本地会话：SFTP 无意义（本机文件即左栏），按无会话处理走守卫页
-  const isLocalSession = sessions.find((r) => r.id === rawSessionId)?.kind === 'local';
+  const isLocalSession = tab ? isLocalTarget(tab.target) : false;
   const sessionId = isLocalSession ? null : rawSessionId;
 
   const [localPath, setLocalPath] = useState('');

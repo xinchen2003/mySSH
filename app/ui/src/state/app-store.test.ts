@@ -520,7 +520,7 @@ describe('重开已关闭标签（批次十一）', () => {
     expect(state().tabs).toHaveLength(1);
     const t = state().tabs[0];
     expect(t.title).toBe('web-01');
-    expect(t.target).toEqual({ kind: 'session', sessionId: 's1' });
+    expect(t.target).toEqual({ kind: 'session', sessionId: 's1', sessionKind: 'ssh' });
   });
 
   it('快速连接（spec）标签不入栈；空栈 reopen 无操作', () => {

@@ -175,12 +175,12 @@ export const useTransferStore = create<TransferStore>((set, get) => ({
   },
   syncAllSessions: () => {
     const { tabs, sessions } = useAppStore.getState();
-    const known = new Set(sessions.map((s) => s.id));
+    const byId = new Map(sessions.map((s) => [s.id, s]));
     for (const t of tabs) {
-      // 标签页可能引用已删除的会话（删服务器不关标签），跳过避免后端 E7006
-      if (t.target.kind === 'session' && known.has(t.target.sessionId)) {
-        get().ensureSession(t.target.sessionId);
-      }
+      if (t.target.kind !== 'session') continue;
+      const rec = byId.get(t.target.sessionId);
+      // 跳过已删档案（后端 E7006）与本地会话（无 SSH 通道，订阅必失败）
+      if (rec && rec.kind !== 'local') get().ensureSession(t.target.sessionId);
     }
   },
   loadHistory: async () => {

@@ -112,6 +112,8 @@ function targetHasCommand(target: ConnectTarget): boolean {
  *  本地会话禁用：OSC 7 注入、initialCwd cd（POSIX 语法）、SFTP/监控/隧道等 SSH 专属功能 */
 export function isLocalTarget(target: ConnectTarget): boolean {
   if (target.kind !== 'session') return false;
+  // 建标签时已定死 kind，直接读；旧标签（无 sessionKind）回落查表
+  if (target.sessionKind) return target.sessionKind === 'local';
   const rec = useAppStore.getState().sessions.find((r) => r.id === target.sessionId);
   return rec?.kind === 'local';
 }
@@ -370,17 +372,30 @@ export const useAppStore = create<AppStore>((set, get) => {
 
     toggleTunnelPanel: () => set((s) => ({ tunnelPanelOpen: !s.tunnelPanelOpen })),
 
-    toggleSftp: (tabId) =>
+    toggleSftp: (tabId) => {
+      // 防线：本地会话无 SSH 通道，任何调用路径（含漏检入口）都不许打开
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (tab && isLocalTarget(tab.target)) {
+        get().notify('本地会话不支持 SFTP', 'warning');
+        return;
+      }
       set((s) => ({
         sftpOpen: { ...s.sftpOpen, [tabId]: !s.sftpOpen[tabId] },
         metricsOpen: { ...s.metricsOpen, [tabId]: false },
-      })),
+      }));
+    },
 
-    toggleMetrics: (tabId) =>
+    toggleMetrics: (tabId) => {
+      const tab = get().tabs.find((t) => t.id === tabId);
+      if (tab && isLocalTarget(tab.target)) {
+        get().notify('本地会话不支持服务器监控', 'warning');
+        return;
+      }
       set((s) => ({
         metricsOpen: { ...s.metricsOpen, [tabId]: !s.metricsOpen[tabId] },
         sftpOpen: { ...s.sftpOpen, [tabId]: false },
-      })),
+      }));
+    },
 
     subscribeTunnels: () => {
       if (get()._tunnelsSubscribed) return;
@@ -435,7 +450,11 @@ export const useAppStore = create<AppStore>((set, get) => {
     },
 
     connectBySession: (sessionId, title) => {
-      openTabWithTarget({ kind: 'session', sessionId }, title);
+      const rec = get().sessions.find((r) => r.id === sessionId);
+      openTabWithTarget(
+        { kind: 'session', sessionId, sessionKind: rec?.kind === 'local' ? 'local' : 'ssh' },
+        title,
+      );
       get().recordRecent(sessionId);
     },
     connectOrActivate: (sessionId, title) => {

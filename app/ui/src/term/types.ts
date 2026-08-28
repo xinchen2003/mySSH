@@ -125,9 +125,12 @@ export interface TransferHistoryView {
   updatedAt: string;
 }
 
-/** 连接目标：内联参数 或 存储档案引用 */
+/** 连接目标：内联参数 或 存储档案引用。
+ *  sessionKind 在建标签时从档案定死（ssh 缺省）——SSH 专属功能门控以此为准，
+ *  不依赖 sessions 列表查表（档案未加载/已删除而标签还在时不误判）。 */
 export type ConnectTarget =
-  { kind: 'spec'; spec: TermOpenSpec } | { kind: 'session'; sessionId: string };
+  | { kind: 'spec'; spec: TermOpenSpec }
+  | { kind: 'session'; sessionId: string; sessionKind?: 'ssh' | 'local' };
 
 export interface TermOpenSpec {
   host: string;
