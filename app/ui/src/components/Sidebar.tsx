@@ -35,6 +35,8 @@ const VIRTUAL_LABELS: { id: VirtualView; label: string }[] = [
   { id: 'favorites', label: '收藏' },
   { id: 'ungrouped', label: '默认' },
 ];
+/** 侧栏宽度（px）边界与默认值；持久化于 settings KV ui.sidebarWidth */
+const SIDEBAR_W = { min: 160, max: 480, dflt: 224 } as const;
 
 /**
  * 服务器库侧栏（批次二）：
@@ -74,6 +76,33 @@ export function Sidebar() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const setSetting = useAppStore((s) => s.setSetting);
+  /** 宽度拖拉：拖中本地 state（避免高频写库），松手落 KV */
+  const wRaw = settings['ui.sidebarWidth'];
+  const wSaved =
+    typeof wRaw === 'number' && wRaw >= SIDEBAR_W.min && wRaw <= SIDEBAR_W.max
+      ? Math.trunc(wRaw)
+      : SIDEBAR_W.dflt;
+  const [wDrag, setWDrag] = useState<number | null>(null);
+  const width = wDrag ?? wSaved;
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = width;
+    const onMove = (ev: PointerEvent) =>
+      setWDrag(Math.min(SIDEBAR_W.max, Math.max(SIDEBAR_W.min, startW + ev.clientX - startX)));
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      setWDrag((cur) => {
+        if (cur !== null) void setSetting('ui.sidebarWidth', cur);
+        return null;
+      });
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
 
   const favorites = useMemo(
     () => new Set(readStringList(settings[GROUP_KEYS.favorites])),
@@ -636,7 +665,15 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="relative flex w-56 shrink-0 flex-col border-r border-neutral-800 bg-neutral-900">
+    <aside
+      className="relative flex shrink-0 flex-col border-r border-neutral-800 bg-neutral-900"
+      style={{ width }}
+    >
+      {/* 右缘拖拽把手：调整侧栏宽度（松手持久化） */}
+      <div
+        className="absolute top-0 right-0 z-20 h-full w-1 cursor-col-resize hover:bg-blue-500/50"
+        onPointerDown={startResize}
+      />
       <div className="px-3 py-2 text-xs text-neutral-400">
         <span>会话</span>
       </div>

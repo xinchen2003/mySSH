@@ -116,14 +116,9 @@ export function matchAction(
   return !!alias && matchCombo(e, alias);
 }
 
-/** 从设置读 scheme 与自定义表 */
+/** 从设置读键位方案 */
 export function keymapFromSettings(s: Record<string, unknown>): Record<string, string> {
   const schemeRaw = s['keymap.scheme'];
   const scheme: KeymapScheme = schemeRaw === 'vim' || schemeRaw === 'emacs' ? schemeRaw : 'default';
-  const customRaw = s['keymap.custom'];
-  const custom =
-    customRaw && typeof customRaw === 'object' && !Array.isArray(customRaw)
-      ? (customRaw as Record<string, string>)
-      : undefined;
-  return effectiveBindings(scheme, custom);
+  return effectiveBindings(scheme);
 }

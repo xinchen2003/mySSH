@@ -349,6 +349,19 @@ function ConnectForm({
                       onClick={() => setColor(c)}
                     />
                   ))}
+                  {/* 调色板任意颜色 */}
+                  <input
+                    type="color"
+                    title="自定义颜色"
+                    aria-label="自定义颜色"
+                    value={color ?? '#3e63dd'}
+                    onChange={(e) => setColor(e.target.value)}
+                    className={`h-5 w-7 cursor-pointer rounded border border-neutral-600 bg-transparent p-0 ${
+                      color !== null && !PRESET_COLORS.includes(color)
+                        ? 'ring-2 ring-neutral-200 ring-offset-1 ring-offset-neutral-900'
+                        : ''
+                    }`}
+                  />
                 </div>
               </div>
             )}

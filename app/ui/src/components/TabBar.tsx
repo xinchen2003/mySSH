@@ -126,9 +126,15 @@ export function TabBar() {
               const dragId = e.dataTransfer.getData('text/myssh-tab');
               if (dragId) moveTab(dragId, t.id);
             }}
+            // 标签颜色：整 tab 附着半透明底色（活跃 40% / 非活跃 25% alpha），比色点显眼
+            style={
+              sessionColor
+                ? { backgroundColor: `${sessionColor}${t.id === activeId ? '66' : '40'}` }
+                : undefined
+            }
             className={`group flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs ${
               t.id === activeId
-                ? 'bg-neutral-700 text-neutral-100'
+                ? `${sessionColor ? '' : 'bg-neutral-700 '}text-neutral-100`
                 : 'text-neutral-400 hover:bg-neutral-800'
             }`}
             onClick={() => setActive(t.id)}
@@ -145,12 +151,6 @@ export function TabBar() {
             }}
           >
             <span className={`h-1.5 w-1.5 rounded-full ${STATE_DOT[pane?.state ?? ''] ?? ''}`} />
-            {sessionColor && (
-              <span
-                className="h-2 w-2 shrink-0 rounded-full"
-                style={{ backgroundColor: sessionColor }}
-              />
-            )}
             <span className="max-w-40 truncate">{t.title}</span>
             {/* 12.6：bell 待读标记（非活跃标签收到 BEL；激活即清，静态点无动画） */}
             {bellTabs.includes(t.id) && (

@@ -129,22 +129,6 @@ export function AppToolbar() {
       >
         ⚙
       </ToolBtn>
-
-      <Divider />
-
-      {/* 条目 13：会话拓展方式「⧉ 新窗口」恒居所有菜单按钮最右 */}
-      <ToolBtn
-        label="在新窗口打开此会话"
-        tooltip="在新窗口打开此会话（标签分离）"
-        disabled={!isSession}
-        onClick={() => {
-          const t = activeTab?.target;
-          if (!activeTab || t?.kind !== 'session') return;
-          useAppStore.getState().connectInNewWindow(t.sessionId, activeTab.title);
-        }}
-      >
-        ⧉
-      </ToolBtn>
     </div>
   );
 }

@@ -169,7 +169,7 @@ export function App() {
     }
     applyTheme(settings);
     applyTerminalSettings(settings);
-    applyMenuSettings(settings);
+    applyMenuSettings();
   }, [settings, settingsLoaded, loadSettings]);
 
   // 全局禁用原生右键菜单；输入类控件内放行（保留文本编辑菜单）

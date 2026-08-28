@@ -1,17 +1,34 @@
-import { useState } from 'react';
-import { check } from '@tauri-apps/plugin-updater';
 import { useAppStore } from '../state/app-store';
 import { BUILTIN_THEMES } from '../term/themes';
 import { KEY_ACTIONS, keymapFromSettings, type KeymapScheme } from '../term/keymap';
-import {
-  DEFAULT_MENU_FONT,
-  DEFAULT_MENU_ICON,
-  readTerminalSettings,
-} from '../state/apply-settings';
+import { readTerminalSettings } from '../state/apply-settings';
 import { Dialog } from './Dialog';
 
 const inputCls =
   'rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-200 outline-none focus:border-blue-500';
+
+/** 终端字体候选（等宽）；document.fonts.check 探测系统已装，探测失败则全量列出 */
+const FONT_CANDIDATES = [
+  'Cascadia Code',
+  'Cascadia Mono',
+  'Consolas',
+  'JetBrains Mono',
+  'Fira Code',
+  'Source Code Pro',
+  'Courier New',
+  'Lucida Console',
+  'MS Gothic',
+  'NSimSun',
+  '等线',
+];
+
+function installedFonts(): string[] {
+  try {
+    return FONT_CANDIDATES.filter((f) => document.fonts.check(`12px "${f}"`));
+  } catch {
+    return FONT_CANDIDATES;
+  }
+}
 
 export function SettingsDialog() {
   const settings = useAppStore((s) => s.settings);
@@ -28,24 +45,14 @@ export function SettingsDialog() {
     typeof reconnectRaw === 'number' && reconnectRaw >= 0 && reconnectRaw <= 20
       ? Math.trunc(reconnectRaw)
       : 5;
-  const menuFontRaw = settings['ui.menuFontSize'];
-  const menuFont =
-    typeof menuFontRaw === 'number' && [11, 12, 13, 14].includes(menuFontRaw)
-      ? menuFontRaw
-      : DEFAULT_MENU_FONT;
-  const menuIconRaw = settings['ui.menuIconSize'];
-  const menuIcon =
-    typeof menuIconRaw === 'number' && [12, 14, 16, 18].includes(menuIconRaw)
-      ? menuIconRaw
-      : DEFAULT_MENU_ICON;
   const schemeRaw = settings['keymap.scheme'];
   const scheme: KeymapScheme = schemeRaw === 'vim' || schemeRaw === 'emacs' ? schemeRaw : 'default';
   const bindings = keymapFromSettings(settings);
-  const [customKeys, setCustomKeys] = useState(
-    typeof settings['keymap.custom'] === 'object' && settings['keymap.custom'] !== null
-      ? JSON.stringify(settings['keymap.custom'], null, 2)
-      : '',
-  );
+  // fontFamily 是 CSS 字体栈（"'Cascadia Code', 'JetBrains Mono', Consolas, monospace"）。
+  // 取栈中首个命中的候选字体作为当前选中；都不命中（自定义值）时置顶原值
+  const fonts = installedFonts();
+  const currentFont = fonts.find((f) => term.fontFamily.includes(f)) ?? term.fontFamily;
+  const fontOptions = fonts.includes(currentFont) ? fonts : [currentFont, ...fonts];
 
   return (
     <Dialog
@@ -95,13 +102,19 @@ export function SettingsDialog() {
       <section className="mb-4">
         <h3 className="mb-1.5 font-semibold text-neutral-200">终端</h3>
         <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
-          <label htmlFor="set-font">字体族</label>
-          <input
+          <label htmlFor="set-font">字体</label>
+          <select
             id="set-font"
             className={inputCls}
-            value={term.fontFamily}
-            onChange={(e) => setSetting('terminal.fontFamily', e.target.value)}
-          />
+            value={currentFont}
+            onChange={(e) => setSetting('terminal.fontFamily', `'${e.target.value}', monospace`)}
+          >
+            {fontOptions.map((f) => (
+              <option key={f} value={f}>
+                {f}
+              </option>
+            ))}
+          </select>
           <label htmlFor="set-size">字号</label>
           <input
             id="set-size"
@@ -131,20 +144,6 @@ export function SettingsDialog() {
             <span className="text-neutral-500">
               0-20，默认 5；已建立的会话重连耗尽提示按挂载时读取
             </span>
-          </span>
-          <label htmlFor="set-scroll">回滚行数</label>
-          <span className="flex items-center gap-2">
-            <input
-              id="set-scroll"
-              className={`${inputCls} w-24`}
-              type="number"
-              min={1000}
-              max={100000}
-              step={1000}
-              value={term.scrollback}
-              onChange={(e) => setSetting('terminal.scrollback', Number(e.target.value))}
-            />
-            <span className="text-neutral-500">新建终端生效（xterm 不支持在线改）</span>
           </span>
           <label htmlFor="set-copy-sel">选中即复制</label>
           <span className="flex items-center gap-2">
@@ -202,40 +201,6 @@ export function SettingsDialog() {
           />
           <span className="text-neutral-500">显示状态栏（连接数/隧道数/当前服务器，默认开启）</span>
         </label>
-        <div className="mt-2 grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
-          <label htmlFor="set-menu-font">菜单字体大小</label>
-          <span className="flex items-center gap-2">
-            <select
-              id="set-menu-font"
-              className={`${inputCls} w-20`}
-              value={menuFont}
-              onChange={(e) => setSetting('ui.menuFontSize', Number(e.target.value))}
-            >
-              {[11, 12, 13, 14].map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </select>
-            <span className="text-neutral-500">右键菜单文字大小（px，默认 12）</span>
-          </span>
-          <label htmlFor="set-menu-icon">菜单图标大小</label>
-          <span className="flex items-center gap-2">
-            <select
-              id="set-menu-icon"
-              className={`${inputCls} w-20`}
-              value={menuIcon}
-              onChange={(e) => setSetting('ui.menuIconSize', Number(e.target.value))}
-            >
-              {[12, 14, 16, 18].map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </select>
-            <span className="text-neutral-500">右键菜单图标尺寸（px，默认 14）</span>
-          </span>
-        </div>
       </section>
 
       <section className="mb-4">
@@ -281,69 +246,7 @@ export function SettingsDialog() {
             ))}
           </tbody>
         </table>
-        <details>
-          <summary className="cursor-pointer text-neutral-500 hover:text-neutral-300">
-            自定义覆盖（JSON：动作 id → 组合键，须含修饰键）
-          </summary>
-          <textarea
-            className={`${inputCls} mt-1 h-20 w-full font-mono`}
-            placeholder='{"nextTab":"Alt+L"}'
-            value={customKeys}
-            onChange={(e) => setCustomKeys(e.target.value)}
-            onBlur={() => {
-              const t = customKeys.trim();
-              if (!t) {
-                setSetting('keymap.custom', {});
-                return;
-              }
-              try {
-                setSetting('keymap.custom', JSON.parse(t));
-              } catch {
-                /* 坏 JSON 不落库，留编辑态 */
-              }
-            }}
-          />
-        </details>
-      </section>
-
-      <section className="mt-4 border-t border-neutral-800 pt-3">
-        <h3 className="mb-1.5 font-semibold text-neutral-200">关于</h3>
-        <AboutRow />
       </section>
     </Dialog>
-  );
-}
-
-function AboutRow() {
-  const notify = useAppStore((s) => s.notify);
-  const [checking, setChecking] = useState(false);
-  const onCheck = async () => {
-    setChecking(true);
-    try {
-      const update = await check();
-      notify(update ? `发现新版本 ${update.version}，开始下载…` : '已是最新版本', 'info');
-      if (update) {
-        await update.downloadAndInstall();
-        notify('更新已就绪，重启后生效', 'success');
-      }
-    } catch (e) {
-      notify(`检查更新失败: ${e}`, 'error');
-    } finally {
-      setChecking(false);
-    }
-  };
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-neutral-500">
-        自动更新通道已配置（签名验证明文预留；发布源接入后生效）
-      </span>
-      <button
-        className={`${inputCls} hover:border-blue-500`}
-        onClick={() => void onCheck()}
-        disabled={checking}
-      >
-        {checking ? '检查中…' : '检查更新'}
-      </button>
-    </div>
   );
 }
