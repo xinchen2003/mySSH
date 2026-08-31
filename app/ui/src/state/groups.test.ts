@@ -111,16 +111,14 @@ describe('虚拟分组过滤', () => {
   const sessions = [rec('1', 'g'), rec('2', ''), rec('3', 'g')];
   const ctx = { favorites: new Set(['1']) };
 
-  it('收藏/默认', () => {
-    expect(filterVirtual('favorites', sessions, ctx).map((s) => s.id)).toEqual(['1']);
-    expect(filterVirtual('ungrouped', sessions, ctx).map((s) => s.id)).toEqual(['1', '2', '3']);
-  });
-  it('「默认」视图：显示全部会话，含已分组与未分组', () => {
+  it('收藏过滤：仅命中收藏项；计数与空集', () => {
+    expect(filterVirtual(sessions, ctx).map((s) => s.id)).toEqual(['1']);
     const list = [rec('a', '生产'), rec('b', ''), rec('c', '生产/华东'), rec('d', '')];
-    expect(filterVirtual('ungrouped', list, ctx).map((s) => s.id)).toEqual(['a', 'b', 'c', 'd']);
-    expect(virtualCount('ungrouped', list, ctx)).toBe(4);
+    // list 无一在收藏集合（ctx 仅含 '1'）
+    expect(virtualCount(list, ctx)).toBe(0);
+    expect(virtualCount(sessions, ctx)).toBe(1);
     // 空集合时为 0，不抛错
-    expect(virtualCount('ungrouped', [], ctx)).toBe(0);
+    expect(virtualCount([], ctx)).toBe(0);
   });
 });
 

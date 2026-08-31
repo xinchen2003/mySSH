@@ -179,20 +179,15 @@ export function collectGroupPaths(root: GroupTree): string[] {
 
 // ---------- 虚拟分组（8.5）：纯过滤，不改真实归属 ----------
 
-/** ungrouped 即「默认」视图：显示全部会话（id 为历史命名，语义已是「默认视图」） */
-export type VirtualView = 'favorites' | 'ungrouped';
+/** 虚拟过滤视图：目前仅「收藏」；退出过滤（null）即回到全量分组树 */
 
 export interface VirtualCtx {
   /** 收藏会话 id */
   favorites: ReadonlySet<string>;
 }
 
-export function virtualCount(
-  view: VirtualView,
-  sessions: SessionRecord[],
-  ctx: VirtualCtx,
-): number {
-  return filterVirtual(view, sessions, ctx).length;
+export function virtualCount(sessions: SessionRecord[], ctx: VirtualCtx): number {
+  return filterVirtual(sessions, ctx).length;
 }
 /** 生成 ssh 命令行（含 -J 跳板链与 -i 私钥）；跳板档案缺失的跳跳过 */
 export function sshCommand(rec: SessionRecord, all: SessionRecord[]): string {
@@ -209,15 +204,6 @@ export function sshCommand(rec: SessionRecord, all: SessionRecord[]): string {
   return parts.join(' ');
 }
 
-export function filterVirtual(
-  view: VirtualView,
-  sessions: SessionRecord[],
-  ctx: VirtualCtx,
-): SessionRecord[] {
-  switch (view) {
-    case 'favorites':
-      return sessions.filter((s) => ctx.favorites.has(s.id));
-    case 'ungrouped': // UI 显示为「默认」：全部会话
-      return sessions;
-  }
+export function filterVirtual(sessions: SessionRecord[], ctx: VirtualCtx): SessionRecord[] {
+  return sessions.filter((s) => ctx.favorites.has(s.id));
 }

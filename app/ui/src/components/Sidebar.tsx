@@ -19,7 +19,6 @@ import {
   rewritePathOnDeleteKeep,
   rewritePathOnRename,
   GROUP_KEYS,
-  type VirtualView,
 } from '../state/groups';
 
 /** 连接目标语义：'connect' 复用已有标签，'new-tab' 强制新标签 */
@@ -31,10 +30,7 @@ type Prompt =
   | { mode: 'group-rename'; path: string; input: string }
   | { mode: 'rename'; id: string; input: string };
 
-const VIRTUAL_LABELS: { id: VirtualView; label: string }[] = [
-  { id: 'favorites', label: '收藏' },
-  { id: 'ungrouped', label: '默认' },
-];
+const VIRTUAL_LABELS: { id: 'favorites'; label: string }[] = [{ id: 'favorites', label: '收藏' }];
 /** 侧栏宽度（px）边界与默认值；持久化于 settings KV ui.sidebarWidth */
 const SIDEBAR_W = { min: 160, max: 480, dflt: 224 } as const;
 
@@ -69,7 +65,7 @@ export function Sidebar() {
   /** 批量删除确认 */
   const [batchDel, setBatchDel] = useState<SessionRecord[] | null>(null);
   /** 虚拟分组视图 */
-  const [virt, setVirt] = useState<VirtualView | null>(null);
+  const [virt, setVirt] = useState<'favorites' | null>(null);
   /** 拖拽悬停目标（分组路径；'' = 根/未分组） */
   const [dropTarget, setDropTarget] = useState<string | null>(null);
 
@@ -146,7 +142,7 @@ export function Sidebar() {
   const tree = useMemo(() => buildGroupTree(filtered, extras), [filtered, extras]);
   const flatMode = query.trim() !== '' || virt !== null;
   const virtList = useMemo(
-    () => (virt ? filterVirtual(virt, sessions, { favorites }) : []),
+    () => (virt ? filterVirtual(sessions, { favorites }) : []),
     [virt, sessions, favorites],
   );
   const visibleRows = useMemo(() => flattenVisible(tree, collapsed), [tree, collapsed]);
@@ -711,10 +707,7 @@ export function Sidebar() {
       {/* 虚拟分组（8.5）：纯过滤视图，不改真实归属 */}
       <div className="flex flex-wrap gap-1 px-2 pb-1">
         {VIRTUAL_LABELS.map((v) => {
-          const n =
-            v.id === 'favorites'
-              ? sessions.filter((x) => favorites.has(x.id)).length
-              : sessions.length; // 默认=全部会话;
+          const n = sessions.filter((x) => favorites.has(x.id)).length;
           return (
             <button
               key={v.id}
