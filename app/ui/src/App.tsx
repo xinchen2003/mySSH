@@ -16,10 +16,8 @@ import { CommandPalette } from './components/CommandPalette';
 import { ConnectDialog } from './components/ConnectDialog';
 import { HostKeyDialog } from './components/HostKeyDialog';
 import { KiDialog } from './components/KiDialog';
-import { SftpPanel } from './components/SftpPanel';
-import { TransferCenter } from './components/TransferCenter';
+import { BottomDock } from './components/BottomDock';
 import { TransferIndicator } from './components/TransferIndicator';
-import { MetricsPanel } from './components/MetricsPanel';
 import { SettingsDialog } from './components/SettingsDialog';
 import { SplitTree } from './components/SplitTree';
 import { useAppStore } from './state/app-store';
@@ -29,16 +27,16 @@ import { paneIds } from './term/layout';
 import { StatusBar } from './components/StatusBar';
 import { EmptyState } from './components/EmptyState';
 import { QuickConnectDialog } from './components/QuickConnectDialog';
+import { useT } from './i18n';
 
 export function App() {
   const [version, setVersion] = useState('…');
+  const t = useT();
   const tabs = useAppStore((s) => s.tabs);
   const activeId = useAppStore((s) => s.activeId);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const subscribeTunnels = useAppStore((s) => s.subscribeTunnels);
   const settingsOpen = useAppStore((s) => s.settingsOpen);
-  const sftpOpen = useAppStore((s) => s.sftpOpen);
-  const metricsOpen = useAppStore((s) => s.metricsOpen);
   const paletteOpen = useAppStore((s) => s.paletteOpen);
   const pendingDeleteSession = useAppStore((s) => s.pendingDeleteSession);
   const pendingCloseTabs = useAppStore((s) => s.pendingCloseTabs);
@@ -102,10 +100,10 @@ export function App() {
           s.setActive(s.tabs[(i + d + s.tabs.length) % s.tabs.length].id);
         }
       } else if (hit('sftp') && active?.target.kind === 'session' && !isLocalTarget(active.target))
-        s.toggleSftp(active.id);
+        s.toggleDock('sftp');
       else if (hit('metrics') && active?.target.kind === 'session' && !isLocalTarget(active.target))
-        s.toggleMetrics(active.id);
-      else if (hit('tunnels')) s.toggleTunnelPanel();
+        s.toggleDock('metrics');
+      else if (hit('tunnels')) s.toggleDock('tunnel');
       else if (hit('settings')) s.toggleSettings();
       else if (hit('splitRow')) s.splitActive('row');
       else if (hit('splitCol')) s.splitActive('col');
@@ -216,8 +214,8 @@ export function App() {
           <button
             className="rounded px-1 hover:bg-neutral-800"
             onClick={toggleSidebar}
-            aria-label="会话侧栏"
-            title="会话侧栏"
+            aria-label={t('chrome.sidebarToggle')}
+            title={t('chrome.sidebarToggle')}
           >
             ☰
           </button>
@@ -247,9 +245,7 @@ export function App() {
           )}
         </div>
       </main>
-      {activeId && sftpOpen[activeId] && <SftpPanel tabId={activeId} />}
-      {activeId && metricsOpen[activeId] && <MetricsPanel tabId={activeId} />}
-      <TransferCenter />
+      {activeId && <BottomDock />}
       <TransferIndicator />
       <ConnectDialog />
       <QuickConnectDialog />
@@ -260,20 +256,25 @@ export function App() {
       {/* 批次一 7.1：删除服务器确认（级联清凭据，不可撤销；默认焦点在取消） */}
       {pendingDeleteSession && (
         <ConfirmDialog
-          title={`删除服务器“${pendingDeleteSession.name}”？`}
-          confirmLabel="删除服务器"
+          title={t('chrome.deleteServerTitle', { name: pendingDeleteSession.name })}
+          confirmLabel={t('chrome.deleteServerConfirm')}
           onCancel={() => useAppStore.getState().cancelDeleteSession()}
           onConfirm={() => void useAppStore.getState().confirmDeleteSession()}
         >
           <p className="mb-1 text-neutral-300">
-            主机：{pendingDeleteSession.username}@{pendingDeleteSession.host}:
-            {pendingDeleteSession.port}
+            {t('chrome.deleteServerHost', {
+              user: pendingDeleteSession.username,
+              host: pendingDeleteSession.host,
+              port: pendingDeleteSession.port,
+            })}
           </p>
           <p className="mb-1">
-            分组：{pendingDeleteSession.groupPath.replace(/\//g, ' / ') || '未分组'}
+            {t('chrome.deleteServerGroup', {
+              group: pendingDeleteSession.groupPath.replace(/\//g, ' / ') || t('chrome.ungrouped'),
+            })}
           </p>
-          <p className="mb-1">删除后，该服务器保存的密码或凭据也会一并删除。</p>
-          <p className="text-red-300">此操作无法撤销。</p>
+          <p className="mb-1">{t('chrome.deleteServerCreds')}</p>
+          <p className="text-red-300">{t('chrome.irreversible')}</p>
         </ConfirmDialog>
       )}
       {/* 批次一 7.6 / 批次四 10.3：关闭有活跃连接的标签前确认（多标签关闭汇总一次） */}
@@ -281,31 +282,37 @@ export function App() {
         <ConfirmDialog
           title={
             pendingCloseTabData.length === 1
-              ? `关闭标签“${pendingCloseTabData[0].title}”？`
-              : `关闭 ${pendingCloseTabData.length} 个标签？`
+              ? t('chrome.closeTabTitle', { title: pendingCloseTabData[0].title })
+              : t('chrome.closeTabsTitle', { count: pendingCloseTabData.length })
           }
           confirmLabel={
             pendingCloseTabData.length === 1
-              ? '关闭标签'
-              : `关闭 ${pendingCloseTabData.length} 个标签`
+              ? t('chrome.closeTabConfirm')
+              : t('chrome.closeTabsConfirm', { count: pendingCloseTabData.length })
           }
           onCancel={() => useAppStore.getState().cancelCloseTab()}
           onConfirm={() => useAppStore.getState().confirmCloseTab()}
         >
           <p className="mb-1">
             {pendingCloseTabData.length === 1
-              ? '该标签'
-              : `这 ${pendingCloseTabData.length} 个标签`}
-            包含 {pendingCloseIds.length} 个窗格，其中 {pendingCloseLive} 个连接仍活跃。
+              ? t('chrome.closeTabBody', {
+                  panes: pendingCloseIds.length,
+                  live: pendingCloseLive,
+                })
+              : t('chrome.closeTabsBody', {
+                  count: pendingCloseTabData.length,
+                  panes: pendingCloseIds.length,
+                  live: pendingCloseLive,
+                })}
           </p>
-          <p className="text-red-300">关闭后，{pendingCloseLive} 个活跃连接将立即断开。</p>
+          <p className="text-red-300">{t('chrome.closeTabsWarn', { live: pendingCloseLive })}</p>
         </ConfirmDialog>
       )}
       {/* 批次十一 2：关窗守卫确认（默认焦点在取消） */}
       {closeGuardLive !== null && (
         <ConfirmDialog
-          title={`还有 ${closeGuardLive} 个活跃连接，确定退出？`}
-          confirmLabel="退出"
+          title={t('chrome.quitGuardTitle', { live: closeGuardLive })}
+          confirmLabel={t('chrome.quitConfirm')}
           onCancel={() => setCloseGuardLive(null)}
           onConfirm={() => {
             setCloseGuardLive(null);
@@ -315,8 +322,8 @@ export function App() {
               .catch(() => undefined);
           }}
         >
-          <p className="mb-1">退出后，{closeGuardLive} 个活跃连接将立即断开。</p>
-          <p className="text-red-300">此操作无法撤销。</p>
+          <p className="mb-1">{t('chrome.quitGuardWarn', { live: closeGuardLive })}</p>
+          <p className="text-red-300">{t('chrome.irreversible')}</p>
         </ConfirmDialog>
       )}
       <StatusBar />

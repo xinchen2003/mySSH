@@ -1,13 +1,15 @@
 import { useAppStore } from '../state/app-store';
 import { paneIds } from '../term/layout';
+import { useT } from '../i18n';
 
-const PANE_STATE_TEXT: Record<string, string> = {
-  connecting: '连接中',
-  connected: '已连接',
-  reconnecting: '重连中',
-  closed: '已断开',
-  error: '错误',
-};
+/** pane 状态文案键：chrome.stateXxx */
+const PANE_STATE_KEY = {
+  connecting: 'chrome.stateConnecting',
+  connected: 'chrome.stateConnected',
+  reconnecting: 'chrome.stateReconnecting',
+  closed: 'chrome.stateClosed',
+  error: 'chrome.stateError',
+} as const;
 
 /**
  * 状态栏（12.2）：全部由现有 store 派生，无新增订阅/轮询。
@@ -17,6 +19,7 @@ const PANE_STATE_TEXT: Record<string, string> = {
  */
 export function StatusBar() {
   const tabs = useAppStore((s) => s.tabs);
+  const t = useT();
   const activeId = useAppStore((s) => s.activeId);
   const tunnels = useAppStore((s) => s.tunnels);
   const transferActive = useAppStore((s) => s.transferActive);
@@ -43,11 +46,15 @@ export function StatusBar() {
     <footer
       className="flex items-center gap-3 border-t border-neutral-800 px-3 py-0.5 text-xs text-neutral-500"
       role="status"
-      aria-label="状态栏"
+      aria-label={t('chrome.statusBarLabel')}
     >
-      <span className="tabular-nums">连接 {live}</span>
-      <span className="tabular-nums">隧道 {runningTunnels}</span>
-      {transferActive !== null && <span className="tabular-nums">传输 {transferActive}</span>}
+      <span className="tabular-nums">{t('chrome.statusConnections', { count: live })}</span>
+      <span className="tabular-nums">{t('chrome.statusTunnels', { count: runningTunnels })}</span>
+      {transferActive !== null && (
+        <span className="tabular-nums">
+          {t('chrome.statusTransfers', { count: transferActive })}
+        </span>
+      )}
       <span className="ml-auto flex items-center gap-1.5 truncate">
         {activeTab && activePane && (
           <>
@@ -61,7 +68,11 @@ export function StatusBar() {
               }`}
             />
             <span className="min-w-0 truncate">{activeTab.title}</span>
-            <span className="text-neutral-600">{PANE_STATE_TEXT[activePane.state]}</span>
+            <span className="text-neutral-600">
+              {PANE_STATE_KEY[activePane.state as keyof typeof PANE_STATE_KEY]
+                ? t(PANE_STATE_KEY[activePane.state as keyof typeof PANE_STATE_KEY])
+                : activePane.state}
+            </span>
           </>
         )}
       </span>

@@ -3,6 +3,7 @@
 //! 跟随系统：settings theme.followSystem=true 时按 prefers-color-scheme 在深浅默认间切换。
 
 import type { ITheme } from '@xterm/xterm';
+import { tNow } from '../i18n';
 
 export interface ThemeDef {
   id: string;
@@ -142,7 +143,12 @@ export function resolveTheme(theme: string, customJson?: string): ThemeDef {
   if (id === 'custom' && customJson) {
     try {
       const j = JSON.parse(customJson) as { ui?: 'dark' | 'light' } & ITheme;
-      return { id: 'custom', label: '自定义', ui: j.ui === 'light' ? 'light' : 'dark', xterm: j };
+      return {
+        id: 'custom',
+        label: tNow('state.themeCustom'),
+        ui: j.ui === 'light' ? 'light' : 'dark',
+        xterm: j,
+      };
     } catch {
       // 坏 JSON 回退
     }

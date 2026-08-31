@@ -1,41 +1,30 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { isLocalTarget, useAppStore } from '../state/app-store';
 import { initBroadcastReceiver } from '../term/broadcast';
-import { useTransferStore } from '../state/transfer-store';
 import { keymapFromSettings } from '../term/keymap';
-import { TunnelPopover } from './TunnelPopover';
+import { useT } from '../i18n';
 
 /**
  * 右上角统一工具条（UX 批次 · 条目 8/13）：收纳原散落在窗口头部与 TabBar 的
  * 功能图标，统一尺寸/hover/激活态/tooltip（含快捷键提示）；活跃面板对应图标高亮。
- * 顺序约定：分屏 → 面板（SFTP/监控/隧道/广播/传输中心）→ 设置 → ⧉ 新窗口恒居最右（条目 13）。
+ * 顺序约定：面板（SFTP/监控/隧道/广播/传输中心）→ 设置。
+ * 分屏入口在右键菜单与快捷键（keymap splitRow/splitCol），工具条不再直挂。
  *
- * 隧道按钮自带锚定弹层 TunnelPopover（条目 7，复用 store tunnelPanelOpen）。
- *
- * 依赖 store 新增状态（由 Main 装配时对齐，见 local://intg-chrome.md）：
- * - broadcastEnabled: boolean / toggleBroadcast(): void
- * 传输中心开关走 transfer-store（useTransferStore: open/toggleOpen，归 SftpBatch）。
+ * SFTP/监控/隧道/传输中心四个按钮统一走底部 dock（app-store dockTab/toggleDock）。
  */
 export function AppToolbar() {
   const tabs = useAppStore((s) => s.tabs);
+  const t = useT();
   const activeId = useAppStore((s) => s.activeId);
-  const splitActive = useAppStore((s) => s.splitActive);
-  const sftpOpen = useAppStore((s) => s.sftpOpen);
-  const toggleSftp = useAppStore((s) => s.toggleSftp);
-  const metricsOpen = useAppStore((s) => s.metricsOpen);
-  const toggleMetrics = useAppStore((s) => s.toggleMetrics);
-  const tunnelPanelOpen = useAppStore((s) => s.tunnelPanelOpen);
-  const toggleTunnelPanel = useAppStore((s) => s.toggleTunnelPanel);
+  const dockTab = useAppStore((s) => s.dockTab);
+  const toggleDock = useAppStore((s) => s.toggleDock);
   const settingsOpen = useAppStore((s) => s.settingsOpen);
   const toggleSettings = useAppStore((s) => s.toggleSettings);
   const broadcastEnabled = useAppStore((s) => s.broadcastEnabled);
   const toggleBroadcast = useAppStore((s) => s.toggleBroadcast);
-  const transferCenterOpen = useTransferStore((s) => s.open);
-  const toggleTransferCenter = useTransferStore((s) => s.toggleOpen);
   const transferActive = useAppStore((s) => s.transferActive);
   const settings = useAppStore((s) => s.settings);
 
-  const tunnelAnchorRef = useRef<HTMLDivElement>(null);
   // 广播接收端注册（幂等；detached 子窗口各跑一份 App 同样生效）
   useEffect(() => {
     void initBroadcastReceiver();
@@ -48,73 +37,53 @@ export function AppToolbar() {
 
   // 快捷键提示：跟随设置中的方案/自定义绑定
   const bindings = keymapFromSettings(settings);
-  const kb = (id: string) => (bindings[id] ? `（${bindings[id]}）` : '');
+  const kb = (id: string) => (bindings[id] ? t('chrome.kbHint', { key: bindings[id] }) : '');
 
   return (
-    <div className="flex items-center gap-0.5" role="toolbar" aria-label="功能工具条">
+    <div className="flex items-center gap-0.5" role="toolbar" aria-label={t('chrome.toolbarLabel')}>
       <ToolBtn
-        label="向右分屏"
-        tooltip={`向右分屏（同主机新会话）${kb('splitRow')}`}
-        disabled={!activeTab}
-        onClick={() => splitActive('row')}
-      >
-        ⬌
-      </ToolBtn>
-      <ToolBtn
-        label="向下分屏"
-        tooltip={`向下分屏（同主机新会话）${kb('splitCol')}`}
-        disabled={!activeTab}
-        onClick={() => splitActive('col')}
-      >
-        ⬍
-      </ToolBtn>
-
-      <Divider />
-
-      <ToolBtn
-        label="SFTP 文件管理"
-        tooltip={`SFTP 文件管理（仅远程会话）${kb('sftp')}`}
-        active={!!activeTab && !!sftpOpen[activeTab.id]}
+        label={t('chrome.sftpFiles')}
+        tooltip={t('chrome.tipSftp', { kb: kb('sftp') })}
+        active={dockTab === 'sftp'}
         disabled={!isRemote}
-        onClick={() => activeTab && toggleSftp(activeTab.id)}
+        onClick={() => toggleDock('sftp')}
       >
         📂
       </ToolBtn>
       <ToolBtn
-        label="服务器监控"
-        tooltip={`服务器监控（CPU/内存/网络/磁盘/进程）${kb('metrics')}`}
-        active={!!activeTab && !!metricsOpen[activeTab.id]}
+        label={t('chrome.metricsLabel')}
+        tooltip={t('chrome.tipMetrics', { kb: kb('metrics') })}
+        active={dockTab === 'metrics'}
         disabled={!isRemote}
-        onClick={() => activeTab && toggleMetrics(activeTab.id)}
+        onClick={() => toggleDock('metrics')}
       >
         📈
       </ToolBtn>
-      <div ref={tunnelAnchorRef} className="relative">
-        <ToolBtn
-          label="隧道管理"
-          tooltip={`隧道管理${kb('tunnels')}`}
-          active={tunnelPanelOpen}
-          onClick={toggleTunnelPanel}
-        >
-          ⇄
-        </ToolBtn>
-        <TunnelPopover anchorRef={tunnelAnchorRef} />
-      </div>
       <ToolBtn
-        label="广播输入"
-        tooltip="广播输入到所有已连接会话"
+        label={t('chrome.tunnelsLabel')}
+        tooltip={t('chrome.tipTunnels', { kb: kb('tunnels') })}
+        active={dockTab === 'tunnel'}
+        onClick={() => toggleDock('tunnel')}
+      >
+        ⇄
+      </ToolBtn>
+      <ToolBtn
+        label={t('chrome.broadcastLabel')}
+        tooltip={t('chrome.tipBroadcast')}
         active={broadcastEnabled}
         onClick={toggleBroadcast}
       >
         📡
       </ToolBtn>
       <ToolBtn
-        label="传输中心"
-        tooltip={`传输中心（SFTP 上传/下载队列）${transferActive ? `——进行中 ${transferActive} 项` : ''}`}
-        active={transferCenterOpen}
-        // 抽屉收起时用角标报告进行中数量；展开后列表自带状态
-        badge={!transferCenterOpen && transferActive ? transferActive : undefined}
-        onClick={toggleTransferCenter}
+        label={t('chrome.transferLabel')}
+        tooltip={t('chrome.tipTransfer', {
+          active: transferActive ? t('chrome.transferActive', { count: transferActive }) : '',
+        })}
+        active={dockTab === 'transfer'}
+        // dock 未停在传输页签时用角标报告进行中数量；打开后列表自带状态
+        badge={dockTab !== 'transfer' && transferActive ? transferActive : undefined}
+        onClick={() => toggleDock('transfer')}
       >
         ⇅
       </ToolBtn>
@@ -122,8 +91,8 @@ export function AppToolbar() {
       <Divider />
 
       <ToolBtn
-        label="设置"
-        tooltip={`设置${kb('settings')}`}
+        label={t('chrome.settingsLabel')}
+        tooltip={t('chrome.tipSettings', { kb: kb('settings') })}
         active={settingsOpen}
         onClick={toggleSettings}
       >

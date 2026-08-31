@@ -1,0 +1,252 @@
+import type { zhPanels } from './panels.zh-CN';
+
+/** panels 组英文文案：键与中文切片一致 */
+export const enPanels: Record<keyof typeof zhPanels, string> = {
+  // Path bar / navigation
+  'panels.back': 'Back',
+  'panels.forward': 'Forward',
+  'panels.up': 'Up',
+  'panels.refresh': 'Refresh',
+  'panels.clickToEdit': '{path} (click to edit)',
+  'panels.copied': 'Copied',
+  'panels.copyPath': 'Copy Current Path',
+  'panels.copyFailed': 'Copy failed: {error}',
+  'panels.invalidPath': 'Invalid or unreadable path',
+  'panels.thisPc': 'This PC',
+
+  // SFTP file pane
+  'panels.filterFiles': 'Filter files',
+  'panels.filterPlaceholder': 'Filter…',
+  'panels.showHidden': 'Show hidden',
+  'panels.colName': 'Name',
+  'panels.colSize': 'Size',
+  'panels.colModified': 'Modified',
+  'panels.colPerms': 'Permissions',
+  'panels.emptyDir': '(Empty folder)',
+  'panels.noMatch': '(No matches)',
+
+  // Permission bits
+  'panels.permRead': 'r',
+  'panels.permWrite': 'w',
+  'panels.permExec': 'x',
+  'panels.permNone': '-',
+  'panels.permReadFull': 'read',
+  'panels.permWriteFull': 'write',
+  'panels.permExecFull': 'execute',
+  'panels.permNoneFull': 'none',
+  'panels.permSep': ', ',
+  'panels.permsTitle': 'Owner: {owner}; Group: {group}; Others: {other} (octal {oct})',
+
+  // SFTP notifications & guards
+  'panels.localReadFailed': 'Failed to read local directory: {error}',
+  'panels.remoteReadFailed': 'Failed to read remote directory: {error}',
+  'panels.remoteReadFallback': 'Cannot read {path} ({error}); fell back to home directory',
+  'panels.driveListNoDrop': 'The drive list cannot receive files; enter a local folder first',
+  'panels.copiedItems': 'Copied {count} items',
+  'panels.sftpLocalGuard':
+    'Local sessions do not need SFTP — files are on this machine; just use the terminal',
+  'panels.sftpInlineGuard':
+    'SFTP only supports saved sessions (inline connections have no stored credentials)',
+  'panels.close': 'Close',
+  'panels.openFailed': 'Open failed: {error}',
+  'panels.editOpened': 'Opened {name} for editing (saving uploads it back)',
+  'panels.editOpenFailed': 'Failed to open for editing: {error}',
+  'panels.uploadFailed': 'Upload failed: {error}',
+  'panels.downloadFailed': 'Download failed: {error}',
+  'panels.skippedExisting': 'Skipped {count} existing files',
+  'panels.opFailed': 'Operation failed: {error}',
+  'panels.deleteEntryFailed': 'Failed to delete {name}: {error}',
+  'panels.deletedItems': 'Deleted {count} items',
+  'panels.copiedPaths': 'Copied {count} paths',
+
+  // SFTP context menu
+  'panels.open': 'Open',
+  'panels.download': 'Download',
+  'panels.downloadItems': 'Download {count} Items',
+  'panels.upload': 'Upload',
+  'panels.uploadItems': 'Upload {count} Items',
+  'panels.copyPaths': 'Copy Path',
+  'panels.copyPathsN': 'Copy {count} Paths',
+  'panels.rename': 'Rename…',
+  'panels.renamePlain': 'Rename',
+  'panels.moveTo': 'Move To…',
+  'panels.moveItems': 'Move {count} Items To…',
+  'panels.chmod': 'Change Permissions…',
+  'panels.chmodItems': 'Change Permissions of {count} Items…',
+  'panels.newFolder': 'New Folder…',
+  'panels.newFile': 'New File…',
+  'panels.deleteItem': 'Delete…',
+  'panels.deleteItems': 'Delete {count} Items…',
+  'panels.showInExplorer': 'Show in Explorer',
+  'panels.removeFavorite': 'Remove Favorite',
+
+  // SFTP quick slots / favorites
+  'panels.favLocalAdded': 'Added local favorite: {path}',
+  'panels.favRemoteAdded': 'Added remote favorite: {path}',
+  'panels.driveEnum': 'List Drives',
+  'panels.desktop': 'Desktop',
+  'panels.desktopFailed': 'Failed to locate Desktop: {error}',
+  'panels.favRemoveTip': '{path} (right-click to remove)',
+  'panels.favAddTip': 'Favorite current path: {path}',
+  'panels.favAddDisabledTip': 'Enter a local folder before adding a favorite',
+  'panels.favAdd': 'Favorite Current',
+
+  // SFTP toolbar
+  'panels.followTerminal': 'Follow Terminal Directory',
+  'panels.permissions': 'Permissions',
+  'panels.delete': 'Delete',
+  'panels.uploadTo': 'Upload →',
+  'panels.uploadToCount': 'Upload → ({count})',
+  'panels.downloadFrom': '← Download',
+  'panels.downloadFromCount': '← Download ({count})',
+  'panels.closeSftp': 'Close SFTP',
+
+  // SFTP inline prompt
+  'panels.local': 'local',
+  'panels.remote': 'remote',
+  'panels.promptDirName': 'Folder name ({side})',
+  'panels.promptFileName': 'File name ({side})',
+  'panels.promptNewName': 'New name',
+  'panels.promptTargetDir': 'Target directory',
+  'panels.promptPerms': 'Permissions (octal)',
+  'panels.ok': 'OK',
+  'panels.cancel': 'Cancel',
+
+  // SFTP delete confirmation
+  'panels.deleteConfirmTitleN': 'Delete {count} items?',
+  'panels.deleteConfirmTitle': 'Delete {kind} "{name}"?',
+  'panels.kindDir': 'folder',
+  'panels.kindFile': 'file',
+  'panels.deleteRecursive': 'Delete Recursively',
+  'panels.deleteDirWarning':
+    'Folders are included; they will be deleted recursively and all their contents will be lost.',
+  'panels.deleteConfirmBody': '{count} items. This cannot be undone.',
+
+  // SFTP conflict dialog
+  'panels.conflictTitle': 'Target Exists',
+  'panels.conflictHeading': '{count} files already exist at the target',
+  'panels.conflictDesc':
+    'The selected policy applies to all conflicting files in this batch; canceling aborts the transfer.',
+  'panels.resumeTransfer': 'Resume',
+  'panels.overwrite': 'Overwrite',
+  'panels.skip': 'Skip',
+  'panels.autoRename': 'Auto Rename',
+
+  // SFTP transfer summary footer
+  'panels.transfers': 'Transfers',
+  'panels.transferActiveSuffix': ': {count} active',
+  'panels.transferFailedSuffix': ', {count} failed',
+  'panels.transferIdleSuffix': ': idle',
+  'panels.openTransferManager': 'Open Transfer Manager',
+
+  // Transfer center
+  'panels.stateQueued': 'Queued',
+  'panels.stateRunning': 'Transferring',
+  'panels.statePaused': 'Paused',
+  'panels.stateDone': 'Done',
+  'panels.stateFailed': 'Failed',
+  'panels.stateCanceled': 'Canceled',
+  'panels.retryResume': 'Retry (Resume)',
+  'panels.pause': 'Pause',
+  'panels.resume': 'Resume',
+  'panels.viewError': 'View Error',
+  'panels.removeFromQueue': 'Remove From Queue',
+  'panels.lastTime': 'Last',
+  'panels.transferManager': 'Transfer Manager',
+  'panels.pauseAll': 'Pause All',
+  'panels.resumeAll': 'Resume All',
+  'panels.clearCompleted': 'Clear Completed',
+  'panels.clearFailed': 'Clear Failed',
+  'panels.closeTransferManager': 'Close Transfer Manager',
+  'panels.transferSummary': '{count} items · {done} / {total}',
+  'panels.transferSummaryRate': '{count} items · {done} / {total} · {rate}/s',
+  'panels.noTransfers': '(No transfers)',
+  'panels.history': 'History',
+  'panels.clear': 'Clear',
+  'panels.noHistory': '(No history)',
+  'panels.clearHistoryTitle': 'Clear All Transfer History?',
+  'panels.clearHistoryBody': '{count} entries across all servers.',
+  'panels.clearHistoryWarning':
+    'History is the resume checkpoint for interrupted transfers; once cleared, unfinished transfers cannot be resumed after a restart.',
+
+  // Transfer indicator
+  'panels.transfersFailedClick': 'Transfers failed — click to view',
+  'panels.allTransfersDone': 'All transfers complete',
+  'panels.clickTransferManager': 'Click to open Transfer Manager',
+  'panels.transferringSummary': 'Transferring {count} items · {done} / {total}',
+
+  // Metrics panel
+  'panels.chartCpuMem': 'CPU / Memory %',
+  'panels.chartNetIo': 'Network I/O',
+  'panels.chartDiskIo': 'Disk I/O',
+  'panels.chartPeak': '[peak {peak}]',
+  'panels.metricsTitle': 'Metrics',
+  'panels.mem': 'Mem',
+  'panels.procs': 'Procs',
+  'panels.metricsFatal': 'Collection unavailable',
+  'panels.metricsError': 'Collection error',
+  'panels.sampleInterval': 'Sampling Interval',
+  'panels.closeMetrics': 'Close Metrics',
+  'panels.processColumn': 'Process',
+
+  // Tunnel panel
+  'panels.tunnelStarting': 'Starting',
+  'panels.tunnelListening': 'Listening',
+  'panels.tunnelReconnecting': 'Reconnecting',
+  'panels.tunnelStopped': 'Stopped',
+  'panels.tunnelFailed': 'Failed',
+  'panels.tunnelKindLocal': 'Local -L',
+  'panels.tunnelKindRemote': 'Remote -R',
+  'panels.tunnelKindDynamic': 'SOCKS5 -D',
+  'panels.tunnelNotRunning': 'Not running',
+  'panels.tunnelHeaderNote':
+    'Grouped by server · edits apply on save (restart required while running)',
+  'panels.newTunnel': 'New Tunnel',
+  'panels.noTunnels':
+    'No tunnels yet. Click "New Tunnel" above, or add one on the Tunnels tab of the server editor.',
+  'panels.sessionDeleted': '(session deleted: {id})',
+  'panels.colType': 'Type',
+  'panels.colAddress': 'Address',
+  'panels.colStatus': 'Status',
+  'panels.colStartMode': 'Start Mode',
+  'panels.colRate': 'Rate',
+  'panels.colConns': 'Connections',
+  'panels.colError': 'Error',
+  'panels.colActions': 'Actions',
+  'panels.connCount': '{count} conn',
+  'panels.stop': 'Stop',
+  'panels.start': 'Start',
+  'panels.edit': 'Edit',
+  'panels.duplicate': 'Duplicate',
+  'panels.adhocTunnels': 'Temporary (not persisted)',
+  'panels.deleteTunnelTitle': 'Delete Tunnel "{name}"?',
+  'panels.deleteTunnelBody': '{addr}. The running instance will also be stopped.',
+  'panels.tunnelDeleted': 'Tunnel deleted',
+  'panels.deleteFailed': 'Delete failed: {error}',
+  'panels.startFailed': 'Start failed: {error}',
+
+  // Broadcast input
+  'panels.broadcastEnableTip': 'Enable broadcast input (sync input to all connected panes)',
+  'panels.broadcastDisableTip': 'Disable broadcast input (stop syncing input to all panes)',
+  'panels.broadcasting': 'Broadcasting',
+
+  // Notifications
+  'panels.dismissNotification': 'Dismiss notification',
+
+  // Terminal search
+  'panels.searchScrollback': 'Search scrollback…',
+  'panels.searchTerminalOutput': 'Search terminal output',
+  'panels.matchCase': 'Match Case',
+  'panels.wholeWord': 'Match Whole Word',
+  'panels.wholeWordLabel': 'W',
+  'panels.noResults': 'No results',
+  'panels.previousMatch': 'Previous (Shift+Enter)',
+  'panels.previous': 'Previous',
+  'panels.nextMatch': 'Next (Enter)',
+  'panels.next': 'Next',
+  'panels.closeSearchEsc': 'Close (Esc)',
+  'panels.closeSearch': 'Close Search',
+
+  // Split panes
+  'panels.closePane': 'Close Pane',
+};

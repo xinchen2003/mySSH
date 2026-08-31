@@ -1,5 +1,6 @@
 import { useAppStore, type NotificationLevel } from '../state/app-store';
 import { runNoticeAction } from '../state/notice-actions';
+import { useT } from '../i18n';
 
 /** 各级别视觉样式（语义色：成功绿 / 信息中性 / 警告黄 / 错误红） */
 const NOTICE_STYLE: Record<NotificationLevel, string> = {
@@ -14,6 +15,7 @@ const NOTICE_STYLE: Record<NotificationLevel, string> = {
  * success/info/warning 自动消失（时长见 store NOTICE_TTL），error 常驻手动关。
  */
 export function Notices() {
+  const t = useT();
   const notices = useAppStore((s) => s.notices);
   const dismissNotice = useAppStore((s) => s.dismissNotice);
   if (notices.length === 0) return null;
@@ -45,7 +47,7 @@ export function Notices() {
               <button
                 className="shrink-0 rounded px-1 leading-tight hover:bg-black/20"
                 onClick={() => dismissNotice(n.id)}
-                aria-label="关闭通知"
+                aria-label={t('panels.dismissNotification')}
               >
                 ×
               </button>

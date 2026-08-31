@@ -27,8 +27,12 @@ import type {
 import { tunnelDisplayName, tunnelFeedback } from './tunnel-utils';
 import { reconnectRegistry } from '../term/registry';
 import { broadcastInput } from '../term/broadcast';
+import { useTransferStore } from './transfer-store';
+import { tNow } from '../i18n';
 
 export type PaneState = 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'error';
+/** 底部 dock 页签（DevTools 风格工具面板）；单值天然互斥 */
+export type DockTab = 'sftp' | 'metrics' | 'tunnel' | 'transfer';
 /** 通知分级（批次一 7.7）：success/info 短时自动消失，warning 较长，error 常驻手动关 */
 export type NotificationLevel = 'success' | 'info' | 'warning' | 'error';
 
@@ -206,12 +210,14 @@ interface AppStore {
 
   /** 内部：订阅去重标记 */
   _tunnelsSubscribed: boolean;
-  /** SFTP 面板：tabId → 是否打开 */
-  sftpOpen: Record<string, boolean>;
-  toggleSftp(tabId: string): void;
-  /** 监控面板：tabId → 是否打开（与 SFTP 互斥，共用底栏位） */
-  metricsOpen: Record<string, boolean>;
-  toggleMetrics(tabId: string): void;
+  /** 底部 dock（窗口级）：当前激活的工具页签；null = 收起。
+   *  单值天然互斥（替代原 sftpOpen/metricsOpen 逐标签互斥）。
+   *  'transfer' 与 transfer-store.open 联动（openDock/closeDock 内同步，订阅逻辑不变） */
+  dockTab: DockTab | null;
+  openDock(tab: DockTab): void;
+  closeDock(): void;
+  /** 同页签再次触发 = 关闭 */
+  toggleDock(tab: DockTab): void;
   /** 应用设置（settings KV 全量缓存；启动时 loadSettings 拉一次） */
   settings: Record<string, unknown>;
   settingsLoaded: boolean;
@@ -225,8 +231,6 @@ interface AppStore {
   tunnels: TunnelInfo[];
   /** 持久化隧道定义 */
   tunnelDefs: TunnelDef[];
-  tunnelPanelOpen: boolean;
-  toggleTunnelPanel(): void;
   /** 1Hz 订阅（App 挂载时调用一次；重复调用幂等） */
   subscribeTunnels(): void;
   stopTunnel(id: string): Promise<void>;
@@ -350,10 +354,8 @@ export const useAppStore = create<AppStore>((set, get) => {
     sidebarOpen: true,
     tunnels: [],
     tunnelDefs: [],
-    tunnelPanelOpen: false,
     _tunnelsSubscribed: false,
-    sftpOpen: {},
-    metricsOpen: {},
+    dockTab: null,
     settings: {},
     settingsLoaded: false,
     settingsOpen: false,
@@ -370,31 +372,29 @@ export const useAppStore = create<AppStore>((set, get) => {
       invoke('settings_set', { key, value }).catch(() => undefined);
     },
 
-    toggleTunnelPanel: () => set((s) => ({ tunnelPanelOpen: !s.tunnelPanelOpen })),
-
-    toggleSftp: (tabId) => {
+    openDock: (tab) => {
       // 防线：本地会话无 SSH 通道，任何调用路径（含漏检入口）都不许打开
-      const tab = get().tabs.find((t) => t.id === tabId);
-      if (tab && isLocalTarget(tab.target)) {
-        get().notify('本地会话不支持 SFTP', 'warning');
+      const active = get().tabs.find((t) => t.id === get().activeId);
+      if ((tab === 'sftp' || tab === 'metrics') && active && isLocalTarget(active.target)) {
+        get().notify(
+          tab === 'sftp' ? tNow('state.localNoSftp') : tNow('state.localNoMetrics'),
+          'warning',
+        );
         return;
       }
-      set((s) => ({
-        sftpOpen: { ...s.sftpOpen, [tabId]: !s.sftpOpen[tabId] },
-        metricsOpen: { ...s.metricsOpen, [tabId]: false },
-      }));
+      set({ dockTab: tab });
+      // 传输中心内容仍订阅 transfer-store.open（保持订阅建立逻辑不变）
+      useTransferStore.getState().setOpen(tab === 'transfer');
     },
 
-    toggleMetrics: (tabId) => {
-      const tab = get().tabs.find((t) => t.id === tabId);
-      if (tab && isLocalTarget(tab.target)) {
-        get().notify('本地会话不支持服务器监控', 'warning');
-        return;
-      }
-      set((s) => ({
-        metricsOpen: { ...s.metricsOpen, [tabId]: !s.metricsOpen[tabId] },
-        sftpOpen: { ...s.sftpOpen, [tabId]: false },
-      }));
+    closeDock: () => {
+      set({ dockTab: null });
+      useTransferStore.getState().setOpen(false);
+    },
+
+    toggleDock: (tab) => {
+      if (get().dockTab === tab) get().closeDock();
+      else get().openDock(tab);
     },
 
     subscribeTunnels: () => {
@@ -425,10 +425,14 @@ export const useAppStore = create<AppStore>((set, get) => {
     },
     duplicateTunnel: async (def) => {
       await get().saveTunnel(
-        { ...def, id: `td-${crypto.randomUUID()}`, name: `${tunnelDisplayName(def)} 副本` },
+        {
+          ...def,
+          id: `td-${crypto.randomUUID()}`,
+          name: tNow('state.copyName', { name: tunnelDisplayName(def) }),
+        },
         false,
       );
-      get().notify('隧道已复制（未启动）', 'success');
+      get().notify(tNow('state.tunnelDuplicated'), 'success');
     },
 
     notifySessionTunnels: (sessionId, results) => {
@@ -452,7 +456,12 @@ export const useAppStore = create<AppStore>((set, get) => {
     connectBySession: (sessionId, title) => {
       const rec = get().sessions.find((r) => r.id === sessionId);
       openTabWithTarget(
-        { kind: 'session', sessionId, sessionKind: rec?.kind === 'local' ? 'local' : 'ssh' },
+        {
+          kind: 'session',
+          sessionId,
+          sessionKind: rec?.kind === 'local' ? 'local' : 'ssh',
+          encoding: rec?.encoding ?? null,
+        },
         title,
       );
       get().recordRecent(sessionId);
@@ -481,8 +490,9 @@ export const useAppStore = create<AppStore>((set, get) => {
     duplicateSession: async (rec) => {
       // 名称自动去重：「X 副本」「X 副本 2」…
       const names = new Set(get().sessions.map((x) => x.name));
-      let name = `${rec.name} 副本`;
-      for (let i = 2; names.has(name); i++) name = `${rec.name} 副本 ${i}`;
+      let name = tNow('state.copyName', { name: rec.name });
+      for (let i = 2; names.has(name); i++)
+        name = tNow('state.copyNameN', { name: rec.name, n: i });
       const copy: SessionRecord = {
         ...rec,
         id: crypto.randomUUID(),
@@ -505,11 +515,13 @@ export const useAppStore = create<AppStore>((set, get) => {
         await get().loadSessions();
         if (tunnels.length > 0) await get().loadTunnelDefs();
         get().notify(
-          `已复制为「${name}」${tunnels.length > 0 ? `（含 ${tunnels.length} 条端口转发，未启动）` : ''}（凭据不随档案复制）`,
+          tunnels.length > 0
+            ? tNow('state.sessionDuplicatedWithTunnels', { name, count: tunnels.length })
+            : tNow('state.sessionDuplicated', { name }),
           'success',
         );
       } catch (e) {
-        get().notify(`复制服务器失败: ${String(e)}`, 'error');
+        get().notify(tNow('state.duplicateSessionFailed', { error: String(e) }), 'error');
       }
     },
 
@@ -519,7 +531,7 @@ export const useAppStore = create<AppStore>((set, get) => {
       if (had) cur.delete(sessionId);
       else cur.add(sessionId);
       get().setSetting(GROUP_KEYS.favorites, [...cur]);
-      get().notify(had ? '已取消收藏' : '已收藏', 'success');
+      get().notify(had ? tNow('state.unfavorited') : tNow('state.favorited'), 'success');
     },
 
     recordRecent: (sessionId) => {
@@ -620,9 +632,9 @@ export const useAppStore = create<AppStore>((set, get) => {
       set({ pendingDeleteSession: null });
       try {
         await get().deleteSession(rec.id);
-        get().notify(`已删除服务器「${rec.name}」`, 'success');
+        get().notify(tNow('state.sessionDeleted', { name: rec.name }), 'success');
       } catch (e) {
-        get().notify(`删除服务器失败: ${String(e)}`, 'error');
+        get().notify(tNow('state.deleteSessionFailed', { error: String(e) }), 'error');
       }
     },
     pendingCloseTabs: null,
@@ -700,13 +712,13 @@ export const useAppStore = create<AppStore>((set, get) => {
           passphrase: passphrase ?? null,
         });
         // 12.1：通知附加动作（actionId 注册表分发，arg 为导出文件路径）
-        get().notify(`已导出: ${r.path}`, 'success', {
-          label: '打开所在目录',
+        get().notify(tNow('state.exported', { path: r.path }), 'success', {
+          label: tNow('state.openInExplorer'),
           actionId: 'open-in-explorer',
           arg: r.path,
         });
       } catch (e) {
-        get().notify(`导出失败: ${String(e)}`, 'error');
+        get().notify(tNow('state.exportFailed', { error: String(e) }), 'error');
       }
     },
 
@@ -719,11 +731,15 @@ export const useAppStore = create<AppStore>((set, get) => {
         await get().loadSessions();
         await get().loadTunnelDefs();
         get().notify(
-          `导入完成: ${r.sessions} 会话 / ${r.tunnels} 隧道 / ${r.credentials} 凭据`,
+          tNow('state.importDone', {
+            sessions: r.sessions,
+            tunnels: r.tunnels,
+            credentials: r.credentials,
+          }),
           'success',
         );
       } catch (e) {
-        get().notify(`导入失败: ${String(e)}`, 'error');
+        get().notify(tNow('state.importFailed', { error: String(e) }), 'error');
       }
     },
 

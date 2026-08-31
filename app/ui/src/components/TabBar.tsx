@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { isLocalTarget, useAppStore, type Tab } from '../state/app-store';
 import { ContextMenu, type MenuItem } from './ContextMenu';
+import { useT } from '../i18n';
 
 const STATE_DOT: Record<string, string> = {
   connecting: 'bg-yellow-500',
@@ -12,6 +13,7 @@ const STATE_DOT: Record<string, string> = {
 
 export function TabBar() {
   const tabs = useAppStore((s) => s.tabs);
+  const tr = useT();
   const activeId = useAppStore((s) => s.activeId);
   const setActive = useAppStore((s) => s.setActive);
   const closeTab = useAppStore((s) => s.closeTab);
@@ -31,52 +33,52 @@ export function TabBar() {
     // 本地会话禁用 SSH 专属入口（SFTP/监控/隧道）；分屏/分离窗口可用
     const isRemote = isSession && !isLocalTarget(t.target);
     return [
-      { label: '重新连接', icon: '▶', onSelect: () => s.reconnectTab(t.id) },
-      { label: '断开', icon: '⏻', onSelect: () => s.disconnectTab(t.id) },
+      { label: tr('chrome.menuReconnect'), icon: '▶', onSelect: () => s.reconnectTab(t.id) },
+      { label: tr('chrome.menuDisconnect'), icon: '⏻', onSelect: () => s.disconnectTab(t.id) },
       'separator',
       {
-        label: '打开 SFTP',
+        label: tr('chrome.menuOpenSftp'),
         icon: '⇅',
         disabled: !isRemote,
         onSelect: () => {
           s.setActive(t.id);
-          if (!s.sftpOpen[t.id]) s.toggleSftp(t.id);
+          s.openDock('sftp');
         },
       },
       {
-        label: '打开监控',
+        label: tr('chrome.menuOpenMetrics'),
         icon: '∿',
         disabled: !isRemote,
         onSelect: () => {
           s.setActive(t.id);
-          if (!s.metricsOpen[t.id]) s.toggleMetrics(t.id);
+          s.openDock('metrics');
         },
       },
       {
-        label: '管理隧道',
+        label: tr('chrome.menuTunnels'),
         icon: '⇄',
         disabled: isSession && !isRemote,
         onSelect: () => {
-          if (!s.tunnelPanelOpen) s.toggleTunnelPanel();
+          s.openDock('tunnel');
         },
       },
       'separator',
       {
-        label: '向右分屏',
+        label: tr('chrome.menuSplitRight'),
         onSelect: () => {
           s.setActive(t.id);
           s.splitActive('row');
         },
       },
       {
-        label: '向下分屏',
+        label: tr('chrome.menuSplitDown'),
         onSelect: () => {
           s.setActive(t.id);
           s.splitActive('col');
         },
       },
       {
-        label: '分离窗口',
+        label: tr('chrome.menuDetach'),
         icon: '⬈',
         disabled: !isSession,
         onSelect: () => {
@@ -84,21 +86,21 @@ export function TabBar() {
         },
       },
       'separator',
-      { label: '关闭', icon: '✕', onSelect: () => s.closeTab(t.id) },
+      { label: tr('chrome.menuClose'), icon: '✕', onSelect: () => s.closeTab(t.id) },
       {
-        label: '关闭其他',
+        label: tr('chrome.menuCloseOthers'),
         icon: '✕',
         disabled: s.tabs.length < 2,
         onSelect: () => s.closeOtherTabs(t.id),
       },
       {
-        label: '关闭右侧',
+        label: tr('chrome.menuCloseRight'),
         icon: '✕',
         disabled: idx < 0 || idx >= s.tabs.length - 1,
         onSelect: () => s.closeTabsToRight(t.id),
       },
       {
-        label: '关闭全部',
+        label: tr('chrome.menuCloseAll'),
         icon: '✕',
         disabled: s.tabs.length < 2,
         onSelect: () => s.closeAllTabs(),
@@ -162,7 +164,10 @@ export function TabBar() {
             <span className="max-w-40 truncate">{t.title}</span>
             {/* 12.6：bell 待读标记（非活跃标签收到 BEL；激活即清，静态点无动画） */}
             {bellTabs.includes(t.id) && (
-              <span className="h-1.5 w-1.5 rounded-full bg-blue-400" title="终端响铃" />
+              <span
+                className="h-1.5 w-1.5 rounded-full bg-blue-400"
+                title={tr('chrome.bellTitle')}
+              />
             )}
             <button
               className="ml-1 hidden group-focus-within:inline text-neutral-500 hover:text-neutral-200 group-hover:inline"
@@ -170,7 +175,7 @@ export function TabBar() {
                 e.stopPropagation();
                 closeTab(t.id);
               }}
-              aria-label="close tab"
+              aria-label={tr('chrome.closeTabAria')}
             >
               ×
             </button>
@@ -181,9 +186,9 @@ export function TabBar() {
       <button
         className="rounded px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
         onClick={() => openConnect()}
-        aria-label="new connection"
+        aria-label={tr('chrome.newConnection')}
       >
-        新建
+        {tr('chrome.newConnection')}
       </button>
       {menu && (
         <ContextMenu

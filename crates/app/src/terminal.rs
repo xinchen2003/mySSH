@@ -73,6 +73,25 @@ pub struct TermOpenSpec {
     pub term: Option<String>,
     /// 启动命令；None = 登录 shell
     pub command: Option<String>,
+    /// 终端编码（encoding_rs 标签）；默认 utf-8 = 直通不转码
+    #[serde(default = "default_encoding")]
+    pub encoding: String,
+}
+
+fn default_encoding() -> String {
+    "utf-8".into()
+}
+
+/// 会话编码生效值：term_open 显式入参优先，其次解析结果（档案/内联 spec），最后 utf-8
+fn effective_encoding(
+    explicit: Option<&str>,
+    resolved: &str,
+) -> Option<&'static encoding_rs::Encoding> {
+    let name = explicit
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(resolved);
+    crate::encoding::lookup(name)
 }
 
 /// AuthSpec → core-ssh 认证材料（Zeroizing 包裹秘密）
@@ -164,6 +183,8 @@ struct TermSession {
     writer: Arc<AnyWriter>,
     /// 来源会话档案 id（内联 spec 连接为 None）：随会话隧道的归属键
     session_id: Option<String>,
+    /// 输入转码器（非 utf-8 会话）：UTF-8 → 目标编码；None = 直通零拷贝
+    input_enc: Option<Arc<Mutex<crate::encoding::InputEncoder>>>,
     credits: Arc<Semaphore>,
     outstanding: Arc<AtomicI64>,
     /// 最新终端尺寸：重连开 PTY 用（resize 命令实时更新）
@@ -230,6 +251,8 @@ pub(crate) fn known_hosts_path() -> std::path::PathBuf {
 pub async fn term_open(
     spec: Option<TermOpenSpec>,
     session_id: Option<String>,
+    // 前端显式指定的终端编码（档案会话可覆盖记录值）；空/缺省 = 取解析结果
+    encoding: Option<String>,
     data: Channel<Response>,
     events: Channel<Value>,
     cols: u32,
@@ -252,6 +275,10 @@ pub async fn term_open(
         crate::sessions::ResolvedTarget::Ssh(s) => s,
         crate::sessions::ResolvedTarget::Local(ls) => {
             // 本地会话：ConPTY 直连读循环；无 SSH 连接/hostkey/KI/随会话隧道
+            // 终端编码：中文 Windows ConPTY 默认 GBK，非 utf-8 时流式转码
+            let out_encoding = effective_encoding(encoding.as_deref(), &ls.encoding);
+            let input_enc =
+                out_encoding.map(|e| Arc::new(Mutex::new(crate::encoding::InputEncoder::new(e))));
             let pty = tauri::async_runtime::spawn_blocking(move || {
                 crate::local_pty::spawn(&ls, cols, rows)
             })
@@ -267,6 +294,7 @@ pub async fn term_open(
                 tunnel_mgr: tunnels_state.mgr.clone(),
                 store: sessions.store.clone(),
                 backend: Backend::Local,
+                out_encoding,
                 data,
                 events: events.clone(),
                 credits: credits.clone(),
@@ -278,6 +306,7 @@ pub async fn term_open(
                 TermSession {
                     writer: Arc::new(AnyWriter::Local(pty.writer)),
                     session_id: via_session,
+                    input_enc,
                     credits,
                     outstanding,
                     cols: AtomicU64::new(cols as u64),
@@ -295,6 +324,10 @@ pub async fn term_open(
 
     let auth = auth_method_from(&spec.auth);
     let jump_chain = jump_chain_from(&spec.jump_chain);
+    // 终端编码：非 utf-8 时输出流式 decode → UTF-8，输入 UTF-8 → 目标编码
+    let out_encoding = effective_encoding(encoding.as_deref(), &spec.encoding);
+    let input_enc =
+        out_encoding.map(|e| Arc::new(Mutex::new(crate::encoding::InputEncoder::new(e))));
 
     // hostkey 决策桥：prompter 经 events 发弹窗帧，oneshot 等 hostkey_confirm 命令
     let hk_events = events.clone();
@@ -408,6 +441,7 @@ pub async fn term_open(
             term,
             command: spec.command.clone(),
         })),
+        out_encoding,
         data,
         events: events.clone(),
         credits: credits.clone(),
@@ -420,6 +454,7 @@ pub async fn term_open(
         TermSession {
             writer: Arc::new(AnyWriter::Ssh(writer)),
             session_id: via_session,
+            input_enc,
             credits,
             outstanding,
             cols: AtomicU64::new(cols as u64),
@@ -466,6 +501,8 @@ struct SuperviseCtx {
     tunnel_mgr: Arc<core_tunnel::TunnelManager>,
     store: Arc<core_store::Store>,
     backend: Backend,
+    /// 输出转码（非 utf-8 会话）：读循环内建 Decoder，重连即重建
+    out_encoding: Option<&'static encoding_rs::Encoding>,
     data: Channel<Response>,
     events: Channel<Value>,
     credits: Arc<Semaphore>,
@@ -475,7 +512,14 @@ struct SuperviseCtx {
 
 async fn supervise(mut ctx: SuperviseCtx) {
     loop {
-        read_loop(&mut ctx.reader, &ctx.data, &ctx.credits, &ctx.outstanding).await;
+        read_loop(
+            &mut ctx.reader,
+            &ctx.data,
+            &ctx.credits,
+            &ctx.outstanding,
+            ctx.out_encoding,
+        )
+        .await;
 
         // 用户主动关闭：表项已被 term_close 摘除 → 静默退出
         if !ctx.mgr.sessions.lock().contains_key(&ctx.tab_id) {
@@ -568,12 +612,21 @@ pub async fn term_input(
     bytes: Vec<u8>,
     state: tauri::State<'_, Arc<TerminalManager>>,
 ) -> Result<(), String> {
-    let writer = {
+    // 输入转码在锁内取走编码器引用（Arc 克隆即释放锁），utf-8（None）零拷贝直通
+    let entry = {
         let sessions = state.sessions.lock();
-        sessions.get(&tab_id).map(|s| s.writer.clone())
+        sessions
+            .get(&tab_id)
+            .map(|s| (s.writer.clone(), s.input_enc.clone()))
     };
-    match writer {
-        Some(w) => w.write(&bytes).await.map_err(|e| e.to_string()),
+    match entry {
+        Some((w, input_enc)) => {
+            let bytes = match input_enc {
+                Some(enc) => enc.lock().encode(&bytes),
+                None => bytes,
+            };
+            w.write(&bytes).await.map_err(|e| e.to_string())
+        }
         None => Err(format!("unknown tab {tab_id}")),
     }
 }
@@ -687,9 +740,13 @@ async fn read_loop(
     data_ch: &Channel<Response>,
     credits: &Arc<Semaphore>,
     outstanding: &Arc<AtomicI64>,
+    out_encoding: Option<&'static encoding_rs::Encoding>,
 ) {
     let mut agg: Vec<u8> = Vec::with_capacity(AGG_CAP);
     let mut flush_at = Instant::now() + AGG_WINDOW;
+    // 非 utf-8：流式 Decoder（跨帧半字符内部缓冲），decode 产物进既有聚合通路；
+    // utf-8（None）：完全直通，不引入任何拷贝
+    let mut decoder = out_encoding.map(crate::encoding::OutputDecoder::new);
 
     loop {
         let delay = tokio::time::sleep_until(tokio::time::Instant::from_std(flush_at));
@@ -698,7 +755,10 @@ async fn read_loop(
             msg = reader.next_data() => {
                 match msg {
                     Some(bytes) => {
-                        agg.extend_from_slice(&bytes);
+                        match decoder.as_mut() {
+                            Some(dec) => dec.decode_append(&bytes, &mut agg),
+                            None => agg.extend_from_slice(&bytes),
+                        }
                         if agg.len() >= AGG_CAP {
                             flush(data_ch, &mut agg, credits, outstanding).await;
                             flush_at = Instant::now() + AGG_WINDOW;

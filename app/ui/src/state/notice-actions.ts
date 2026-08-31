@@ -3,13 +3,14 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from './app-store';
+import { tNow } from '../i18n';
 
 export const NOTICE_ACTIONS: Record<string, (arg?: string) => void> = {
   /** 资源管理器定位文件/目录（config_export 等产物路径） */
   'open-in-explorer': (arg) => {
     if (!arg) return;
     invoke('open_in_explorer', { path: arg }).catch((e: unknown) => {
-      useAppStore.getState().notify(`打开目录失败: ${String(e)}`, 'error');
+      useAppStore.getState().notify(tNow('state.openDirFailed', { error: String(e) }), 'error');
     });
   },
 };
@@ -17,5 +18,6 @@ export const NOTICE_ACTIONS: Record<string, (arg?: string) => void> = {
 export function runNoticeAction(actionId: string, arg?: string): void {
   const fn = NOTICE_ACTIONS[actionId];
   if (fn) fn(arg);
-  else useAppStore.getState().notify(`未知通知动作: ${actionId}`, 'warning');
+  else
+    useAppStore.getState().notify(tNow('state.unknownNoticeAction', { id: actionId }), 'warning');
 }

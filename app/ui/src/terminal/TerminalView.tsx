@@ -18,6 +18,7 @@ import { SearchBar, type SearchOptions, type SearchResults } from '../components
 import { ContextMenu, type MenuItem } from '../components/ContextMenu';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useTransferStore } from '../state/transfer-store';
+import { useT, tNow } from '../i18n';
 /**
  * pane 终端运行时（条目 6a）：跨布局变化（leaf↔split 重挂）保活的 xterm 实例。
  * 分屏/合屏改变 SplitTree 的嵌套结构 → TerminalView 必卸载重挂；
@@ -72,6 +73,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
   const [menu, setMenu] = useState<{ x: number; y: number; canCopy: boolean } | null>(null);
   /** 多行粘贴确认（批次十一）：非空时渲染确认框，text 为待粘贴原文 */
   const [pasteConfirm, setPasteConfirm] = useState<{ text: string; lines: number } | null>(null);
+  const t = useT();
 
   /** 统一粘贴入口（快捷键/右键直贴/菜单项三路共用）：去除尾部单个换行后仍含换行 → 确认；
    *  单行直贴。确认框默认焦点在「取消」（ConfirmDialog 语义），防误回车批量执行命令 */
@@ -92,7 +94,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
         if (text) confirmPaste(text);
       })
       .catch(() => {
-        useAppStore.getState().notify('读取剪贴板失败：可能被其他程序占用', 'error');
+        useAppStore.getState().notify(tNow('state.clipboardReadFailed'), 'error');
       });
   };
 
@@ -104,7 +106,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
     const attachNow = (r: PaneRuntime) => {
       pane.session.attach(r.term, tab.target, r.stateHook).catch((e: unknown) => {
         setPaneState(tab.id, pane.id, 'error');
-        const msg = `连接失败: ${String(e)}`;
+        const msg = tNow('state.connectFailed', { error: String(e) });
         r.ui.setDead(msg);
         if (tab.target.kind === 'session')
           useAppStore.getState().recordConnectFailure(tab.target.sessionId, msg);
@@ -175,17 +177,17 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
           if (ev.state === 'reconnecting') {
             rtNew.sawReconnect = true;
             rtNew.term.write(
-              `\r\n\x1b[33m[连接中断，正在第 ${ev.attempt ?? '?'} 次重连…]\x1b[0m\r\n`,
+              `\r\n\x1b[33m${tNow('state.reconnecting', { attempt: ev.attempt ?? '?' })}\x1b[0m\r\n`,
             );
           } else if (ev.state === 'connected') {
             rtNew.sawReconnect = false;
             rtNew.ui.setDead(null);
-            if (ev.reconnected) rtNew.term.write('\x1b[32m[已重连]\x1b[0m\r\n');
+            if (ev.reconnected) rtNew.term.write(`\x1b[32m${tNow('state.reconnected')}\x1b[0m\r\n`);
           } else if (ev.state === 'closed') {
-            rtNew.term.write('\r\n\x1b[2m[连接已关闭]\x1b[0m\r\n');
+            rtNew.term.write(`\r\n\x1b[2m${tNow('state.connClosed')}\x1b[0m\r\n`);
             // 重连耗尽（后端发 closed 终态）→ 原位操作层；用户主动 exit 的关闭不打扰
             if (rtNew.sawReconnect) {
-              const msg = `连接中断，自动重连已耗尽（${reconnectAttempts} 次尝试）`;
+              const msg = tNow('state.reconnectExhausted', { count: reconnectAttempts });
               rtNew.ui.setDead(msg);
               if (tab.target.kind === 'session')
                 useAppStore.getState().recordConnectFailure(tab.target.sessionId, msg);
@@ -299,7 +301,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       runtime.sawReconnect = false;
       runtime.ui.setDead(null);
       setPaneState(tab.id, pane.id, 'connecting');
-      term.write('\r\n\x1b[33m[正在重新连接…]\x1b[0m\r\n');
+      term.write(`\r\n\x1b[33m${tNow('state.reconnectingNow')}\x1b[0m\r\n`);
       attachNow(runtime);
     };
     reconnectRegistry.set(pane.id, () => reconnectRef.current());
@@ -349,7 +351,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
             className="shrink-0 rounded bg-blue-600 px-2 py-0.5 text-white hover:bg-blue-500"
             onClick={() => reconnectRef.current()}
           >
-            立即重连
+            {t('state.reconnectNow')}
           </button>
           {tab.target.kind === 'session' && (
             <button
@@ -360,17 +362,17 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
                 const s = useAppStore.getState();
                 const rec = s.sessions.find((r) => r.id === t.sessionId);
                 if (rec) s.openConnect(rec);
-                else s.notify('未找到会话档案，可能已被删除', 'warning');
+                else s.notify(tNow('state.sessionNotFound'), 'warning');
               }}
             >
-              编辑连接
+              {t('state.editConnection')}
             </button>
           )}
           <button
             className="shrink-0 rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800"
             onClick={() => closePane(tab.id, pane.id)}
           >
-            关闭
+            {t('state.close')}
           </button>
         </div>
       )}
@@ -415,16 +417,16 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
       {/* 批次十一 1：多行粘贴确认（默认焦点在取消，防误回车执行多条命令） */}
       {pasteConfirm && (
         <ConfirmDialog
-          title="确认粘贴多行文本？"
-          confirmLabel="粘贴"
+          title={t('state.pasteConfirmTitle')}
+          confirmLabel={t('state.key.paste')}
           onCancel={() => setPasteConfirm(null)}
           onConfirm={() => {
             termRegistry.get(pane.id)?.paste(pasteConfirm.text);
             setPasteConfirm(null);
           }}
         >
-          <p className="mb-1">将粘贴 {pasteConfirm.lines} 行，可能包含多条命令。</p>
-          <p className="text-red-300">请确认内容可信后再粘贴。</p>
+          <p className="mb-1">{t('state.pasteConfirmBody', { lines: pasteConfirm.lines })}</p>
+          <p className="text-red-300">{t('state.pasteConfirmWarn')}</p>
         </ConfirmDialog>
       )}
     </div>
@@ -438,9 +440,9 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
     const isRemote = isSession && !isLocalTarget(tab.target);
     const paste = () => readClipboard();
     return [
-      { label: '粘贴', icon: '⤵', onSelect: paste },
+      { label: t('state.key.paste'), icon: '⤵', onSelect: paste },
       {
-        label: '复制',
+        label: t('state.menu.copy'),
         icon: '⧉',
         disabled: !canCopy,
         onSelect: () => {
@@ -451,23 +453,27 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
             });
         },
       },
-      { label: '全选', icon: '□', onSelect: () => term?.selectAll() },
-      { label: '搜索', icon: '⌕', onSelect: () => setSearchOpen(true) },
+      { label: t('state.menu.selectAll'), icon: '□', onSelect: () => term?.selectAll() },
+      { label: t('state.menu.search'), icon: '⌕', onSelect: () => setSearchOpen(true) },
       'separator',
-      { label: '清空屏幕', icon: '⌫', onSelect: () => term?.write('\x1b[2J\x1b[H') },
-      { label: '清空回滚', icon: '⌫', onSelect: () => term?.write('\x1b[3J') },
-      'separator',
-      { label: '向右分屏', onSelect: () => s.splitActive('row') },
-      { label: '向下分屏', onSelect: () => s.splitActive('col') },
-      'separator',
-      { label: '重新连接', icon: '▶', onSelect: () => reconnectRef.current() },
       {
-        label: '打开 SFTP',
+        label: t('state.menu.clearScreen'),
+        icon: '⌫',
+        onSelect: () => term?.write('\x1b[2J\x1b[H'),
+      },
+      { label: t('state.menu.clearScrollback'), icon: '⌫', onSelect: () => term?.write('\x1b[3J') },
+      'separator',
+      { label: t('state.key.splitRow'), onSelect: () => s.splitActive('row') },
+      { label: t('state.key.splitCol'), onSelect: () => s.splitActive('col') },
+      'separator',
+      { label: t('state.menu.reconnect'), icon: '▶', onSelect: () => reconnectRef.current() },
+      {
+        label: t('state.menu.openSftp'),
         icon: '⇅',
         disabled: !isRemote,
         onSelect: () => {
-          if (!s.sftpOpen[tab.id]) s.toggleSftp(tab.id);
-          // 面板已开时定位到终端 cwd（SftpPanel 消费 navRequests，不入历史栈）
+          s.openDock('sftp');
+          // 面板打开后定位到终端 cwd（SftpPanel 消费 navRequests，不入历史栈）
           const cwd = pane.session.cwd;
           if (cwd) useTransferStore.getState().requestNav(tab.id, cwd);
         },

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { isLocalTarget, useAppStore } from '../state/app-store';
 import type { MetricsEvent, MetricsSnapshot } from '../term/types';
-import { usePanelHeight } from './panel-height';
+import { useT, type MsgKey } from '../i18n';
 
 /** 环形缓冲长度（2s 间隔 ≈ 4 分钟窗口） */
 const CAP = 120;
@@ -35,9 +35,9 @@ const fmtBps = (v: number): string => {
 const sumOpt = (xs: (number | null | undefined)[]): number | null =>
   xs.some((x) => x == null) ? null : (xs as number[]).reduce((a, b) => a + b, 0);
 
-const CHARTS: { title: string; series: Series[] }[] = [
+const CHARTS: { title: MsgKey; series: Series[] }[] = [
   {
-    title: 'CPU / 内存 %',
+    title: 'panels.chartCpuMem',
     series: [
       {
         label: 'cpu',
@@ -57,7 +57,7 @@ const CHARTS: { title: string; series: Series[] }[] = [
     ],
   },
   {
-    title: '网络 IO',
+    title: 'panels.chartNetIo',
     series: [
       {
         label: 'rx',
@@ -74,7 +74,7 @@ const CHARTS: { title: string; series: Series[] }[] = [
     ],
   },
   {
-    title: '磁盘 IO',
+    title: 'panels.chartDiskIo',
     series: [
       {
         label: 'read',
@@ -101,6 +101,7 @@ function Chart({
   series: Series[];
   buf: MetricsSnapshot[];
 }) {
+  const t = useT();
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const cv = ref.current;
@@ -125,7 +126,11 @@ function Chart({
       .join('  ');
     g.fillStyle = '#a3a3a3';
     g.font = '10px sans-serif';
-    g.fillText(`${title}   ${label}   [峰值 ${series[0]?.fmt(peak) ?? ''}]`, 6, 11);
+    g.fillText(
+      `${title}   ${label}   ${t('panels.chartPeak', { peak: series[0]?.fmt(peak) ?? '' })}`,
+      6,
+      11,
+    );
     const top = 14;
     const plotH = h - top - 2;
     for (const sr of series) {
@@ -152,8 +157,9 @@ function Chart({
 }
 
 export function MetricsPanel({ tabId }: { tabId: string }) {
+  const t = useT();
   const tabs = useAppStore((s) => s.tabs);
-  const toggleMetrics = useAppStore((s) => s.toggleMetrics);
+  const closeDock = useAppStore((s) => s.closeDock);
   const tab = tabs.find((t) => t.id === tabId);
   const rawSessionId = tab?.target.kind === 'session' ? tab.target.sessionId : null;
   // 本地会话无远程主机可监控：按无会话处理（return null）
@@ -188,7 +194,6 @@ export function MetricsPanel({ tabId }: { tabId: string }) {
     };
   }, [sessionId, intervalMs]);
 
-  const { height, handle } = usePanelHeight('metrics.height', 256);
   if (!sessionId) return null;
   const latest = buf.length > 0 ? buf[buf.length - 1] : null;
   const memUsedGb = latest ? (latest.memTotalKb - latest.memAvailKb) / 1048576 : 0;
@@ -196,23 +201,20 @@ export function MetricsPanel({ tabId }: { tabId: string }) {
   const swapUsedGb = latest ? (latest.swapTotalKb - latest.swapFreeKb) / 1048576 : 0;
 
   return (
-    <div
-      className="flex shrink-0 flex-col border-t border-neutral-700 bg-neutral-900 text-xs text-neutral-300"
-      style={{ height }}
-    >
-      {handle}
+    <div className="flex h-full min-h-0 flex-col bg-neutral-900 text-xs text-neutral-300">
       <div className="flex items-center gap-3 border-b border-neutral-800 px-2 py-1">
-        <span className="font-semibold text-neutral-200">监控</span>
+        <span className="font-semibold text-neutral-200">{t('panels.metricsTitle')}</span>
         {latest && (
           <span className="text-neutral-400">
-            load {latest.load.map((v) => v.toFixed(2)).join(' / ')} · 内存 {memUsedGb.toFixed(1)}/
-            {memTotalGb.toFixed(1)}G{latest.swapTotalKb > 0 && ` · swap ${swapUsedGb.toFixed(1)}G`}{' '}
-            · 进程 {latest.procsRunning}/{latest.procsTotal}
+            load {latest.load.map((v) => v.toFixed(2)).join(' / ')} · {t('panels.mem')}{' '}
+            {memUsedGb.toFixed(1)}/{memTotalGb.toFixed(1)}G
+            {latest.swapTotalKb > 0 && ` · swap ${swapUsedGb.toFixed(1)}G`} · {t('panels.procs')}{' '}
+            {latest.procsRunning}/{latest.procsTotal}
           </span>
         )}
         {error && (
           <span className={fatal ? 'text-red-400' : 'text-amber-400'}>
-            {fatal ? '采集不可用' : '采集异常'}: {error}
+            {fatal ? t('panels.metricsFatal') : t('panels.metricsError')}: {error}
           </span>
         )}
         <span className="ml-auto flex items-center gap-2">
@@ -220,8 +222,8 @@ export function MetricsPanel({ tabId }: { tabId: string }) {
             className="rounded bg-neutral-800 px-1 py-0.5"
             value={intervalMs}
             onChange={(e) => setIntervalMs(Number(e.target.value))}
-            title="采集间隔"
-            aria-label="采集间隔"
+            title={t('panels.sampleInterval')}
+            aria-label={t('panels.sampleInterval')}
           >
             <option value={2000}>2s</option>
             <option value={5000}>5s</option>
@@ -229,8 +231,8 @@ export function MetricsPanel({ tabId }: { tabId: string }) {
           </select>
           <button
             className="rounded px-1 text-neutral-500 hover:text-neutral-200"
-            onClick={() => toggleMetrics(tabId)}
-            aria-label="close metrics"
+            onClick={closeDock}
+            aria-label={t('panels.closeMetrics')}
           >
             ✕
           </button>
@@ -238,7 +240,7 @@ export function MetricsPanel({ tabId }: { tabId: string }) {
       </div>
       <div className="grid flex-1 grid-cols-3 gap-1 overflow-hidden px-1">
         {CHARTS.map((c) => (
-          <Chart key={c.title} title={c.title} series={c.series} buf={buf} />
+          <Chart key={c.title} title={t(c.title)} series={c.series} buf={buf} />
         ))}
       </div>
       <div className="h-24 overflow-y-auto border-t border-neutral-800">
@@ -249,7 +251,7 @@ export function MetricsPanel({ tabId }: { tabId: string }) {
               <th className="px-2 font-normal">RSS</th>
               <th className="px-2 font-normal">CPU%</th>
               <th className="px-2 font-normal">MEM%</th>
-              <th className="px-2 font-normal">进程</th>
+              <th className="px-2 font-normal">{t('panels.processColumn')}</th>
             </tr>
           </thead>
           <tbody>

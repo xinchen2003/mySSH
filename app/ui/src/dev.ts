@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { useAppStore } from './state/app-store';
+import { useAppStore, type DockTab } from './state/app-store';
 import { termRegistry } from './term/registry';
 import type { SessionRecord, TermOpenSpec } from './term/types';
 
@@ -66,7 +66,7 @@ export function installDevHooks(): void {
     tunnels: () => useAppStore.getState().tunnels,
     tunnelDefs: () => useAppStore.getState().tunnelDefs,
     loadTunnelDefs: () => useAppStore.getState().loadTunnelDefs(),
-    toggleTunnelPanel: () => useAppStore.getState().toggleTunnelPanel(),
+    toggleDock: (tab: DockTab) => useAppStore.getState().toggleDock(tab),
     /** 应答 hostkey 弹窗（与点按钮同路径） */
     answerHostKey: async (accept: boolean, remember: boolean) => {
       const p = useAppStore.getState().pendingHostKeys[0] ?? null;

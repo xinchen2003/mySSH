@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import type { LayoutNode } from '../term/layout';
 import { useAppStore, type Tab } from '../state/app-store';
 import { TerminalView } from '../terminal/TerminalView';
+import { useT } from '../i18n';
 
 /**
  * 递归渲染分屏布局树。flexGrow= ratio/1-ratio 配合 flexBasis:0 实现占比。
@@ -60,6 +61,7 @@ function PaneFrame({
   children: React.ReactNode;
 }) {
   const setActivePane = useAppStore((s) => s.setActivePane);
+  const t = useT();
   const closePane = useAppStore((s) => s.closePane);
   const active = tab.activePaneId === paneId;
   const multi = Object.keys(tab.panes).length > 1;
@@ -74,8 +76,8 @@ function PaneFrame({
           hover/focus-within 显示（键盘可达）；末叶走整标签关闭逻辑 */}
       <button
         className="absolute right-1 top-1 z-10 rounded bg-neutral-800/80 px-1.5 py-0.5 text-xs text-neutral-400 opacity-0 transition-opacity hover:bg-neutral-700 hover:text-neutral-100 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
-        title="关闭此窗格"
-        aria-label="关闭此窗格"
+        title={t('panels.closePane')}
+        aria-label={t('panels.closePane')}
         onClick={(e) => {
           e.stopPropagation();
           closePane(tab.id, paneId);

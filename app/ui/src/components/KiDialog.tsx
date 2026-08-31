@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../state/app-store';
 import type { KiChallengeFrame } from '../term/types';
 import { Dialog } from './Dialog';
+import { useT } from '../i18n';
 
 /**
  * keyboard-interactive（2FA）逐轮应答弹窗。
@@ -20,6 +21,7 @@ export function KiDialog() {
 }
 
 function KiForm({ pending }: { pending: KiChallengeFrame }) {
+  const t = useT();
   const clear = useAppStore((s) => s.shiftKi);
   const [answers, setAnswers] = useState<string[]>(() => pending.prompts.map(() => ''));
 
@@ -30,13 +32,13 @@ function KiForm({ pending }: { pending: KiChallengeFrame }) {
 
   return (
     <Dialog
-      title="键盘交互认证"
+      title={t('dialogs.kiTitle')}
       onClose={() => submit(null)}
       closeOnBackdrop={false}
       backdropClass="z-20"
       panelClass="w-96 rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
     >
-      <h2 className="mb-1 text-base font-semibold">二次认证</h2>
+      <h2 className="mb-1 text-base font-semibold">{t('dialogs.kiHeading')}</h2>
       {pending.name && <p className="text-xs text-neutral-400">{pending.name}</p>}
       {pending.instruction && (
         <p className="mb-2 text-xs text-neutral-400">{pending.instruction}</p>
@@ -63,13 +65,13 @@ function KiForm({ pending }: { pending: KiChallengeFrame }) {
           className="rounded px-3 py-1 text-neutral-400 hover:bg-neutral-800"
           onClick={() => submit(null)}
         >
-          取消
+          {t('dialogs.cancel')}
         </button>
         <button
           className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500"
           onClick={() => submit(answers)}
         >
-          确定
+          {t('dialogs.ok')}
         </button>
       </div>
     </Dialog>

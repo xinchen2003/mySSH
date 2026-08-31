@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useT } from '../i18n';
 
 export interface SearchOptions {
   caseSensitive: boolean;
@@ -25,6 +26,7 @@ export function SearchBar({
   onClose: () => void;
   results: SearchResults | null;
 }) {
+  const t = useT();
   const inputRef = useRef<HTMLInputElement>(null);
   const [opts, setOpts] = useState<SearchOptions>({ caseSensitive: false, wholeWord: false });
   useEffect(() => inputRef.current?.focus(), []);
@@ -40,8 +42,8 @@ export function SearchBar({
       <input
         ref={inputRef}
         className="w-48 rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-200 outline-none focus-visible:ring-1 focus-visible:ring-neutral-500"
-        placeholder="搜索回滚…"
-        aria-label="搜索终端输出"
+        placeholder={t('panels.searchScrollback')}
+        aria-label={t('panels.searchTerminalOutput')}
         onChange={() => find('next')}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
@@ -55,7 +57,7 @@ export function SearchBar({
       />
       <button
         className={toggleBtn(opts.caseSensitive)}
-        title="区分大小写"
+        title={t('panels.matchCase')}
         aria-pressed={opts.caseSensitive}
         onClick={() => {
           const next = { ...opts, caseSensitive: !opts.caseSensitive };
@@ -67,7 +69,7 @@ export function SearchBar({
       </button>
       <button
         className={toggleBtn(opts.wholeWord)}
-        title="全词匹配"
+        title={t('panels.wholeWord')}
         aria-pressed={opts.wholeWord}
         onClick={() => {
           const next = { ...opts, wholeWord: !opts.wholeWord };
@@ -75,7 +77,7 @@ export function SearchBar({
           find('next', next);
         }}
       >
-        ⌗词
+        ⌗{t('panels.wholeWordLabel')}
       </button>
       <span
         className="min-w-10 text-center text-xs tabular-nums text-neutral-500"
@@ -84,31 +86,31 @@ export function SearchBar({
       >
         {results
           ? results.count === 0 || results.index < 0
-            ? '无结果'
+            ? t('panels.noResults')
             : `${results.index + 1}/${results.count}`
           : ''}
       </span>
       <button
         className="px-1 text-xs text-neutral-400 hover:text-neutral-100"
         onClick={() => find('prev')}
-        title="上一个 (Shift+Enter)"
-        aria-label="上一个"
+        title={t('panels.previousMatch')}
+        aria-label={t('panels.previous')}
       >
         ↑
       </button>
       <button
         className="px-1 text-xs text-neutral-400 hover:text-neutral-100"
         onClick={() => find('next')}
-        title="下一个 (Enter)"
-        aria-label="下一个"
+        title={t('panels.nextMatch')}
+        aria-label={t('panels.next')}
       >
         ↓
       </button>
       <button
         className="px-1 text-xs text-neutral-400 hover:text-neutral-100"
         onClick={onClose}
-        title="关闭 (Esc)"
-        aria-label="关闭搜索"
+        title={t('panels.closeSearchEsc')}
+        aria-label={t('panels.closeSearch')}
       >
         ×
       </button>

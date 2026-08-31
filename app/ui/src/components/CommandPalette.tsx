@@ -5,8 +5,9 @@ import { fuzzyMatchAny } from '../term/fuzzy';
 import { KEY_ACTIONS, keymapFromSettings } from '../term/keymap';
 import { reconnectRegistry } from '../term/registry';
 import { BUILTIN_THEMES } from '../term/themes';
-import { isLocalTarget, useAppStore } from '../state/app-store';
+import { useAppStore } from '../state/app-store';
 import { GROUP_KEYS, readStringList, sshCommand } from '../state/groups';
+import { tNow, useT } from '../i18n';
 
 /**
  * 全局命令面板（Ctrl+Shift+P）：会话/分组/动作三类分区检索。
@@ -27,9 +28,9 @@ interface Action {
 
 /** 动作项的快捷键展示：生效主绑定 + 固定别名；无 keyId 落回「命令」 */
 function shortcutOf(a: Action, settings: Record<string, unknown>): string {
-  if (!a.keyId) return '命令';
+  if (!a.keyId) return tNow('chrome.commandFallback');
   const b = keymapFromSettings(settings)[a.keyId];
-  if (!b) return '命令';
+  if (!b) return tNow('chrome.commandFallback');
   const alias = KEY_ACTIONS.find((x) => x.id === a.keyId)?.alias;
   return b + (alias ? ` / ${alias}` : '');
 }
@@ -51,31 +52,13 @@ function activeSessionId(): string | null {
 /** 由外层 {paletteOpen && <CommandPalette/>} 控制挂载——重挂载即重置态，无需 effect 重置 */
 export function CommandPalette() {
   const toggle = useAppStore((s) => s.togglePalette);
+  const t = useT();
   const sessions = useAppStore((s) => s.sessions);
   const connectBySession = useAppStore((s) => s.connectBySession);
   const openConnect = useAppStore((s) => s.openConnect);
-  const toggleTunnelPanel = useAppStore((s) => s.toggleTunnelPanel);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const exportConfig = useAppStore((s) => s.exportConfig);
   const importConfigFile = useAppStore((s) => s.importConfigFile);
-  const toggleSftpActive = () => {
-    const s = useAppStore.getState();
-    const tab = s.tabs.find((t) => t.id === s.activeId);
-    if (tab && isLocalTarget(tab.target)) {
-      s.notify('本地会话不支持 SFTP', 'warning');
-      return;
-    }
-    if (s.activeId) s.toggleSftp(s.activeId);
-  };
-  const toggleMetricsActive = () => {
-    const s = useAppStore.getState();
-    const tab = s.tabs.find((t) => t.id === s.activeId);
-    if (tab && isLocalTarget(tab.target)) {
-      s.notify('本地会话不支持服务器监控', 'warning');
-      return;
-    }
-    if (s.activeId) s.toggleMetrics(s.activeId);
-  };
 
   const [query, setQuery] = useState('');
   const settings = useAppStore((s) => s.settings);
@@ -87,10 +70,10 @@ export function CommandPalette() {
 
   const actions = useMemo<Action[]>(
     () => [
-      { id: 'a-new', label: '新建会话', keyId: 'newTab', run: () => openConnect() },
+      { id: 'a-new', label: t('chrome.actNew'), keyId: 'newTab', run: () => openConnect() },
       {
         id: 'a-reconnect-pane',
-        label: '重新连接当前 pane',
+        label: t('chrome.actReconnectPane'),
         run: () => {
           const ctx = activeTabPane();
           if (ctx) reconnectRegistry.get(ctx.paneId)?.();
@@ -98,7 +81,7 @@ export function CommandPalette() {
       },
       {
         id: 'a-disconnect-pane',
-        label: '断开当前连接',
+        label: t('chrome.actDisconnectPane'),
         run: () => {
           const ctx = activeTabPane();
           if (ctx) ctx.s.disconnectPane(ctx.tab.id, ctx.paneId);
@@ -106,7 +89,7 @@ export function CommandPalette() {
       },
       {
         id: 'a-close-pane',
-        label: '关闭当前 pane',
+        label: t('chrome.actClosePane'),
         run: () => {
           const ctx = activeTabPane();
           if (ctx) ctx.s.closePane(ctx.tab.id, ctx.paneId);
@@ -114,7 +97,7 @@ export function CommandPalette() {
       },
       {
         id: 'a-close-tab',
-        label: '关闭当前标签',
+        label: t('chrome.actCloseTab'),
         keyId: 'closeTab',
         run: () => {
           const s = useAppStore.getState();
@@ -123,7 +106,7 @@ export function CommandPalette() {
       },
       {
         id: 'a-close-other-tabs',
-        label: '关闭其他标签',
+        label: t('chrome.actCloseOtherTabs'),
         run: () => {
           const s = useAppStore.getState();
           if (s.activeId) s.closeOtherTabs(s.activeId);
@@ -131,108 +114,113 @@ export function CommandPalette() {
       },
       {
         id: 'a-split-row',
-        label: '向右分屏',
+        label: t('chrome.menuSplitRight'),
         keyId: 'splitRow',
         run: () => useAppStore.getState().splitActive('row'),
       },
       {
         id: 'a-split-col',
-        label: '向下分屏',
+        label: t('chrome.menuSplitDown'),
         keyId: 'splitCol',
         run: () => useAppStore.getState().splitActive('col'),
       },
       {
         id: 'a-sftp',
-        label: '打开当前服务器 SFTP',
+        label: t('chrome.actOpenSftp'),
         keyId: 'sftp',
-        run: () => toggleSftpActive(),
+        // 本地会话守卫在 openDock 内（含通知）
+        run: () => useAppStore.getState().toggleDock('sftp'),
       },
       {
         id: 'a-metrics',
-        label: '打开当前服务器监控',
+        label: t('chrome.actOpenMetrics'),
         keyId: 'metrics',
-        run: () => toggleMetricsActive(),
+        run: () => useAppStore.getState().toggleDock('metrics'),
       },
       {
         id: 'a-tunnel',
-        label: '管理当前服务器隧道',
+        label: t('chrome.actManageTunnels'),
         keyId: 'tunnels',
-        run: () => toggleTunnelPanel(),
+        run: () => useAppStore.getState().toggleDock('tunnel'),
       },
       {
         id: 'a-favorite',
-        label: '收藏当前服务器（切换）',
+        label: t('chrome.actFavorite'),
         run: () => {
           const sid = activeSessionId();
           if (sid) useAppStore.getState().toggleFavorite(sid);
-          else useAppStore.getState().notify('当前标签不是服务器档案连接', 'warning');
+          else useAppStore.getState().notify(tNow('chrome.notServerTab'), 'warning');
         },
       },
       {
         id: 'a-detach',
-        label: '分离窗口（当前服务器）',
+        label: t('chrome.actDetach'),
         run: () => {
           const sid = activeSessionId();
           const ctx = activeTabPane();
           if (sid && ctx) ctx.s.connectInNewWindow(sid, ctx.tab.title);
-          else useAppStore.getState().notify('当前标签不是服务器档案连接', 'warning');
+          else useAppStore.getState().notify(tNow('chrome.notServerTab'), 'warning');
         },
       },
       {
         id: 'a-copy-ssh',
-        label: '复制 SSH 命令（当前服务器）',
+        label: t('chrome.actCopySsh'),
         run: () => {
           const sid = activeSessionId();
           const s = useAppStore.getState();
           const rec = sid ? s.sessions.find((x) => x.id === sid) : undefined;
           if (!rec) {
-            s.notify('当前标签不是服务器档案连接', 'warning');
+            s.notify(tNow('chrome.notServerTab'), 'warning');
             return;
           }
           if (rec.kind === 'local') {
-            s.notify('本地会话没有 SSH 命令', 'warning');
+            s.notify(tNow('chrome.noSshForLocal'), 'warning');
             return;
           }
           void writeText(sshCommand(rec, s.sessions)).then(
-            () => s.notify('SSH 命令已复制', 'success'),
-            (e: unknown) => s.notify(`复制失败: ${String(e)}`, 'error'),
+            () => s.notify(tNow('chrome.sshCopied'), 'success'),
+            (e: unknown) => s.notify(tNow('chrome.copyFailed', { error: String(e) }), 'error'),
           );
         },
       },
       {
         id: 'a-theme',
-        label: '切换主题（循环内置主题）',
+        label: t('chrome.actTheme'),
         run: () => {
           const s = useAppStore.getState();
           const cur = typeof s.settings['theme'] === 'string' ? s.settings['theme'] : 'one-dark';
           const idx = BUILTIN_THEMES.findIndex((t) => t.id === cur);
           const next = BUILTIN_THEMES[(idx + 1) % BUILTIN_THEMES.length];
           s.setSetting('theme', next.id);
-          s.notify(`主题：${next.label}`, 'success');
+          s.notify(tNow('chrome.themeSwitched', { label: next.label }), 'success');
         },
       },
       {
         id: 'a-settings',
-        label: '设置',
+        label: t('chrome.settingsLabel'),
         keyId: 'settings',
         run: () => useAppStore.getState().toggleSettings(),
       },
-      { id: 'a-sidebar', label: '侧栏开关', run: () => toggleSidebar() },
-      { id: 'a-exp-plain', label: '导出配置（明文，不含凭据）', run: () => exportConfig(false) },
+      { id: 'a-sidebar', label: t('chrome.actSidebar'), run: () => toggleSidebar() },
+      {
+        id: 'a-exp-plain',
+        label: t('chrome.actExportPlain'),
+        run: () => exportConfig(false),
+      },
       {
         id: 'a-exp-enc',
-        label: '导出配置（加密，含凭据）',
-        input: { placeholder: '导出口令（导入时需同一口令）', secret: true },
+        label: t('chrome.actExportEnc'),
+        input: { placeholder: t('chrome.exportPassphrasePh'), secret: true },
         run: (p) => exportConfig(true, p),
       },
       {
         id: 'a-imp-cfg',
-        label: '导入配置文件（myssh-config-*.json）',
-        input: { placeholder: '配置文件完整路径' },
+        label: t('chrome.actImport'),
+        input: { placeholder: t('chrome.importPathPh') },
         run: (p) => importConfigFile(p ?? ''),
       },
     ],
-    [openConnect, toggleTunnelPanel, toggleSidebar, exportConfig, importConfigFile],
+    [openConnect, toggleSidebar, exportConfig, importConfigFile, t],
   );
 
   type Item =
@@ -324,14 +312,18 @@ export function CommandPalette() {
 
   /** 分区标题（item 与上一个 kind 不同即插入） */
   const sectionOf = (item: Item): string | null =>
-    item.kind === 'session' ? '服务器' : item.kind === 'group' ? '分组' : '操作';
+    item.kind === 'session'
+      ? t('chrome.sectionServers')
+      : item.kind === 'group'
+        ? t('chrome.sectionGroups')
+        : t('chrome.sectionActions');
 
   return (
     <div
       className="fixed inset-0 z-30 flex items-start justify-center bg-black/50 pt-24"
       role="dialog"
       aria-modal="true"
-      aria-label="命令面板"
+      aria-label={t('chrome.paletteLabel')}
       onClick={toggle}
     >
       <div
@@ -344,7 +336,7 @@ export function CommandPalette() {
             autoFocus
             className="w-full border-b border-neutral-800 bg-neutral-900 px-4 py-3 text-sm text-neutral-200 outline-none focus-visible:ring-1 focus-visible:ring-neutral-500"
             placeholder={pending.input?.placeholder}
-            aria-label={pending.input?.placeholder ?? '命令参数输入'}
+            aria-label={pending.input?.placeholder ?? t('chrome.paletteParamInput')}
             type={pending.input?.secret ? 'password' : 'text'}
             value={subInput}
             onChange={(e) => setSubInput(e.target.value)}
@@ -355,8 +347,8 @@ export function CommandPalette() {
             ref={inputRef}
             autoFocus
             className="w-full border-b border-neutral-800 bg-neutral-900 px-4 py-3 text-sm text-neutral-200 outline-none focus-visible:ring-1 focus-visible:ring-neutral-500"
-            placeholder="检索会话、分组或命令…"
-            aria-label="检索会话、分组或命令"
+            placeholder={t('chrome.palettePlaceholder')}
+            aria-label={t('chrome.palettePlaceholder')}
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
@@ -371,7 +363,9 @@ export function CommandPalette() {
             role="listbox"
             aria-activedescendant={items[index] ? `cp-opt-${index}` : undefined}
           >
-            {items.length === 0 && <li className="px-4 py-3 text-xs text-neutral-600">无匹配</li>}
+            {items.length === 0 && (
+              <li className="px-4 py-3 text-xs text-neutral-600">{t('chrome.paletteNoMatch')}</li>
+            )}
             {items.map((item, i) => (
               <li
                 key={
@@ -408,7 +402,7 @@ export function CommandPalette() {
                     {item.kind === 'session'
                       ? item.hint
                       : item.kind === 'group'
-                        ? '分组'
+                        ? t('chrome.sectionGroups')
                         : shortcutOf(item.action, settings)}
                   </span>
                 </button>

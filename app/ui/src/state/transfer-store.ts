@@ -2,6 +2,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand';
 import type { TransferHistoryView, TransferView } from '../term/types';
 import { useAppStore } from './app-store';
+import { tNow } from '../i18n';
 
 /** 传输管理中心（批次六 5）：跨 session 聚合 transfer_subscribe 快照。
  *  订阅惰性建立：SftpPanel 打开时订自己的 session（ensureSession）；
@@ -15,12 +16,11 @@ interface TransferStore {
   bySession: Record<string, TransferView[]>;
   /** 全部会话的持久化历史（transfers 表；TransferCenter 历史记录区） */
   history: TransferHistoryView[];
-  /** 传输管理中心抽屉开关 */
+  /** 传输中心可视开关（dock「传输中心」页签由 app-store openDock/closeDock 同步此字段） */
   open: boolean;
   /** SFTP 导航请求：tabId → 远端目标路径（终端右键「打开 SFTP」面板已开时写入） */
   navRequests: Record<string, string>;
   setOpen(v: boolean): void;
-  toggleOpen(): void;
   requestNav(tabId: string, path: string): void;
   consumeNav(tabId: string): void;
   /** 幂等：为 session 建立传输订阅（已订则跳过） */
@@ -78,17 +78,19 @@ function diffAndNotify(sessionId: string, transfers: TransferView[]): void {
     }
   }
   const notify = useAppStore.getState().notify;
-  if (upStart) notify(`开始上传 ${upStart} 项`, 'info');
-  if (downStart) notify(`开始下载 ${downStart} 项`, 'info');
-  if (upDone) notify(`${upDone} 项上传完成`, 'success');
-  if (downDone) notify(`${downDone} 项下载完成`, 'success');
+  if (upStart) notify(tNow('state.uploadStarted', { count: upStart }), 'info');
+  if (downStart) notify(tNow('state.downloadStarted', { count: downStart }), 'info');
+  if (upDone) notify(tNow('state.uploadDone', { count: upDone }), 'success');
+  if (downDone) notify(tNow('state.downloadDone', { count: downDone }), 'success');
   if (failed.length > 0) {
     const first = failed[0];
     const name = first.remote || first.local;
     notify(
       failed.length === 1
-        ? `传输失败：${name}${first.error ? `（${first.error}）` : ''}`
-        : `${failed.length} 项传输失败（首个：${name}）`,
+        ? first.error
+          ? tNow('state.transferFailedWithError', { name, error: first.error })
+          : tNow('state.transferFailed', { name })
+        : tNow('state.transfersFailed', { count: failed.length, name }),
       'error',
     );
   }
@@ -119,14 +121,6 @@ export const useTransferStore = create<TransferStore>((set, get) => ({
   setOpen: (v) => {
     set({ open: v });
     if (v) {
-      get().syncAllSessions();
-      void get().loadHistory();
-    }
-  },
-  toggleOpen: () => {
-    const next = !get().open;
-    set({ open: next });
-    if (next) {
       get().syncAllSessions();
       void get().loadHistory();
     }
@@ -169,7 +163,9 @@ export const useTransferStore = create<TransferStore>((set, get) => ({
       prevFrames.delete(sessionId);
       // E7006 = 会话记录已删但标签页还在（删服务器不关标签）：订阅无意义，静默跳过
       if (!String(e).includes('E7006')) {
-        useAppStore.getState().notify(`传输订阅失败: ${e}`, 'warning');
+        useAppStore
+          .getState()
+          .notify(tNow('state.subscribeFailed', { error: String(e) }), 'warning');
       }
     });
   },
@@ -195,9 +191,11 @@ export const useTransferStore = create<TransferStore>((set, get) => ({
     try {
       await invoke('transfer_history_clear');
       set({ history: [] });
-      useAppStore.getState().notify('已清空传输历史', 'success');
+      useAppStore.getState().notify(tNow('state.historyCleared'), 'success');
     } catch (e) {
-      useAppStore.getState().notify(`清空历史失败: ${String(e)}`, 'error');
+      useAppStore
+        .getState()
+        .notify(tNow('state.clearHistoryFailed', { error: String(e) }), 'error');
     }
   },
 }));
@@ -211,7 +209,7 @@ export async function transferCmd(
   try {
     await invoke(cmd, { sessionId, ...extra });
   } catch (e) {
-    useAppStore.getState().notify(`操作失败: ${e}`, 'error');
+    useAppStore.getState().notify(tNow('state.operationFailed', { error: String(e) }), 'error');
   }
 }
 /** 父目录（本地 \ 统一按 / 处理；盘符根 C:/ 的父级是其自身） */
@@ -231,7 +229,7 @@ function parentPath(p: string, remote: boolean): string {
 export async function retryHistoryTransfer(h: TransferHistoryView): Promise<void> {
   const app = useAppStore.getState();
   if (!app.sessions.some((s) => s.id === h.sessionId)) {
-    app.notify('原服务器档案已删除，无法重试', 'error');
+    app.notify(tNow('state.originDeleted'), 'error');
     return;
   }
   try {
@@ -251,8 +249,8 @@ export async function retryHistoryTransfer(h: TransferHistoryView): Promise<void
       });
     }
     useTransferStore.getState().ensureSession(h.sessionId);
-    app.notify('已重新入队（断点续传）', 'success');
+    app.notify(tNow('state.requeued'), 'success');
   } catch (e) {
-    app.notify(`重试失败: ${e}`, 'error');
+    app.notify(tNow('state.retryFailed', { error: String(e) }), 'error');
   }
 }

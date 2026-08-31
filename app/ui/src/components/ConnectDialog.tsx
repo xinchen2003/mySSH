@@ -5,16 +5,26 @@ import { TunnelEditor } from './TunnelEditor';
 import { Dialog } from './Dialog';
 import { ConfirmDialog } from './ConfirmDialog';
 import { START_MODE_LABEL, startModeOf, tunnelDisplayName } from '../state/tunnel-utils';
+import { useT, type MsgKey } from '../i18n';
 import type { AuthSpec, SessionRecord, TunnelDef } from '../term/types';
 
 type AuthKind = AuthSpec['type'];
 type EditorTab = 'basic' | 'auth' | 'jump' | 'tunnels';
+/** 终端编码选项（encoding_rs 标签；utf-8 = 直通不转码） */
+const ENCODING_OPTIONS = [
+  ['utf-8', 'dialogs.encodingUtf8'],
+  ['gbk', 'dialogs.encodingGbk'],
+  ['gb18030', 'dialogs.encodingGb18030'],
+  ['big5', 'dialogs.encodingBig5'],
+  ['shift_jis', 'dialogs.encodingShiftJis'],
+  ['euc-kr', 'dialogs.encodingEucKr'],
+] as const;
 
-const TAB_LABEL: Record<EditorTab, string> = {
-  basic: '基本信息',
-  auth: '认证',
-  jump: '跳板链',
-  tunnels: '隧道',
+const TAB_LABEL: Record<EditorTab, MsgKey> = {
+  basic: 'dialogs.tabBasic',
+  auth: 'dialogs.tabAuth',
+  jump: 'dialogs.tabJump',
+  tunnels: 'dialogs.tabTunnels',
 };
 /** session_test_connect 请求（Rust TestConnectRequest，serde camelCase） */
 interface TestConnectRequest {
@@ -82,6 +92,7 @@ function ConnectForm({
   const connect = useAppStore((s) => s.connect);
   const connectBySession = useAppStore((s) => s.connectBySession);
   const loadSessions = useAppStore((s) => s.loadSessions);
+  const t = useT();
 
   const [tab, setTab] = useState<EditorTab>('basic');
   const [name, setName] = useState(initial?.name ?? '');
@@ -93,6 +104,7 @@ function ConnectForm({
   const [command, setCommand] = useState(initial?.command ?? '');
   const [nameTouched, setNameTouched] = useState(false);
   const [color, setColor] = useState<string | null>(initial?.color ?? null);
+  const [encoding, setEncoding] = useState(initial?.encoding ?? 'utf-8');
   const [host, setHost] = useState(initial?.host ?? '127.0.0.1');
   const [port, setPort] = useState(initial?.port ?? 22);
   const [user, setUser] = useState(initial?.username ?? '');
@@ -149,7 +161,7 @@ function ConnectForm({
       setTest(
         r.ok
           ? { phase: 'ok', latencyMs: r.latencyMs ?? null }
-          : { phase: 'err', message: r.error ?? '连接失败' },
+          : { phase: 'err', message: r.error ?? t('dialogs.connectFailed') },
       );
     } catch (e) {
       setTest({ phase: 'err', message: String(e) });
@@ -166,7 +178,7 @@ function ConnectForm({
         const id = initial?.id ?? `s-${Date.now()}`;
         const record: SessionRecord = {
           id,
-          name: name.trim() || '本地终端',
+          name: name.trim() || t('dialogs.localTerminal'),
           kind: 'local',
           host: 'localhost',
           port: 0,
@@ -178,6 +190,7 @@ function ConnectForm({
           jumpChain: [],
           groupPath: presetGroup ?? initial?.groupPath ?? '',
           color,
+          encoding,
           tags: initial?.tags ?? [],
           command: command.trim() || null,
           createdAt: initial?.createdAt ?? '',
@@ -195,11 +208,11 @@ function ConnectForm({
         else if (kind === 'agent') auth = { type: 'agent' };
         else if (kind === 'keyboardInteractive') auth = { type: 'keyboardInteractive' };
         else {
-          if (!keyPath.trim()) throw new Error('请填写私钥文件路径');
+          if (!keyPath.trim()) throw new Error(t('dialogs.keyPathRequired'));
           const keyPem = await invoke<string>('read_private_key', { path: keyPath.trim() });
           auth = { type: 'publicKey', keyPem, passphrase: passphrase || null };
         }
-        connect({ host: host.trim(), port, user: user.trim(), auth });
+        connect({ host: host.trim(), port, user: user.trim(), auth, encoding });
         return;
       }
 
@@ -222,6 +235,7 @@ function ConnectForm({
         // 分组不再表单编辑：静默保留 preset（分组菜单新建）或原值
         groupPath: presetGroup ?? initial?.groupPath ?? '',
         color,
+        encoding,
         tags: initial?.tags ?? [],
         command: initial?.command ?? null,
         createdAt: initial?.createdAt ?? '',
@@ -247,22 +261,32 @@ function ConnectForm({
 
   return (
     <Dialog
-      title={initial ? '编辑会话' : sessKind === 'local' ? '新建本地终端' : '新建 SSH 连接'}
+      title={
+        initial
+          ? t('dialogs.titleEdit')
+          : sessKind === 'local'
+            ? t('dialogs.titleNewLocal')
+            : t('dialogs.titleNewSsh')
+      }
       onClose={close}
       closeOnBackdrop={false}
       backdropClass="z-10"
       panelClass="w-[26rem] rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
     >
       <h2 className="mb-2 text-base font-semibold">
-        {initial ? '编辑会话' : sessKind === 'local' ? '新建本地终端' : '新建 SSH 连接'}
+        {initial
+          ? t('dialogs.titleEdit')
+          : sessKind === 'local'
+            ? t('dialogs.titleNewLocal')
+            : t('dialogs.titleNewSsh')}
       </h2>
       {/* 会话类型（批次十四）：本地终端 = 本机 PTY，适合跑 AI agent 等命令行工具 */}
       {!initial && (
         <div className="mb-3 flex gap-1">
           {(
             [
-              ['ssh', 'SSH 服务器'],
-              ['local', '本地终端'],
+              ['ssh', 'dialogs.kindSsh'],
+              ['local', 'dialogs.localTerminal'],
             ] as const
           ).map(([k, label]) => (
             <button
@@ -277,7 +301,7 @@ function ConnectForm({
                 setTab('basic');
               }}
             >
-              {label}
+              {t(label)}
             </button>
           ))}
         </div>
@@ -286,20 +310,20 @@ function ConnectForm({
       {/* §9.1 双入口之一：服务器编辑器标签页 */}
       <div className="mb-3 flex gap-1 border-b border-neutral-800" role="tablist">
         {(Object.keys(TAB_LABEL) as EditorTab[])
-          .filter((t) => sessKind === 'ssh' || t === 'basic')
-          .map((t) => (
+          .filter((tabKey) => sessKind === 'ssh' || tabKey === 'basic')
+          .map((tabKey) => (
             <button
-              key={t}
+              key={tabKey}
               role="tab"
-              aria-selected={tab === t}
+              aria-selected={tab === tabKey}
               className={`px-2.5 py-1 text-xs ${
-                tab === t
+                tab === tabKey
                   ? 'border-b-2 border-blue-500 text-neutral-100'
                   : 'text-neutral-500 hover:text-neutral-300'
               }`}
-              onClick={() => setTab(t)}
+              onClick={() => setTab(tabKey)}
             >
-              {TAB_LABEL[t]}
+              {t(TAB_LABEL[tabKey])}
             </button>
           ))}
       </div>
@@ -309,7 +333,9 @@ function ConnectForm({
           <>
             {(save || sessKind === 'local') && (
               <label>
-                <span className="mb-0.5 block text-xs text-neutral-400">名称</span>
+                <span className="mb-0.5 block text-xs text-neutral-400">
+                  {t('dialogs.labelName')}
+                </span>
                 <input
                   className={input}
                   value={name}
@@ -317,18 +343,20 @@ function ConnectForm({
                     setNameTouched(true);
                     setName(e.target.value);
                   }}
-                  placeholder="缺省取 用户@主机（本地终端缺省取「本地终端」）"
+                  placeholder={t('dialogs.namePlaceholder')}
                 />
               </label>
             )}
             {(save || sessKind === 'local') && (
               <div>
-                <span className="mb-0.5 block text-xs text-neutral-400">标签颜色</span>
+                <span className="mb-0.5 block text-xs text-neutral-400">
+                  {t('dialogs.labelColor')}
+                </span>
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
-                    title="无"
-                    aria-label="无颜色"
+                    title={t('dialogs.colorNone')}
+                    aria-label={t('dialogs.colorNoneAria')}
                     className={`flex h-5 w-5 items-center justify-center rounded-full border border-neutral-600 text-[10px] leading-none text-neutral-500 ${
                       color === null
                         ? 'ring-2 ring-neutral-200 ring-offset-1 ring-offset-neutral-900'
@@ -343,7 +371,7 @@ function ConnectForm({
                       key={c}
                       type="button"
                       title={c}
-                      aria-label={`颜色 ${c}`}
+                      aria-label={t('dialogs.colorValueAria', { color: c })}
                       style={{ backgroundColor: c }}
                       className={`h-5 w-5 rounded-full ${
                         color === c
@@ -356,8 +384,8 @@ function ConnectForm({
                   {/* 调色板任意颜色 */}
                   <input
                     type="color"
-                    title="自定义颜色"
-                    aria-label="自定义颜色"
+                    title={t('dialogs.customColor')}
+                    aria-label={t('dialogs.customColor')}
                     value={color ?? '#3e63dd'}
                     onChange={(e) => setColor(e.target.value)}
                     className={`h-5 w-7 cursor-pointer rounded border border-neutral-600 bg-transparent p-0 ${
@@ -373,7 +401,7 @@ function ConnectForm({
               <>
                 <label>
                   <span className="mb-0.5 block text-xs text-neutral-400">
-                    启动目录（可空，缺省为用户主目录）
+                    {t('dialogs.workdirLabel')}
                   </span>
                   <input
                     className={input}
@@ -390,34 +418,34 @@ function ConnectForm({
                     value={shell}
                     onChange={(e) => setShell(e.target.value)}
                   >
-                    <option value="">自动（优先 PowerShell 7）</option>
-                    <option value="pwsh">PowerShell 7（pwsh）</option>
+                    <option value="">{t('dialogs.shellAuto')}</option>
+                    <option value="pwsh">{t('dialogs.shellPwsh')}</option>
                     <option value="powershell">Windows PowerShell</option>
-                    <option value="cmd">命令提示符（cmd）</option>
+                    <option value="cmd">{t('dialogs.shellCmd')}</option>
                   </select>
                 </label>
                 <label>
                   <span className="mb-0.5 block text-xs text-neutral-400">
-                    启动命令（可空；执行后保持交互，适合 AI agent）
+                    {t('dialogs.commandLabel')}
                   </span>
                   <input
                     className={input}
                     value={command}
                     spellCheck={false}
                     onChange={(e) => setCommand(e.target.value)}
-                    placeholder="如 claude；留空 = 直接进入 shell"
+                    placeholder={t('dialogs.commandPlaceholder')}
                   />
                 </label>
-                <p className="text-xs text-neutral-500">
-                  本地会话在本机打开终端；SFTP / 监控 / 隧道等远程功能不适用。
-                </p>
+                <p className="text-xs text-neutral-500">{t('dialogs.localNote')}</p>
               </>
             )}
             {sessKind === 'ssh' && (
               <>
                 <div className="flex gap-2">
                   <label className="flex-1">
-                    <span className="mb-0.5 block text-xs text-neutral-400">主机</span>
+                    <span className="mb-0.5 block text-xs text-neutral-400">
+                      {t('dialogs.host')}
+                    </span>
                     <input
                       className={input}
                       value={host}
@@ -431,7 +459,9 @@ function ConnectForm({
                     />
                   </label>
                   <label className="w-20">
-                    <span className="mb-0.5 block text-xs text-neutral-400">端口</span>
+                    <span className="mb-0.5 block text-xs text-neutral-400">
+                      {t('dialogs.port')}
+                    </span>
                     <input
                       className={input}
                       type="number"
@@ -441,7 +471,9 @@ function ConnectForm({
                   </label>
                 </div>
                 <label>
-                  <span className="mb-0.5 block text-xs text-neutral-400">用户名</span>
+                  <span className="mb-0.5 block text-xs text-neutral-400">
+                    {t('dialogs.username')}
+                  </span>
                   <input
                     className={input}
                     value={user}
@@ -460,32 +492,51 @@ function ConnectForm({
                     onChange={(e) => setSave(e.target.checked)}
                     disabled={initial !== null}
                   />
-                  保存会话（密码/passphrase 存加密保险库）
+                  {t('dialogs.saveSessionLabel')}
                 </label>
               </>
             )}
+            {/* 终端编码：SSH 与本地会话共用；中文 Windows 本地终端通常选 GBK */}
+            <label>
+              <span className="mb-0.5 block text-xs text-neutral-400">
+                {t('dialogs.encodingLabel')}
+              </span>
+              <select
+                className={input}
+                value={encoding}
+                onChange={(e) => setEncoding(e.target.value)}
+              >
+                {ENCODING_OPTIONS.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {t(label)}
+                  </option>
+                ))}
+              </select>
+            </label>
           </>
         )}
 
         {tab === 'auth' && (
           <>
             <label>
-              <span className="mb-0.5 block text-xs text-neutral-400">认证方式</span>
+              <span className="mb-0.5 block text-xs text-neutral-400">
+                {t('dialogs.authMethod')}
+              </span>
               <select
                 className={input}
                 value={kind}
                 onChange={(e) => setKind(e.target.value as AuthKind)}
               >
-                <option value="password">密码</option>
-                <option value="publicKey">公钥（OpenSSH / .ppk）</option>
-                <option value="keyboardInteractive">keyboard-interactive（2FA）</option>
+                <option value="password">{t('dialogs.password')}</option>
+                <option value="publicKey">{t('dialogs.authPublicKey')}</option>
+                <option value="keyboardInteractive">{t('dialogs.authKi')}</option>
                 <option value="agent">ssh-agent / Pageant</option>
               </select>
             </label>
             {kind === 'password' && (
               <label>
                 <span className="mb-0.5 block text-xs text-neutral-400">
-                  密码{initial ? '（留空 = 沿用已存凭据）' : ''}
+                  {initial ? t('dialogs.passwordLabelEdit') : t('dialogs.password')}
                 </span>
                 <input
                   className={input}
@@ -500,18 +551,22 @@ function ConnectForm({
             {kind === 'publicKey' && (
               <>
                 <label>
-                  <span className="mb-0.5 block text-xs text-neutral-400">私钥文件路径</span>
+                  <span className="mb-0.5 block text-xs text-neutral-400">
+                    {t('dialogs.keyPath')}
+                  </span>
                   <input
                     className={input}
                     value={keyPath}
                     autoComplete="off"
                     spellCheck={false}
                     onChange={(e) => setKeyPath(e.target.value)}
-                    placeholder="C:\Users\…\.ssh\id_ed25519 或 .ppk"
+                    placeholder={t('dialogs.keyPathPlaceholder')}
                   />
                 </label>
                 <label>
-                  <span className="mb-0.5 block text-xs text-neutral-400">passphrase（可空）</span>
+                  <span className="mb-0.5 block text-xs text-neutral-400">
+                    {t('dialogs.passphraseLabel')}
+                  </span>
                   <input
                     className={input}
                     type="password"
@@ -533,9 +588,7 @@ function ConnectForm({
               excludeId={initial?.id ?? null}
             />
           ) : (
-            <p className="py-6 text-center text-xs text-neutral-500">
-              勾选「保存会话」后可配置跳板链
-            </p>
+            <p className="py-6 text-center text-xs text-neutral-500">{t('dialogs.jumpNeedSave')}</p>
           ))}
 
         {tab === 'tunnels' &&
@@ -543,7 +596,7 @@ function ConnectForm({
             <SessionTunnelsTab sessionId={initial.id} />
           ) : (
             <p className="py-6 text-center text-xs text-neutral-500">
-              保存会话后可在此配置隧道；隧道绑定到该服务器
+              {t('dialogs.tunnelsNeedSave')}
             </p>
           ))}
 
@@ -562,12 +615,14 @@ function ConnectForm({
               onClick={() => void testConnect()}
               disabled={busy || test.phase === 'testing' || !host.trim() || !user.trim()}
             >
-              {test.phase === 'testing' ? '测试中…' : '测试连接'}
+              {test.phase === 'testing' ? t('dialogs.testing') : t('dialogs.testConnect')}
             </button>
           )}
           {test.phase === 'ok' && (
             <span aria-live="polite" className="truncate text-xs text-green-400">
-              ✓ 连接成功{test.latencyMs !== null ? `（${test.latencyMs}ms）` : ''}
+              {test.latencyMs !== null
+                ? t('dialogs.testOkLatency', { ms: test.latencyMs })
+                : t('dialogs.testOk')}
             </span>
           )}
           {test.phase === 'err' && (
@@ -581,7 +636,7 @@ function ConnectForm({
             className="rounded px-3 py-1 text-neutral-400 hover:bg-neutral-800"
             onClick={close}
           >
-            取消
+            {t('dialogs.cancel')}
           </button>
           {sessKind === 'ssh' && save && (
             <button
@@ -589,7 +644,7 @@ function ConnectForm({
               onClick={() => void submit(false)}
               disabled={busy || !host.trim() || !user.trim()}
             >
-              仅保存
+              {t('dialogs.saveOnly')}
             </button>
           )}
           <button
@@ -597,7 +652,11 @@ function ConnectForm({
             onClick={() => void submit(true)}
             disabled={busy || (sessKind === 'ssh' && (!host.trim() || !user.trim()))}
           >
-            {sessKind === 'local' ? '保存并打开' : save ? '保存并连接' : '连接'}
+            {sessKind === 'local'
+              ? t('dialogs.saveAndOpen')
+              : save
+                ? t('dialogs.saveAndConnect')
+                : t('dialogs.connect')}
           </button>
         </div>
       </div>
@@ -615,6 +674,7 @@ function SessionTunnelsTab({ sessionId }: { sessionId: string }) {
   const duplicateTunnel = useAppStore((s) => s.duplicateTunnel);
   const loadTunnelDefs = useAppStore((s) => s.loadTunnelDefs);
   const notify = useAppStore((s) => s.notify);
+  const t = useT();
 
   const [editor, setEditor] = useState<{ def: TunnelDef | null } | undefined>(undefined);
   const [pendingDelete, setPendingDelete] = useState<TunnelDef | null>(null);
@@ -631,23 +691,23 @@ function SessionTunnelsTab({ sessionId }: { sessionId: string }) {
     try {
       await saveTunnel(d, true);
     } catch (e) {
-      notify(`启动失败: ${String(e)}`, 'error');
+      notify(t('dialogs.tunnelStartFailed', { error: String(e) }), 'error');
     }
   };
 
   return (
     <div className="text-xs">
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-neutral-500">仅显示绑定本服务器的规则</span>
+        <span className="text-neutral-500">{t('dialogs.tunnelsBoundOnly')}</span>
         <button
           className="rounded border border-neutral-700 px-2 py-0.5 hover:bg-neutral-800"
           onClick={() => setEditor({ def: null })}
         >
-          ＋ 新建隧道
+          {t('dialogs.addTunnel')}
         </button>
       </div>
       {defs.length === 0 ? (
-        <p className="py-4 text-center text-neutral-600">暂无隧道</p>
+        <p className="py-4 text-center text-neutral-600">{t('dialogs.noTunnels')}</p>
       ) : (
         <ul>
           {defs.map((d) => {
@@ -676,40 +736,40 @@ function SessionTunnelsTab({ sessionId }: { sessionId: string }) {
                       : 'text-neutral-600'
                   }
                 >
-                  {rt ? rt.status : '未运行'}
+                  {rt ? rt.status : t('dialogs.notRunning')}
                 </span>
                 {rt ? (
                   <button
                     className="rounded px-1 text-neutral-500 hover:text-red-400"
                     onClick={() => void stopTunnel(d.id)}
                   >
-                    停止
+                    {t('dialogs.stop')}
                   </button>
                 ) : (
                   <button
                     className="rounded px-1 text-neutral-500 hover:text-green-400"
                     onClick={() => void startDef(d)}
                   >
-                    启动
+                    {t('dialogs.start')}
                   </button>
                 )}
                 <button
                   className="rounded px-1 text-neutral-500 hover:text-neutral-200"
                   onClick={() => setEditor({ def: d })}
                 >
-                  编辑
+                  {t('dialogs.edit')}
                 </button>
                 <button
                   className="rounded px-1 text-neutral-500 hover:text-neutral-200"
                   onClick={() => void duplicateTunnel(d)}
                 >
-                  复制
+                  {t('dialogs.duplicate')}
                 </button>
                 <button
                   className="rounded px-1 text-neutral-500 hover:text-red-400"
                   onClick={() => setPendingDelete(d)}
                 >
-                  删除
+                  {t('dialogs.delete')}
                 </button>
               </li>
             );
@@ -727,21 +787,23 @@ function SessionTunnelsTab({ sessionId }: { sessionId: string }) {
       )}
       {pendingDelete && (
         <ConfirmDialog
-          title={`删除隧道「${tunnelDisplayName(pendingDelete)}」？`}
-          confirmLabel="删除"
+          title={t('dialogs.deleteTunnelTitle', { name: tunnelDisplayName(pendingDelete) })}
+          confirmLabel={t('dialogs.delete')}
           onConfirm={() => {
             void deleteTunnel(pendingDelete.id)
-              .then(() => notify('隧道已删除', 'success'))
-              .catch((e) => notify(`删除失败: ${String(e)}`, 'error'));
+              .then(() => notify(t('dialogs.tunnelDeleted'), 'success'))
+              .catch((e) => notify(t('dialogs.tunnelDeleteFailed', { error: String(e) }), 'error'));
             setPendingDelete(null);
           }}
           onCancel={() => setPendingDelete(null)}
         >
-          {pendingDelete.bindHost}:{pendingDelete.bindPort}
-          {pendingDelete.targetHost
-            ? ` → ${pendingDelete.targetHost}:${pendingDelete.targetPort}`
-            : ''}
-          。运行中的实例将同时停止。
+          {t('dialogs.deleteTunnelBody', {
+            spec: `${pendingDelete.bindHost}:${pendingDelete.bindPort}${
+              pendingDelete.targetHost
+                ? ` → ${pendingDelete.targetHost}:${pendingDelete.targetPort}`
+                : ''
+            }`,
+          })}
         </ConfirmDialog>
       )}
     </div>
@@ -763,10 +825,11 @@ function JumpChainEditor({
     (s) => s.id !== excludeId && !chain.includes(s.id) && s.kind !== 'local',
   );
   const nameOf = (id: string) => sessions.find((s) => s.id === id)?.name ?? id;
+  const t = useT();
 
   return (
     <div className="mt-1 rounded border border-neutral-800 p-2">
-      <div className="mb-1 text-xs text-neutral-400">跳板链（ProxyJump，就近→最远）</div>
+      <div className="mb-1 text-xs text-neutral-400">{t('dialogs.jumpChainLabel')}</div>
       {chain.map((id, i) => (
         <div key={id} className="mb-1 flex items-center gap-2 text-xs">
           <span className="text-neutral-500">{i + 1}.</span>
@@ -775,7 +838,7 @@ function JumpChainEditor({
             className="text-neutral-500 hover:text-red-400"
             onClick={() => onChange(chain.filter((x) => x !== id))}
           >
-            移除
+            {t('dialogs.remove')}
           </button>
         </div>
       ))}
@@ -785,7 +848,7 @@ function JumpChainEditor({
           value=""
           onChange={(e) => e.target.value && onChange([...chain, e.target.value])}
         >
-          <option value="">+ 添加跳板…</option>
+          <option value="">{t('dialogs.addJump')}</option>
           {candidates.map((s) => (
             <option key={s.id} value={s.id}>
               {s.name}（{s.username}@{s.host}:{s.port}）

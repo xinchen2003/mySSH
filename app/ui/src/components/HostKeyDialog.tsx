@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../state/app-store';
 import { Dialog } from './Dialog';
+import { useT } from '../i18n';
 
 /**
  * 主机密钥确认弹窗（安全模型第 3 条）：
@@ -13,6 +14,7 @@ import { Dialog } from './Dialog';
  * - 密钥变更硬警告、120 秒 fail-closed（后端）保持不变。
  */
 export function HostKeyDialog() {
+  const t = useT();
   const pending = useAppStore((s) => s.pendingHostKeys[0] ?? null);
   const clear = useAppStore((s) => s.shiftHostKey);
 
@@ -31,7 +33,7 @@ export function HostKeyDialog() {
 
   return (
     <Dialog
-      title="主机密钥确认"
+      title={t('dialogs.hostKeyTitle')}
       onClose={reject}
       closeOnBackdrop={false}
       backdropClass="z-20"
@@ -44,14 +46,16 @@ export function HostKeyDialog() {
       {changed ? (
         <>
           <h2 className="mb-2 text-base font-semibold text-red-300">
-            ⚠ 主机密钥已变更——可能存在中间人攻击
+            {t('dialogs.hostKeyChanged')}
           </h2>
           <p className="mb-2 text-xs">
             {pending.host}:{pending.port}（{pending.keyType}）
           </p>
           <div className="mb-3 flex flex-col gap-1 rounded bg-black/40 p-2 font-mono text-xs">
-            <span>旧：{pending.oldFingerprint}</span>
-            <span className="text-red-300">新：{pending.newFingerprint}</span>
+            <span>{t('dialogs.oldFingerprint', { fp: pending.oldFingerprint ?? '' })}</span>
+            <span className="text-red-300">
+              {t('dialogs.newFingerprint', { fp: pending.newFingerprint ?? '' })}
+            </span>
           </div>
           <div className="flex justify-end gap-2">
             <button
@@ -59,19 +63,19 @@ export function HostKeyDialog() {
               className="rounded bg-neutral-700 px-3 py-1 hover:bg-neutral-600"
               onClick={reject}
             >
-              拒绝连接
+              {t('dialogs.rejectConnection')}
             </button>
             <button
               className="rounded bg-red-600 px-3 py-1 text-white hover:bg-red-500"
               onClick={() => answer(true, true)}
             >
-              我已核实，更新记录并连接
+              {t('dialogs.verifiedUpdateConnect')}
             </button>
           </div>
         </>
       ) : (
         <>
-          <h2 className="mb-2 text-base font-semibold">首次连接：确认主机指纹</h2>
+          <h2 className="mb-2 text-base font-semibold">{t('dialogs.firstConnectTitle')}</h2>
           <p className="mb-2 text-xs text-neutral-400">
             {pending.host}:{pending.port}（{pending.keyType}）
           </p>
@@ -84,19 +88,19 @@ export function HostKeyDialog() {
               className="rounded px-3 py-1 text-neutral-400 hover:bg-neutral-800"
               onClick={reject}
             >
-              拒绝
+              {t('dialogs.reject')}
             </button>
             <button
               className="rounded border border-neutral-600 px-3 py-1 hover:bg-neutral-800"
               onClick={() => answer(true, false)}
             >
-              仅本次信任
+              {t('dialogs.trustOnce')}
             </button>
             <button
               className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500"
               onClick={() => answer(true, true)}
             >
-              信任并记住
+              {t('dialogs.trustAndRemember')}
             </button>
           </div>
         </>

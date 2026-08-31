@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { useAppStore } from '../state/app-store';
+import { useT } from '../i18n';
 
 /** 可编辑路径栏（批次五 11.1）：后退/前进/上一级/刷新 + 点击编辑。
  *  批次六：复制当前路径按钮；输入时基于父目录列表的模糊建议
@@ -28,6 +29,7 @@ interface Props {
 const MAX_SUGGESTIONS = 20;
 
 export function PathBar(p: Props) {
+  const t = useT();
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -120,7 +122,7 @@ export function PathBar(p: Props) {
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1200);
       } catch (e) {
-        notify(`复制失败: ${e}`, 'error');
+        notify(t('panels.copyFailed', { error: String(e) }), 'error');
       }
     })();
   };
@@ -132,18 +134,29 @@ export function PathBar(p: Props) {
         className={btn}
         onClick={p.onBack}
         disabled={!p.canBack}
-        title="后退"
-        aria-label="后退"
+        title={t('panels.back')}
+        aria-label={t('panels.back')}
       >
         ←
       </button>
-      <button className={btn} onClick={p.onFwd} disabled={!p.canFwd} title="前进" aria-label="前进">
+      <button
+        className={btn}
+        onClick={p.onFwd}
+        disabled={!p.canFwd}
+        title={t('panels.forward')}
+        aria-label={t('panels.forward')}
+      >
         →
       </button>
-      <button className={btn} onClick={p.onUp} title="上一级" aria-label="上一级">
+      <button className={btn} onClick={p.onUp} title={t('panels.up')} aria-label={t('panels.up')}>
         ↑
       </button>
-      <button className={btn} onClick={p.onRefresh} title="刷新" aria-label="刷新">
+      <button
+        className={btn}
+        onClick={p.onRefresh}
+        title={t('panels.refresh')}
+        aria-label={t('panels.refresh')}
+      >
         ⟳
       </button>
       {editing ? (
@@ -215,13 +228,13 @@ export function PathBar(p: Props) {
               ))}
             </div>
           )}
-          {error && <span className="mt-0.5 text-red-400">路径无效或不可读</span>}
+          {error && <span className="mt-0.5 text-red-400">{t('panels.invalidPath')}</span>}
         </span>
       ) : (
         <button
           type="button"
           className="min-w-0 flex-1 cursor-text truncate rounded px-1 py-0.5 text-left font-mono text-neutral-400 hover:bg-neutral-800"
-          title={`${p.path || p.placeholder}（点击编辑）`}
+          title={t('panels.clickToEdit', { path: p.path || p.placeholder })}
           onClick={() => setDraft(p.path)}
         >
           {p.path || p.placeholder}
@@ -231,8 +244,8 @@ export function PathBar(p: Props) {
         className={btn}
         onClick={copyPath}
         disabled={!p.path}
-        title={copied ? '已复制' : '复制当前路径'}
-        aria-label={copied ? '已复制' : '复制当前路径'}
+        title={copied ? t('panels.copied') : t('panels.copyPath')}
+        aria-label={copied ? t('panels.copied') : t('panels.copyPath')}
       >
         {copied ? '✓' : '⧉'}
       </button>

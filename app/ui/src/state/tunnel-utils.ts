@@ -2,6 +2,7 @@
 //! 与渲染解耦，vitest 直测。
 
 import type { TunnelDef, TunnelKind, TunnelStartMode } from '../term/types';
+import { tNow } from '../i18n';
 
 /** 启动方式 ← 两个持久化布尔位。旧数据双真（自启+随会话）归并为「随服务器连接」：
  *  编辑保存后落为 with_session=1/autostart=0；未编辑的旧记录行为不变（后端仍按原位消费）。 */
@@ -23,9 +24,16 @@ export function startModeFlags(mode: TunnelStartMode): {
 }
 
 export const START_MODE_LABEL: Record<TunnelStartMode, string> = {
-  withSession: '随服务器连接',
-  autostart: '应用启动时',
-  manual: '手动启动',
+  // getter 取值时翻译：语言切换后消费方重渲染即读到新文案（键名经 tNow 查表）
+  get withSession() {
+    return tNow('state.startMode.withSession');
+  },
+  get autostart() {
+    return tNow('state.startMode.autostart');
+  },
+  get manual() {
+    return tNow('state.startMode.manual');
+  },
 };
 
 /** §9.5 模板：只预填名称/类型/端口，不隐藏实际配置 */
@@ -93,13 +101,13 @@ export function draftFromDef(def: TunnelDef): TunnelDraft {
 
 /** 校验草稿；返回第一条错误文案，合法返回 null（与后端 validate 口径一致） */
 export function validateTunnelDraft(d: TunnelDraft): string | null {
-  if (!d.bindHost.trim()) return '绑定地址不能为空';
+  if (!d.bindHost.trim()) return tNow('state.errBindHostRequired');
   const bp = Number(d.bindPort);
-  if (!Number.isInteger(bp) || bp < 1 || bp > 65535) return '绑定端口必须在 1-65535';
+  if (!Number.isInteger(bp) || bp < 1 || bp > 65535) return tNow('state.errBindPortRange');
   if (d.kind !== 'dynamic') {
-    if (!d.targetHost.trim()) return 'local/remote 隧道需要目标地址';
+    if (!d.targetHost.trim()) return tNow('state.errTargetRequired');
     const tp = Number(d.targetPort);
-    if (!Number.isInteger(tp) || tp < 1 || tp > 65535) return '目标端口必须在 1-65535';
+    if (!Number.isInteger(tp) || tp < 1 || tp > 65535) return tNow('state.errTargetPortRange');
   }
   return null;
 }
@@ -143,7 +151,12 @@ export function fmtRate(bytesPerSec: number): string {
 /** 显示名回退：空名 → 类型标签 + 绑定地址 */
 export function tunnelDisplayName(def: TunnelDef): string {
   if (def.name.trim()) return def.name;
-  const kindLabel = def.kind === 'local' ? '本地' : def.kind === 'remote' ? '远程' : 'SOCKS';
+  const kindLabel =
+    def.kind === 'local'
+      ? tNow('state.kindLocal')
+      : def.kind === 'remote'
+        ? tNow('state.kindRemote')
+        : 'SOCKS';
   return `${kindLabel} ${def.bindHost}:${def.bindPort}`;
 }
 
@@ -157,15 +170,23 @@ export function tunnelFeedback(
   if (ok === results.length) {
     return {
       level: 'info',
-      message: `${sessionName} 已连接，${ok}/${results.length} 个关联隧道已启动`,
+      message: tNow('state.tunnelsAllStarted', {
+        name: sessionName,
+        ok,
+        total: results.length,
+      }),
     };
   }
   const first = results.find((r) => !r.ok);
   const label = first ? `${first.name || first.bind}` : '';
-  const detail = first?.error ? `：${first.error}` : '';
   const rest = results.length - ok - 1;
-  return {
-    level: 'error',
-    message: `${sessionName} 已连接，但隧道「${label}」启动失败${detail}${rest > 0 ? `（另有 ${rest} 条失败）` : ''}`,
-  };
+  const vars = { name: sessionName, tunnel: label, error: first?.error ?? '', count: rest };
+  const key = first?.error
+    ? rest > 0
+      ? 'state.tunnelStartFailedErrMore'
+      : 'state.tunnelStartFailedErr'
+    : rest > 0
+      ? 'state.tunnelStartFailedMore'
+      : 'state.tunnelStartFailed';
+  return { level: 'error', message: tNow(key, vars) };
 }

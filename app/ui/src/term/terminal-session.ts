@@ -58,6 +58,8 @@ export class TerminalSession {
     const res = await invoke<{ tabId: string }>('term_open', {
       spec: target.kind === 'spec' ? target.spec : null,
       sessionId: target.kind === 'session' ? target.sessionId : null,
+      // 终端编码：档案会话取建档快照（缺省由后端读档案），内联 spec 取其自身字段
+      encoding: target.kind === 'spec' ? (target.spec.encoding ?? null) : (target.encoding ?? null),
       data,
       events,
       cols: openedCols,

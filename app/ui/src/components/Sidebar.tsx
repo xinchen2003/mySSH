@@ -20,6 +20,7 @@ import {
   rewritePathOnRename,
   GROUP_KEYS,
 } from '../state/groups';
+import { useT, type MsgKey } from '../i18n';
 
 /** 连接目标语义：'connect' 复用已有标签，'new-tab' 强制新标签 */
 type ConnectMode = 'connect' | 'new-tab';
@@ -30,7 +31,9 @@ type Prompt =
   | { mode: 'group-rename'; path: string; input: string }
   | { mode: 'rename'; id: string; input: string };
 
-const VIRTUAL_LABELS: { id: 'favorites'; label: string }[] = [{ id: 'favorites', label: '收藏' }];
+const VIRTUAL_LABELS: { id: 'favorites'; labelKey: MsgKey }[] = [
+  { id: 'favorites', labelKey: 'chrome.favorites' },
+];
 /** 侧栏宽度（px）边界与默认值；持久化于 settings KV ui.sidebarWidth */
 const SIDEBAR_W = { min: 160, max: 480, dflt: 224 } as const;
 
@@ -41,6 +44,7 @@ const SIDEBAR_W = { min: 160, max: 480, dflt: 224 } as const;
  */
 export function Sidebar() {
   const sessions = useAppStore((s) => s.sessions);
+  const t = useT();
   const open = useAppStore((s) => s.sidebarOpen);
   const load = useAppStore((s) => s.loadSessions);
   const settings = useAppStore((s) => s.settings);
@@ -200,7 +204,7 @@ export function Sidebar() {
     if (!seg) return;
     const path = parent ? `${parent}/${seg}` : seg;
     if (extras.includes(path) || collectGroupPaths(tree).includes(path)) {
-      s().notify(`分组已存在: ${path}`, 'warning');
+      s().notify(t('chrome.groupExists', { path }), 'warning');
       return;
     }
     persistExtras([...extras, path]);
@@ -209,7 +213,7 @@ export function Sidebar() {
     // 「创建即显示」修复：搜索/虚拟视图处于平铺模式时新分组不在树中渲染，须先退回树视图
     setVirt(null);
     setQuery('');
-    s().notify(`已创建分组 ${path}`, 'success');
+    s().notify(t('chrome.groupCreated', { path }), 'success');
   };
 
   const renameGroup = async (path: string, newName: string) => {
@@ -223,9 +227,9 @@ export function Sidebar() {
       persistExtras(rewritePathOnRename(extras, path, next));
       persistCollapsed(rewritePathOnRename([...collapsed], path, next));
       await s().loadSessions();
-      s().notify(`分组已重命名为 ${next}`, 'success');
+      s().notify(t('chrome.groupRenamed', { name: next }), 'success');
     } catch (e) {
-      s().notify(`重命名失败: ${String(e)}`, 'error');
+      s().notify(t('chrome.renameFailed', { error: String(e) }), 'error');
     }
   };
 
@@ -237,9 +241,9 @@ export function Sidebar() {
     try {
       await invoke('session_upsert', { record: { ...rec, name: n } });
       await s().loadSessions();
-      s().notify(`已重命名为「${n}」`, 'success');
+      s().notify(t('chrome.renamed', { name: n }), 'success');
     } catch (e) {
-      s().notify(`重命名失败: ${String(e)}`, 'error');
+      s().notify(t('chrome.renameFailed', { error: String(e) }), 'error');
     }
   };
 
@@ -247,7 +251,7 @@ export function Sidebar() {
     const leaf = source.split('/').pop() ?? source;
     const next = targetParent ? `${targetParent}/${leaf}` : leaf;
     if (!canMoveGroup(source, next)) {
-      s().notify('不能移动到它自己的子分组内', 'warning');
+      s().notify(t('chrome.cannotMoveIntoSelf'), 'warning');
       return;
     }
     if (next === source) return;
@@ -256,9 +260,9 @@ export function Sidebar() {
       persistExtras(rewritePathOnRename(extras, source, next));
       persistCollapsed(rewritePathOnRename([...collapsed], source, next));
       await s().loadSessions();
-      s().notify(`已移动到 ${next}`, 'success');
+      s().notify(t('chrome.movedTo', { path: next }), 'success');
     } catch (e) {
-      s().notify(`移动分组失败: ${String(e)}`, 'error');
+      s().notify(t('chrome.moveGroupFailed', { error: String(e) }), 'error');
     }
   };
 
@@ -271,9 +275,9 @@ export function Sidebar() {
       persistExtras(rewritePathOnDeleteKeep(extras, path));
       persistCollapsed(rewritePathOnDeleteKeep([...collapsed], path));
       await s().loadSessions();
-      s().notify(`分组已删除，${r.affected} 台服务器已保留（直属移至未分组）`, 'success');
+      s().notify(t('chrome.groupDeletedKeep', { count: r.affected }), 'success');
     } catch (e) {
-      s().notify(`删除分组失败: ${String(e)}`, 'error');
+      s().notify(t('chrome.deleteGroupFailed', { error: String(e) }), 'error');
     }
   };
 
@@ -289,27 +293,30 @@ export function Sidebar() {
       persistCollapsed([...collapsed].filter((p) => !gone(p)));
       setSel({ anchor: null, ids: [] });
       await s().loadSessions();
-      s().notify(`已删除分组及 ${r.affected} 台服务器`, 'success');
+      s().notify(t('chrome.groupDeletedCascade', { count: r.affected }), 'success');
     } catch (e) {
-      s().notify(`删除分组失败: ${String(e)}`, 'error');
+      s().notify(t('chrome.deleteGroupFailed', { error: String(e) }), 'error');
     }
   };
 
   const moveSessions = async (ids: string[], target: string) => {
-    const t = target.trim();
-    if (!isValidGroupPath(t)) {
-      s().notify(`分组路径无效: ${t}`, 'warning');
+    const path = target.trim();
+    if (!isValidGroupPath(path)) {
+      s().notify(t('chrome.invalidGroupPath', { path }), 'warning');
       return;
     }
     try {
       const r = await invoke<{ moved: number }>('session_move', {
         sessionIds: ids,
-        groupPath: t,
+        groupPath: path,
       });
       await s().loadSessions();
-      s().notify(`已移动 ${r.moved} 台服务器到 ${t || '未分组'}`, 'success');
+      s().notify(
+        t('chrome.sessionsMoved', { count: r.moved, group: path || t('chrome.ungrouped') }),
+        'success',
+      );
     } catch (e) {
-      s().notify(`移动失败: ${String(e)}`, 'error');
+      s().notify(t('chrome.moveFailed', { error: String(e) }), 'error');
     }
   };
 
@@ -326,8 +333,8 @@ export function Sidebar() {
     }
     setSel({ anchor: null, ids: [] });
     await s().loadSessions();
-    if (fail) s().notify(`删除完成：${ok} 成功，${fail} 失败`, 'warning');
-    else s().notify(`已删除 ${ok} 台服务器`, 'success');
+    if (fail) s().notify(t('chrome.deletePartial', { ok, fail }), 'warning');
+    else s().notify(t('chrome.sessionsDeleted', { count: ok }), 'success');
   };
 
   // ---------- 菜单 ----------
@@ -335,26 +342,35 @@ export function Sidebar() {
   const sessionMenu = (rec: SessionRecord): MenuItem[] => {
     const fav = favorites.has(rec.id);
     return [
-      { label: '编辑', icon: '⚙', onSelect: () => openConnect(rec) },
+      { label: t('chrome.menuEdit'), icon: '⚙', onSelect: () => openConnect(rec) },
       {
-        label: '重命名…',
+        label: t('chrome.menuRename'),
         icon: '✎',
         onSelect: () => setPrompt({ mode: 'rename', id: rec.id, input: rec.name }),
       },
-      { label: '复制服务器', icon: '❐', onSelect: () => void s().duplicateSession(rec) },
       {
-        label: fav ? '取消收藏' : '添加收藏',
+        label: t('chrome.menuDuplicate'),
+        icon: '❐',
+        onSelect: () => void s().duplicateSession(rec),
+      },
+      {
+        label: fav ? t('chrome.menuUnfavorite') : t('chrome.menuFavorite'),
         icon: fav ? '☆' : '★',
         onSelect: () => s().toggleFavorite(rec.id),
       },
       'separator',
-      { label: '删除', icon: '🗑', danger: true, onSelect: () => s().requestDeleteSession(rec) },
+      {
+        label: t('chrome.menuDelete'),
+        icon: '🗑',
+        danger: true,
+        onSelect: () => s().requestDeleteSession(rec),
+      },
     ];
   };
 
   const batchMenu = (ids: string[]): MenuItem[] => [
     {
-      label: `添加收藏（${ids.length}）`,
+      label: t('chrome.menuFavoriteBatch', { count: ids.length }),
       icon: '★',
       onSelect: () => {
         for (const id of ids) if (!favorites.has(id)) s().toggleFavorite(id);
@@ -362,7 +378,7 @@ export function Sidebar() {
     },
     'separator',
     {
-      label: `删除（${ids.length}）…`,
+      label: t('chrome.menuDeleteBatch', { count: ids.length }),
       icon: '🗑',
       danger: true,
       onSelect: () => setBatchDel(sessions.filter((x) => ids.includes(x.id))),
@@ -371,24 +387,24 @@ export function Sidebar() {
 
   const groupMenu = (path: string, count: number): MenuItem[] => [
     {
-      label: '新建子分组…',
+      label: t('chrome.menuNewSubgroup'),
       icon: '＋',
       onSelect: () => setPrompt({ mode: 'group-new', parent: path, input: '' }),
     },
     {
-      label: '在此分组新建连接…',
+      label: t('chrome.menuNewConnInGroup'),
       icon: '＋',
       onSelect: () => openConnect(undefined, path),
     },
     {
-      label: '重命名…',
+      label: t('chrome.menuRename'),
       icon: '✎',
       onSelect: () =>
         setPrompt({ mode: 'group-rename', path, input: path.split('/').pop() ?? path }),
     },
     'separator',
     {
-      label: count > 0 ? `删除分组（含 ${count} 台服务器）…` : '删除分组',
+      label: count > 0 ? t('chrome.menuDeleteGroupCount', { count }) : t('chrome.menuDeleteGroup'),
       icon: '🗑',
       danger: true,
       onSelect: () => {
@@ -396,21 +412,21 @@ export function Sidebar() {
         else {
           persistExtras(extras.filter((p) => p !== path));
           persistCollapsed([...collapsed].filter((p) => p !== path));
-          s().notify(`已删除空分组 ${path}`, 'success');
+          s().notify(t('chrome.emptyGroupDeleted', { path }), 'success');
         }
       },
     },
   ];
 
   const blankMenu = (): MenuItem[] => [
-    { label: '新建连接…', icon: '＋', onSelect: () => openConnect() },
+    { label: t('chrome.menuNewConnection'), icon: '＋', onSelect: () => openConnect() },
     {
-      label: '新建分组…',
+      label: t('chrome.menuNewGroup'),
       icon: '＋',
       onSelect: () => setPrompt({ mode: 'group-new', parent: '', input: '' }),
     },
     'separator',
-    { label: '刷新', icon: '↻', onSelect: () => void load() },
+    { label: t('chrome.menuRefresh'), icon: '↻', onSelect: () => void load() },
   ];
 
   // ---------- 拖拽 ----------
@@ -510,40 +526,50 @@ export function Sidebar() {
         }}
         title={
           rec.kind === 'local'
-            ? `本地终端${rec.workdir ? ` · ${rec.workdir}` : ''}`
+            ? t('chrome.localTerminalTitle', {
+                workdir: rec.workdir ? ` · ${rec.workdir}` : '',
+              })
             : `${rec.username}@${rec.host}:${rec.port}`
         }
       >
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1 text-sm text-neutral-200">
             {online.has(rec.id) && (
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-500" title="当前在线" />
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-500"
+                title={t('chrome.onlineTitle')}
+              />
             )}
             {favorites.has(rec.id) && <span className="shrink-0 text-amber-400">★</span>}
             <span className="truncate">{rec.name}</span>
             {rec.kind === 'local' && (
               <span className="shrink-0 rounded bg-neutral-700 px-1 text-[10px] text-neutral-300">
-                本地
+                {t('chrome.localBadge')}
               </span>
             )}
             {failed.has(rec.id) && (
-              <span className="shrink-0 text-red-400" title={`最近失败: ${failed.get(rec.id)}`}>
+              <span
+                className="shrink-0 text-red-400"
+                title={t('chrome.lastFailed', { message: failed.get(rec.id) ?? '' })}
+              >
                 ⚠
               </span>
             )}
           </span>
           <span className="block truncate text-xs text-neutral-500">
             {rec.kind === 'local'
-              ? rec.workdir || rec.shell || '本机终端'
+              ? rec.workdir || rec.shell || t('chrome.localTerminal')
               : `${rec.username}@${rec.host}:${rec.port}`}
-            {rec.kind !== 'local' && rec.jumpChain.length > 0 && ` · ${rec.jumpChain.length} 跳`}
+            {rec.kind !== 'local' &&
+              rec.jumpChain.length > 0 &&
+              ` · ${t('chrome.jumpHops', { count: rec.jumpChain.length })}`}
           </span>
         </span>
         <span className="hidden shrink-0 gap-1 group-hover:flex group-focus-within:flex">
           <button
             className="rounded px-1 text-xs text-neutral-400 hover:text-green-400"
-            title="连接"
-            aria-label="连接"
+            title={t('chrome.connect')}
+            aria-label={t('chrome.connect')}
             onClick={(e) => {
               e.stopPropagation();
               connect(rec);
@@ -558,12 +584,12 @@ export function Sidebar() {
               openConnect(rec);
             }}
           >
-            编辑
+            {t('chrome.menuEdit')}
           </button>
           <button
             className="rounded px-1 text-xs text-neutral-500 hover:text-neutral-200"
-            title="更多操作"
-            aria-label="更多操作"
+            title={t('chrome.moreActions')}
+            aria-label={t('chrome.moreActions')}
             onClick={(e) => {
               e.stopPropagation();
               selectForMenu(rec);
@@ -617,7 +643,7 @@ export function Sidebar() {
       >
         <button
           className="mr-0.5 w-4 shrink-0 text-center"
-          aria-label={isCollapsed ? '展开分组' : '折叠分组'}
+          aria-label={isCollapsed ? t('chrome.expandGroup') : t('chrome.collapseGroup')}
           onClick={() =>
             persistCollapsed(
               isCollapsed ? [...collapsed].filter((p) => p !== path) : [...collapsed, path],
@@ -633,16 +659,16 @@ export function Sidebar() {
         <span className="hidden shrink-0 gap-0.5 group-hover:flex">
           <button
             className="rounded px-0.5 hover:text-neutral-200"
-            title="新建子分组"
-            aria-label="新建子分组"
+            title={t('chrome.newSubgroup')}
+            aria-label={t('chrome.newSubgroup')}
             onClick={() => setPrompt({ mode: 'group-new', parent: path, input: '' })}
           >
             ＋
           </button>
           <button
             className="rounded px-0.5 hover:text-neutral-200"
-            title="重命名"
-            aria-label="重命名分组"
+            title={t('chrome.rename')}
+            aria-label={t('chrome.renameGroupAria')}
             onClick={() =>
               setPrompt({ mode: 'group-rename', path, input: path.split('/').pop() ?? path })
             }
@@ -651,14 +677,14 @@ export function Sidebar() {
           </button>
           <button
             className="rounded px-0.5 hover:text-red-400"
-            title="删除分组"
-            aria-label="删除分组"
+            title={t('chrome.menuDeleteGroup')}
+            aria-label={t('chrome.menuDeleteGroup')}
             onClick={() => {
               if (count > 0) setGroupDel({ path, count });
               else {
                 persistExtras(extras.filter((p) => p !== path));
                 persistCollapsed([...collapsed].filter((p) => p !== path));
-                s().notify(`已删除空分组 ${path}`, 'success');
+                s().notify(t('chrome.emptyGroupDeleted', { path }), 'success');
               }
             }}
           >
@@ -680,7 +706,7 @@ export function Sidebar() {
         onPointerDown={startResize}
         role="separator"
         aria-orientation="vertical"
-        aria-label="调整侧栏宽度"
+        aria-label={t('chrome.resizeSidebar')}
         tabIndex={0}
         onKeyDown={(e) => {
           if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
@@ -691,14 +717,14 @@ export function Sidebar() {
         }}
       />
       <div className="px-3 py-2 text-xs text-neutral-400">
-        <span>会话</span>
+        <span>{t('chrome.sessionsHeader')}</span>
       </div>
 
       <div className="px-2 pb-1">
         <input
           className="w-full rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 outline-none placeholder:text-neutral-600 focus:border-neutral-600"
-          placeholder="搜索会话…"
-          aria-label="搜索会话"
+          placeholder={t('chrome.searchPlaceholder')}
+          aria-label={t('chrome.searchAria')}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -716,10 +742,10 @@ export function Sidebar() {
                   ? 'bg-blue-800 text-neutral-100'
                   : 'text-neutral-500 hover:bg-neutral-800'
               }`}
-              title={v.label}
+              title={t(v.labelKey)}
               onClick={() => setVirt((cur) => (cur === v.id ? null : v.id))}
             >
-              {v.label}
+              {t(v.labelKey)}
               {n > 0 ? ` ${n}` : ''}
             </button>
           );
@@ -743,9 +769,7 @@ export function Sidebar() {
         }}
       >
         {sessions.length === 0 && (
-          <p className="px-2 py-4 text-center text-xs text-neutral-600">
-            还没有会话。右键新建连接或分组。
-          </p>
+          <p className="px-2 py-4 text-center text-xs text-neutral-600">{t('chrome.noSessions')}</p>
         )}
         {flatMode
           ? (virt ? virtList : filtered).map((rec) => sessionRow(rec, 0))
@@ -764,16 +788,16 @@ export function Sidebar() {
       {/* 非空分组删除三选（统一 Dialog 基座：Esc=取消，默认焦点在安全选项） */}
       {groupDel && (
         <Dialog
-          title="删除分组"
+          title={t('chrome.menuDeleteGroup')}
           onClose={() => setGroupDel(null)}
           closeOnBackdrop={false}
           panelClass="w-96 rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
         >
           <h2 className="mb-2 text-base font-semibold text-neutral-100">
-            删除分组“{groupDel.path}”？
+            {t('chrome.deleteGroupTitle', { path: groupDel.path })}
           </h2>
           <p className="mb-4 text-xs leading-5 text-neutral-400">
-            该分组及其子分组共包含 {groupDel.count} 台服务器。请选择处理方式：
+            {t('chrome.deleteGroupBody', { count: groupDel.count })}
           </p>
           <div className="flex flex-col gap-2">
             <button
@@ -785,7 +809,7 @@ export function Sidebar() {
                 void deleteGroupKeep(p);
               }}
             >
-              仅删除分组，服务器移到未分组（子分组上移一级）
+              {t('chrome.deleteGroupKeep')}
             </button>
             <button
               className="rounded border border-red-800 px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-950"
@@ -794,13 +818,13 @@ export function Sidebar() {
                 setGroupDel(null);
               }}
             >
-              删除分组及其中 {groupDel.count} 台服务器（含已保存凭据）…
+              {t('chrome.deleteGroupCascade', { count: groupDel.count })}
             </button>
             <button
               className="rounded px-3 py-1.5 text-xs text-neutral-400 hover:bg-neutral-800"
               onClick={() => setGroupDel(null)}
             >
-              取消
+              {t('chrome.cancel')}
             </button>
           </div>
         </Dialog>
@@ -810,8 +834,8 @@ export function Sidebar() {
       {/* 级联删除的二次确认（凭据一并删除，不可撤销） */}
       {confirmCascade && (
         <ConfirmDialog
-          title={`确认删除分组“${confirmCascade.path}”及全部服务器？`}
-          confirmLabel={`永久删除 ${confirmCascade.count} 台服务器`}
+          title={t('chrome.cascadeTitle', { path: confirmCascade.path })}
+          confirmLabel={t('chrome.cascadeConfirm', { count: confirmCascade.count })}
           onCancel={() => setConfirmCascade(null)}
           onConfirm={() => {
             const p = confirmCascade.path;
@@ -820,17 +844,19 @@ export function Sidebar() {
           }}
         >
           <p className="mb-1">
-            将删除分组 {confirmCascade.path} 下的 {confirmCascade.count} 台服务器，
-            以及这些服务器保存的全部密码或凭据。
+            {t('chrome.cascadeBody', {
+              path: confirmCascade.path,
+              count: confirmCascade.count,
+            })}
           </p>
-          <p className="text-red-300">此操作无法撤销。</p>
+          <p className="text-red-300">{t('chrome.irreversible')}</p>
         </ConfirmDialog>
       )}
 
       {batchDel && (
         <ConfirmDialog
-          title={`删除 ${batchDel.length} 台服务器？`}
-          confirmLabel={`删除 ${batchDel.length} 台服务器`}
+          title={t('chrome.batchDeleteTitle', { count: batchDel.length })}
+          confirmLabel={t('chrome.batchDeleteConfirm', { count: batchDel.length })}
           onCancel={() => setBatchDel(null)}
           onConfirm={() => {
             const recs = batchDel;
@@ -839,10 +865,10 @@ export function Sidebar() {
           }}
         >
           <p className="mb-1 max-h-32 overflow-y-auto break-all text-neutral-300">
-            {batchDel.map((r) => r.name).join('、')}
+            {batchDel.map((r) => r.name).join(t('chrome.listSeparator'))}
           </p>
-          <p className="mb-1">删除后，这些服务器保存的密码或凭据也会一并删除。</p>
-          <p className="text-red-300">此操作无法撤销。</p>
+          <p className="mb-1">{t('chrome.batchDeleteCreds')}</p>
+          <p className="text-red-300">{t('chrome.irreversible')}</p>
         </ConfirmDialog>
       )}
 
@@ -862,13 +888,15 @@ export function Sidebar() {
               <>
                 <div className="mb-2">
                   {prompt.mode === 'group-new'
-                    ? `新建${prompt.parent ? ` ${prompt.parent} 下的子分组` : '分组'}`
-                    : `重命名分组 ${prompt.path}`}
+                    ? prompt.parent
+                      ? t('chrome.newGroupInParent', { parent: prompt.parent })
+                      : t('chrome.newGroupTitle')
+                    : t('chrome.renameGroupTitle', { path: prompt.path })}
                 </div>
                 <input
                   className="mb-2 w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
-                  placeholder="分组名（单层，不含 /）"
-                  aria-label="分组名"
+                  placeholder={t('chrome.groupNamePh')}
+                  aria-label={t('chrome.groupNameAria')}
                   value={prompt.input}
                   onChange={(e) => setPrompt({ ...prompt, input: e.target.value })}
                   autoFocus
@@ -877,11 +905,11 @@ export function Sidebar() {
             )}
             {prompt.mode === 'rename' && (
               <>
-                <div className="mb-2">重命名服务器</div>
+                <div className="mb-2">{t('chrome.renameServerTitle')}</div>
                 <input
                   className="mb-2 w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
-                  placeholder="新名称"
-                  aria-label="新名称"
+                  placeholder={t('chrome.newNamePh')}
+                  aria-label={t('chrome.newNamePh')}
                   value={prompt.input}
                   onChange={(e) => setPrompt({ ...prompt, input: e.target.value })}
                   autoFocus
@@ -893,7 +921,7 @@ export function Sidebar() {
                 className="rounded px-2 py-1 text-neutral-400 hover:bg-neutral-800"
                 onClick={() => setPrompt(null)}
               >
-                取消
+                {t('chrome.cancel')}
               </button>
               <button
                 className="rounded bg-blue-600 px-2 py-1 text-white hover:bg-blue-500"
@@ -905,7 +933,7 @@ export function Sidebar() {
                   else if (p.mode === 'rename') void renameSession(p.id, p.input);
                 }}
               >
-                确定
+                {t('chrome.ok')}
               </button>
             </div>
           </div>

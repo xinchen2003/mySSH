@@ -89,6 +89,9 @@ pub struct SessionRecord {
     /// 侧栏色点（hex，如 '#e5484d'）；None = 无色
     #[serde(default)]
     pub color: Option<String>,
+    /// 终端编码（encoding_rs 标签；'utf-8' = 直通不转码）。旧导出包络无此字段，默认 utf-8
+    #[serde(default = "default_encoding")]
+    pub encoding: String,
     pub tags: Vec<String>,
     pub command: Option<String>,
     pub created_at: String,
@@ -99,8 +102,13 @@ pub struct SessionRepo {
     pool: SqlitePool,
 }
 
-const LIST_SQL: &str = "SELECT id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color FROM sessions ORDER BY group_path, name";
-const GET_SQL: &str = "SELECT id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color FROM sessions WHERE id = ?";
+const LIST_SQL: &str = "SELECT id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color,encoding FROM sessions ORDER BY group_path, name";
+const GET_SQL: &str = "SELECT id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color,encoding FROM sessions WHERE id = ?";
+
+/// 终端编码缺省值（旧数据/旧导出兼容）
+fn default_encoding() -> String {
+    "utf-8".into()
+}
 
 impl SessionRepo {
     pub(crate) fn new(pool: SqlitePool) -> Self {
@@ -132,13 +140,13 @@ impl SessionRepo {
         let jump_chain = serde_json::to_string(&rec.jump_chain)
             .map_err(|e| StoreError::Corrupt(e.to_string()))?;
         sqlx::query(
-            "INSERT INTO sessions (id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,color,tags,command,jump_chain,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+            "INSERT INTO sessions (id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,color,encoding,tags,command,jump_chain,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
              ON CONFLICT(id) DO UPDATE SET
                name=excluded.name, kind=excluded.kind, host=excluded.host, shell=excluded.shell, workdir=excluded.workdir, port=excluded.port,
                username=excluded.username, auth_type=excluded.auth_type,
                key_path=excluded.key_path, group_path=excluded.group_path,
-               color=excluded.color,
+               color=excluded.color, encoding=excluded.encoding,
                tags=excluded.tags, command=excluded.command,
                jump_chain=excluded.jump_chain, updated_at=datetime('now')",
         )
@@ -154,6 +162,7 @@ impl SessionRepo {
         .bind(&rec.key_path)
         .bind(&rec.group_path)
         .bind(&rec.color)
+        .bind(&rec.encoding)
         .bind(tags)
         .bind(&rec.command)
         .bind(jump_chain)
@@ -318,6 +327,7 @@ fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<SessionRecord, StoreEr
         key_path: row.get("key_path"),
         group_path: row.get("group_path"),
         color: row.get("color"),
+        encoding: row.get("encoding"),
         tags: serde_json::from_str(&tags_raw).map_err(|e| StoreError::Corrupt(e.to_string()))?,
         jump_chain: serde_json::from_str(&jump_raw)
             .map_err(|e| StoreError::Corrupt(e.to_string()))?,

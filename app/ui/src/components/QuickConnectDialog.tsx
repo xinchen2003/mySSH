@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Dialog } from './Dialog';
 import { useAppStore } from '../state/app-store';
 import { GROUP_KEYS, readStringList } from '../state/groups';
+import { useT } from '../i18n';
 
 const inputCls =
   'w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-200 outline-none focus:border-neutral-500 focus-visible:ring-1 focus-visible:ring-neutral-500';
@@ -18,6 +19,7 @@ export function QuickConnectDialog() {
 }
 
 function QuickConnectForm({ onClose }: { onClose: () => void }) {
+  const t = useT();
   const [host, setHost] = useState('');
   const [port, setPort] = useState('22');
   const [user, setUser] = useState('');
@@ -34,11 +36,11 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
   const submit = () => {
     const p = Number(port);
     if (!host.trim() || !user.trim()) {
-      setError('主机和用户名必填');
+      setError(t('dialogs.hostUserRequired'));
       return;
     }
     if (!Number.isInteger(p) || p < 1 || p > 65535) {
-      setError('端口无效');
+      setError(t('dialogs.invalidPort'));
       return;
     }
     useAppStore.getState().connect({
@@ -51,11 +53,16 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Dialog title="快速连接" onClose={onClose} enterAction={submit} panelClass="w-96">
+    <Dialog
+      title={t('dialogs.quickConnectTitle')}
+      onClose={onClose}
+      enterAction={submit}
+      panelClass="w-96"
+    >
       <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2 text-xs text-neutral-400">
         {recent.length > 0 && (
           <>
-            <label htmlFor="qc-recent">最近连接</label>
+            <label htmlFor="qc-recent">{t('dialogs.recentConnections')}</label>
             <select
               id="qc-recent"
               className={inputCls}
@@ -68,7 +75,7 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
                 setUser(rec.username);
               }}
             >
-              <option value="">从最近连接回填…</option>
+              <option value="">{t('dialogs.recentFill')}</option>
               {recent.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name}（{r.username}@{r.host}:{r.port}）
@@ -77,18 +84,18 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
             </select>
           </>
         )}
-        <label htmlFor="qc-host">主机</label>
+        <label htmlFor="qc-host">{t('dialogs.host')}</label>
         <input
           id="qc-host"
           data-autofocus
           className={inputCls}
           autoComplete="off"
           spellCheck={false}
-          placeholder="192.168.1.10 或 server.example.com"
+          placeholder={t('dialogs.hostPlaceholder')}
           value={host}
           onChange={(e) => setHost(e.target.value)}
         />
-        <label htmlFor="qc-port">端口</label>
+        <label htmlFor="qc-port">{t('dialogs.port')}</label>
         <input
           id="qc-port"
           className={inputCls}
@@ -96,7 +103,7 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
           value={port}
           onChange={(e) => setPort(e.target.value)}
         />
-        <label htmlFor="qc-user">用户名</label>
+        <label htmlFor="qc-user">{t('dialogs.username')}</label>
         <input
           id="qc-user"
           className={inputCls}
@@ -105,13 +112,13 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
           value={user}
           onChange={(e) => setUser(e.target.value)}
         />
-        <label htmlFor="qc-pass">密码</label>
+        <label htmlFor="qc-pass">{t('dialogs.password')}</label>
         <input
           id="qc-pass"
           type="password"
           className={inputCls}
           autoComplete="current-password"
-          placeholder="留空则连接时询问"
+          placeholder={t('dialogs.passwordAskPlaceholder')}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
@@ -121,19 +128,19 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
           {error}
         </p>
       )}
-      <p className="mt-2 text-xs text-neutral-600">临时连接，不保存为服务器档案。</p>
+      <p className="mt-2 text-xs text-neutral-600">{t('dialogs.quickConnectNote')}</p>
       <div className="mt-3 flex justify-end gap-2 text-xs">
         <button
           className="rounded px-3 py-1 text-neutral-400 hover:bg-neutral-800"
           onClick={onClose}
         >
-          取消
+          {t('dialogs.cancel')}
         </button>
         <button
           className="rounded bg-blue-700 px-3 py-1 text-white hover:bg-blue-600"
           onClick={submit}
         >
-          连接
+          {t('dialogs.connect')}
         </button>
       </div>
     </Dialog>

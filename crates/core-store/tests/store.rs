@@ -44,6 +44,7 @@ fn sample(id: &str, name: &str) -> SessionRecord {
         workdir: None,
         group_path: "生产/华东".into(),
         color: None,
+        encoding: "utf-8".into(),
         tags: vec!["prod".into(), "web".into()],
         jump_chain: vec![],
         command: None,

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { initBroadcastReceiver } from '../term/broadcast';
 import { useAppStore } from '../state/app-store';
+import { useT } from '../i18n';
 
 /**
  * 广播输入开关（条目 11）：开启后本窗口全部已连接 pane 同步收到同一输入，
@@ -9,6 +10,7 @@ import { useAppStore } from '../state/app-store';
  * 样式对齐 header 工具栏按钮；开启态高亮并带「广播中」指示。
  */
 export function BroadcastControl() {
+  const t = useT();
   const enabled = useAppStore((s) => s.broadcastEnabled);
   const toggle = useAppStore((s) => s.toggleBroadcast);
 
@@ -23,13 +25,9 @@ export function BroadcastControl() {
       }`}
       onClick={toggle}
       aria-pressed={enabled}
-      title={
-        enabled
-          ? '关闭广播输入（停止向所有窗格同步输入）'
-          : '开启广播输入（所有已连接窗格同步输入）'
-      }
+      title={enabled ? t('panels.broadcastDisableTip') : t('panels.broadcastEnableTip')}
     >
-      ⇶{enabled && <span className="text-blue-300">广播中</span>}
+      ⇶{enabled && <span className="text-blue-300">{t('panels.broadcasting')}</span>}
     </button>
   );
 }

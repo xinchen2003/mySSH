@@ -1,4 +1,5 @@
 import { Dialog } from './Dialog';
+import { useT } from '../i18n';
 
 /**
  * 危险操作确认弹窗（删除服务器 / SFTP 远程删除 / 关闭活跃标签共用）。
@@ -21,6 +22,7 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const t = useT();
   return (
     <Dialog
       title={title}
@@ -36,7 +38,7 @@ export function ConfirmDialog({
           className="rounded px-3 py-1 text-neutral-300 hover:bg-neutral-800"
           onClick={onCancel}
         >
-          取消
+          {t('dialogs.cancel')}
         </button>
         <button
           type="button"

@@ -19,7 +19,7 @@ import {
   navPush,
   type NavHist,
 } from './nav-hist';
-import { usePanelHeight } from './panel-height';
+import { useT, tNow } from '../i18n';
 
 /** 双栏 SFTP 面板：左本地 / 右远程，拖拽互传 + 终端 cwd 联动（OSC 7）。
  *  批次五：可编辑路径栏（前进/后退历史）、多选与批量操作、失败任务重试、
@@ -66,7 +66,9 @@ function fmtPerms(p?: number | null): string {
 /** 权限位 → 中文三段（拥有者/同组/其他），如 0755 → 读写执/读执/读执；无权限段显示「无」 */
 function fmtPermsCn(p?: number | null): string {
   if (p == null) return '';
-  const seg = (b: number) => `${b & 4 ? '读' : ''}${b & 2 ? '写' : ''}${b & 1 ? '执' : ''}` || '无';
+  const seg = (b: number) =>
+    `${b & 4 ? tNow('panels.permRead') : ''}${b & 2 ? tNow('panels.permWrite') : ''}${b & 1 ? tNow('panels.permExec') : ''}` ||
+    tNow('panels.permNone');
   return `${seg((p >> 6) & 7)}/${seg((p >> 3) & 7)}/${seg(p & 7)}`;
 }
 
@@ -74,9 +76,19 @@ function fmtPermsCn(p?: number | null): string {
 function permsTitle(p?: number | null): string {
   if (p == null) return '';
   const seg = (b: number) =>
-    [b & 4 ? '读' : '', b & 2 ? '写' : '', b & 1 ? '执行' : ''].filter(Boolean).join('、') ||
-    '无权限';
-  return `拥有者：${seg((p >> 6) & 7)}；同组：${seg((p >> 3) & 7)}；其他：${seg(p & 7)}（八进制 ${fmtPerms(p)}）`;
+    [
+      b & 4 ? tNow('panels.permReadFull') : '',
+      b & 2 ? tNow('panels.permWriteFull') : '',
+      b & 1 ? tNow('panels.permExecFull') : '',
+    ]
+      .filter(Boolean)
+      .join(tNow('panels.permSep')) || tNow('panels.permNoneFull');
+  return tNow('panels.permsTitle', {
+    owner: seg((p >> 6) & 7),
+    group: seg((p >> 3) & 7),
+    other: seg(p & 7),
+    oct: fmtPerms(p),
+  });
 }
 
 /** 目录/名拼接（base='/' 或 '' 不产生双斜杠；本地 Windows 路径同样适用） */
@@ -143,6 +155,7 @@ interface PaneProps {
 }
 
 function FilePane(p: PaneProps) {
+  const t = useT();
   // 行级落点（批次六 1b）：悬停的目录行路径；null=落当前目录
   const [rowDrop, setRowDrop] = useState<string | null>(null);
   // 列排序（批次十一 4）：目录恒排文件前；点击同列切换升降序，点击异列升序
@@ -213,7 +226,7 @@ function FilePane(p: PaneProps) {
     >
       <PathBar
         path={p.path}
-        placeholder={p.side === 'local' ? '此电脑' : '/'}
+        placeholder={p.side === 'local' ? t('panels.thisPc') : '/'}
         loading={p.loading}
         canBack={p.canBack}
         canFwd={p.canFwd}
@@ -228,9 +241,9 @@ function FilePane(p: PaneProps) {
       {/* 过滤 + 隐藏文件开关（批次十一 5） */}
       <div className="flex items-center gap-2 border-b border-neutral-800 px-2 py-0.5 text-neutral-500">
         <input
-          aria-label="过滤文件"
+          aria-label={t('panels.filterFiles')}
           className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-800 px-1.5 py-0.5 text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-blue-600"
-          placeholder="过滤…"
+          placeholder={t('panels.filterPlaceholder')}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
@@ -240,22 +253,27 @@ function FilePane(p: PaneProps) {
             checked={showHidden}
             onChange={(e) => setShowHidden(e.target.checked)}
           />
-          显示隐藏
+          {t('panels.showHidden')}
         </label>
       </div>
       {/* 列头（批次十一 4：名称/大小/修改时间可点排序，目录恒排文件前） */}
       <div className="flex items-center gap-2 border-b border-neutral-800 px-2 py-0.5 text-neutral-500">
         <span className="w-4 shrink-0" />
         <button className={`${hbtn} min-w-0 flex-1 text-left`} onClick={() => sortBy('name')}>
-          名称{sortMark('name')}
+          {t('panels.colName')}
+          {sortMark('name')}
         </button>
         <button className={`${hbtn} w-16 shrink-0 text-right`} onClick={() => sortBy('size')}>
-          大小{sortMark('size')}
+          {t('panels.colSize')}
+          {sortMark('size')}
         </button>
         <button className={`${hbtn} w-16 shrink-0 text-right`} onClick={() => sortBy('mtime')}>
-          修改时间{sortMark('mtime')}
+          {t('panels.colModified')}
+          {sortMark('mtime')}
         </button>
-        {p.side === 'remote' && <span className="w-32 shrink-0 text-right">权限</span>}
+        {p.side === 'remote' && (
+          <span className="w-32 shrink-0 text-right">{t('panels.colPerms')}</span>
+        )}
       </div>
       <div
         className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-1 focus-visible:ring-neutral-500"
@@ -387,7 +405,7 @@ function FilePane(p: PaneProps) {
         ))}
         {!p.loading && visible.length === 0 && (
           <div className="px-3 py-4 text-xs text-neutral-600">
-            {p.entries.length === 0 ? '（空目录）' : '（无匹配项）'}
+            {p.entries.length === 0 ? t('panels.emptyDir') : t('panels.noMatch')}
           </div>
         )}
       </div>
@@ -396,8 +414,9 @@ function FilePane(p: PaneProps) {
 }
 
 export function SftpPanel({ tabId }: { tabId: string }) {
+  const t = useT();
   const tabs = useAppStore((s) => s.tabs);
-  const toggleSftp = useAppStore((s) => s.toggleSftp);
+  const closeDock = useAppStore((s) => s.closeDock);
   const notify = useAppStore((s) => s.notify);
   const tab = tabs.find((t) => t.id === tabId);
   const rawSessionId = tab?.target.kind === 'session' ? tab.target.sessionId : null;
@@ -445,7 +464,6 @@ export function SftpPanel({ tabId }: { tabId: string }) {
   );
   /** 拖拽悬停的栏位（落点高亮） */
   const [html5DragSide, setHtml5DragSide] = useState<Side | null>(null);
-  const { height, handle } = usePanelHeight('sftp.height', 256);
   // 最新路径/刷新函数的 ref：1s 跟随轮询与 OS 拖放回调读取，避免闭包过期（批次六 10）
   const remotePathRef = useRef(remotePath);
   const localPathRef = useRef(localPath);
@@ -470,7 +488,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         setLocalPath(res.path);
         return res.path;
       } catch (e) {
-        notify(`本地目录读取失败: ${e}`, 'error');
+        notify(t('panels.localReadFailed', { error: String(e) }), 'error');
         return null;
       } finally {
         setLocalLoading(false);
@@ -513,13 +531,13 @@ export function SftpPanel({ tabId }: { tabId: string }) {
           if (allowFallback) {
             const home = await resolveHome();
             if (home !== target) {
-              notify(`无法读取 ${target}（${e}），已回退到家目录`, 'warning');
+              notify(t('panels.remoteReadFallback', { path: target, error: String(e) }), 'warning');
               target = home;
               allowFallback = false;
               continue;
             }
           }
-          notify(`远程目录读取失败: ${e}`, 'error');
+          notify(t('panels.remoteReadFailed', { error: String(e) }), 'error');
           return null;
         } finally {
           setRemoteLoading(false);
@@ -555,7 +573,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       void (async () => {
         const target = dir ?? localPath;
         if (!target) {
-          notify('盘符枚举页无法接收文件，请先进入一个本地目录', 'warning');
+          notify(t('panels.driveListNoDrop'), 'warning');
           return;
         }
         let ok = 0;
@@ -564,11 +582,11 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             await invoke('local_copy', { from: src, toDir: target });
             ok++;
           } catch (e) {
-            notify(`复制失败: ${e}`, 'error');
+            notify(t('panels.copyFailed', { error: String(e) }), 'error');
           }
         }
         if (ok > 0) {
-          notify(`已复制 ${ok} 个项目`, 'success');
+          notify(t('panels.copiedItems', { count: ok }), 'success');
           void refreshLocal();
         }
       })();
@@ -702,12 +720,10 @@ export function SftpPanel({ tabId }: { tabId: string }) {
 
   if (!sessionId) {
     return (
-      <div className="border-t border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-500">
-        {isLocalSession
-          ? '本地会话无需 SFTP——文件就在本机，终端里直接操作即可'
-          : 'SFTP 仅支持存储档案会话（内联连接无档案可解析凭据）'}
-        <button className="ml-2 text-neutral-400" onClick={() => toggleSftp(tabId)}>
-          关闭
+      <div className="bg-neutral-900 px-3 py-2 text-xs text-neutral-500">
+        {isLocalSession ? t('panels.sftpLocalGuard') : t('panels.sftpInlineGuard')}
+        <button className="ml-2 text-neutral-400" onClick={closeDock}>
+          {t('panels.close')}
         </button>
       </div>
     );
@@ -796,7 +812,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       void navSide(side, e.path);
     } else if (side === 'local') {
       void invoke('open_in_explorer', { path: e.path }).catch((err) =>
-        notify(`打开失败: ${err}`, 'error'),
+        notify(t('panels.openFailed', { error: String(err) }), 'error'),
       );
     } else if (e.kind === 'file') {
       // 双击远程文件 = 直编（下载临时区 + 监听回传 + 系统默认编辑器）
@@ -807,9 +823,9 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             remote: e.path,
           });
           await invoke('open_local', { path: res.localPath });
-          notify(`已打开编辑: ${e.name}（保存即回传）`, 'success');
+          notify(t('panels.editOpened', { name: e.name }), 'success');
         } catch (err) {
-          notify(`编辑打开失败: ${err}`, 'error');
+          notify(t('panels.editOpenFailed', { error: String(err) }), 'error');
         }
       })();
     }
@@ -882,10 +898,10 @@ export function SftpPanel({ tabId }: { tabId: string }) {
           });
           skipped += res.skipped;
         } catch (e) {
-          notify(`上传失败: ${e}`, 'error');
+          notify(t('panels.uploadFailed', { error: String(e) }), 'error');
         }
       }
-      if (skipped > 0) notify(`已跳过 ${skipped} 个已存在文件`, 'info');
+      if (skipped > 0) notify(t('panels.skippedExisting', { count: skipped }), 'info');
     })();
   };
 
@@ -911,10 +927,10 @@ export function SftpPanel({ tabId }: { tabId: string }) {
           });
           skipped += res.skipped;
         } catch (e) {
-          notify(`下载失败: ${e}`, 'error');
+          notify(t('panels.downloadFailed', { error: String(e) }), 'error');
         }
       }
-      if (skipped > 0) notify(`已跳过 ${skipped} 个已存在文件`, 'info');
+      if (skipped > 0) notify(t('panels.skippedExisting', { count: skipped }), 'info');
     })();
   };
 
@@ -974,7 +990,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         }
       }
     } catch (e) {
-      notify(`操作失败: ${e}`, 'error');
+      notify(t('panels.opFailed', { error: String(e) }), 'error');
     }
     setPrompt(null);
     clearSel();
@@ -991,10 +1007,10 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         else await invoke('local_delete', { path: entry.path });
         ok++;
       } catch (e) {
-        notify(`删除 ${entry.name} 失败: ${e}`, 'error');
+        notify(t('panels.deleteEntryFailed', { name: entry.name, error: String(e) }), 'error');
       }
     }
-    if (ok > 0) notify(`已删除 ${ok} 个项目`, 'success');
+    if (ok > 0) notify(t('panels.deletedItems', { count: ok }), 'success');
     clearSel();
     if (side === 'remote') void refreshRemote();
     else void refreshLocal();
@@ -1018,9 +1034,9 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     void (async () => {
       try {
         await writeText(picked.map((e) => e.path).join('\n'));
-        notify(`已复制 ${picked.length} 个路径`, 'success');
+        notify(t('panels.copiedPaths', { count: picked.length }), 'success');
       } catch (e) {
-        notify(`复制失败: ${e}`, 'error');
+        notify(t('panels.copyFailed', { error: String(e) }), 'error');
       }
     })();
   };
@@ -1033,57 +1049,57 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     if (side === 'remote') {
       return [
         {
-          label: '打开',
+          label: t('panels.open'),
           icon: '▶',
           disabled: !one,
           onSelect: () => one && openEntry('remote')(one),
         },
         {
-          label: n > 1 ? `下载 ${n} 项` : '下载',
+          label: n > 1 ? t('panels.downloadItems', { count: n }) : t('panels.download'),
           icon: '⬇',
           disabled: !batch,
           onSelect: () => downloadPaths(picked.map((e) => e.path)),
         },
         {
-          label: n > 1 ? `复制 ${n} 个路径` : '复制路径',
+          label: n > 1 ? t('panels.copyPathsN', { count: n }) : t('panels.copyPaths'),
           icon: '⧉',
           disabled: !batch,
           onSelect: () => copyPaths('remote'),
         },
         'separator',
         {
-          label: '重命名…',
+          label: t('panels.rename'),
           icon: '✎',
           disabled: !one,
           onSelect: () => one && setPrompt({ action: 'rename', side, value: one.name }),
         },
         {
-          label: n > 1 ? `移动 ${n} 项到…` : '移动到…',
+          label: n > 1 ? t('panels.moveItems', { count: n }) : t('panels.moveTo'),
           icon: '➜',
           disabled: !batch,
           onSelect: () => setPrompt({ action: 'move', side, value: remotePath }),
         },
         {
-          label: n > 1 ? `修改 ${n} 项权限…` : '修改权限…',
+          label: n > 1 ? t('panels.chmodItems', { count: n }) : t('panels.chmod'),
           icon: '⚙',
           disabled: !batch,
           onSelect: () =>
             setPrompt({ action: 'chmod', side, value: fmtPerms(one?.permissions) || '644' }),
         },
         {
-          label: '新建目录…',
+          label: t('panels.newFolder'),
           icon: '＋',
           onSelect: () => setPrompt({ action: 'mkdir', side, value: '' }),
         },
         {
-          label: '新建文件…',
+          label: t('panels.newFile'),
           icon: '＋',
           onSelect: () => setPrompt({ action: 'touch', side, value: '' }),
         },
-        { label: '刷新', icon: '↻', onSelect: () => void refreshRemote() },
+        { label: t('panels.refresh'), icon: '↻', onSelect: () => void refreshRemote() },
         'separator',
         {
-          label: n > 1 ? `删除 ${n} 项…` : '删除…',
+          label: n > 1 ? t('panels.deleteItems', { count: n }) : t('panels.deleteItem'),
           icon: '🗑',
           danger: true,
           disabled: !batch,
@@ -1093,54 +1109,54 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     }
     return [
       {
-        label: '在资源管理器中显示',
+        label: t('panels.showInExplorer'),
         icon: '⬈',
         disabled: !one,
         onSelect: () =>
           one &&
           void invoke('open_in_explorer', { path: one.path }).catch((e) =>
-            notify(`打开失败: ${e}`, 'error'),
+            notify(t('panels.openFailed', { error: String(e) }), 'error'),
           ),
       },
       {
-        label: n > 1 ? `上传 ${n} 项` : '上传',
+        label: n > 1 ? t('panels.uploadItems', { count: n }) : t('panels.upload'),
         icon: '⬆',
         disabled: !batch,
         onSelect: () => uploadPaths(picked.map((e) => e.path)),
       },
       {
-        label: n > 1 ? `复制 ${n} 个路径` : '复制路径',
+        label: n > 1 ? t('panels.copyPathsN', { count: n }) : t('panels.copyPaths'),
         icon: '⧉',
         disabled: !batch,
         onSelect: () => copyPaths('local'),
       },
       'separator',
       {
-        label: '重命名…',
+        label: t('panels.rename'),
         icon: '✎',
         disabled: !one,
         onSelect: () => one && setPrompt({ action: 'rename', side, value: one.name }),
       },
       {
-        label: n > 1 ? `移动 ${n} 项到…` : '移动到…',
+        label: n > 1 ? t('panels.moveItems', { count: n }) : t('panels.moveTo'),
         icon: '➜',
         disabled: !batch,
         onSelect: () => setPrompt({ action: 'move', side, value: localPath }),
       },
       {
-        label: '新建目录…',
+        label: t('panels.newFolder'),
         icon: '＋',
         onSelect: () => setPrompt({ action: 'mkdir', side, value: '' }),
       },
       {
-        label: '新建文件…',
+        label: t('panels.newFile'),
         icon: '＋',
         onSelect: () => setPrompt({ action: 'touch', side, value: '' }),
       },
-      { label: '刷新', icon: '↻', onSelect: () => void refreshLocal() },
+      { label: t('panels.refresh'), icon: '↻', onSelect: () => void refreshLocal() },
       'separator',
       {
-        label: n > 1 ? `删除 ${n} 项…` : '删除…',
+        label: n > 1 ? t('panels.deleteItems', { count: n }) : t('panels.deleteItem'),
         icon: '🗑',
         danger: true,
         disabled: !batch,
@@ -1213,7 +1229,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
   const addLocalFav = () => {
     if (!localPath || localFavs.includes(localPath)) return;
     setSetting('sftp.localFavorites', [...localFavs, localPath]);
-    notify(`已收藏本地路径: ${localPath}`, 'success');
+    notify(t('panels.favLocalAdded', { path: localPath }), 'success');
   };
   const removeLocalFav = (p: string) =>
     setSetting(
@@ -1240,7 +1256,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       ...remoteFavMap,
       [sessionId]: [...remoteFavs, remotePath],
     });
-    notify(`已收藏远程路径: ${remotePath}`, 'success');
+    notify(t('panels.favRemoteAdded', { path: remotePath }), 'success');
   };
   const removeRemoteFav = (p: string) => {
     if (!sessionId) return;
@@ -1254,25 +1270,29 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     'rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-40';
   const localQuickSlots = (
     <div className="flex items-center gap-1 overflow-x-auto border-b border-neutral-800 px-2 py-0.5">
-      <button className={qbtn} title="盘符枚举" onClick={() => void navSide('local', '')}>
-        此电脑
+      <button
+        className={qbtn}
+        title={t('panels.driveEnum')}
+        onClick={() => void navSide('local', '')}
+      >
+        {t('panels.thisPc')}
       </button>
       <button
         className={qbtn}
-        title="桌面"
+        title={t('panels.desktop')}
         onClick={() =>
           void invoke<string>('local_desktop_path')
             .then((p) => navSide('local', p))
-            .catch((e) => notify(`桌面定位失败: ${e}`, 'error'))
+            .catch((e) => notify(t('panels.desktopFailed', { error: String(e) }), 'error'))
         }
       >
-        桌面
+        {t('panels.desktop')}
       </button>
       {localFavs.map((p) => (
         <button
           key={p}
           className={`${qbtn} max-w-32 truncate`}
-          title={`${p}（右键移除）`}
+          title={t('panels.favRemoveTip', { path: p })}
           onClick={() => void navSide('local', p)}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -1284,11 +1304,13 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       ))}
       <button
         className={`${qbtn} shrink-0`}
-        title={localPath ? `收藏当前路径: ${localPath}` : '先进入一个本地目录再收藏'}
+        title={
+          localPath ? t('panels.favAddTip', { path: localPath }) : t('panels.favAddDisabledTip')
+        }
         disabled={!localPath || localFavs.includes(localPath)}
         onClick={addLocalFav}
       >
-        ☆ 收藏当前
+        ☆ {t('panels.favAdd')}
       </button>
     </div>
   );
@@ -1299,7 +1321,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         <button
           key={p}
           className={`${qbtn} max-w-32 truncate`}
-          title={`${p}（右键移除）`}
+          title={t('panels.favRemoveTip', { path: p })}
           onClick={() => void navSide('remote', p)}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -1311,11 +1333,11 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       ))}
       <button
         className={`${qbtn} shrink-0`}
-        title={`收藏当前路径: ${remotePath}`}
+        title={t('panels.favAddTip', { path: remotePath })}
         disabled={remoteFavs.includes(remotePath)}
         onClick={addRemoteFav}
       >
-        ☆ 收藏当前
+        ☆ {t('panels.favAdd')}
       </button>
     </div>
   );
@@ -1327,12 +1349,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
   const toolBtn = 'rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 disabled:opacity-40';
 
   return (
-    <div
-      ref={rootRef}
-      className="flex shrink-0 flex-col border-t border-neutral-800 bg-neutral-900 text-xs"
-      style={{ height }}
-    >
-      {handle}
+    <div ref={rootRef} className="flex h-full min-h-0 flex-col bg-neutral-900 text-xs">
       {/* 工具行 */}
       <div className="flex items-center gap-2 border-b border-neutral-800 px-2 py-1">
         <span className="font-medium text-neutral-300">SFTP</span>
@@ -1342,7 +1359,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             checked={followTerm}
             onChange={(e) => setFollowTerm(e.target.checked)}
           />
-          跟随终端目录
+          {t('panels.followTerminal')}
         </label>
         <button
           className={toolBtn}
@@ -1351,7 +1368,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             void refreshRemote();
           }}
         >
-          刷新
+          {t('panels.refresh')}
         </button>
         <button
           className={toolBtn}
@@ -1362,7 +1379,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             if (e) setPrompt({ action: 'rename', side, value: e.name });
           }}
         >
-          重命名
+          {t('panels.renamePlain')}
         </button>
         <button
           className={toolBtn}
@@ -1375,7 +1392,7 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             })
           }
         >
-          权限
+          {t('panels.permissions')}
         </button>
         <button
           className={`${toolBtn} text-red-400`}
@@ -1385,26 +1402,30 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             setConfirmDel(side === 'remote' ? remoteSel : localSel);
           }}
         >
-          删除
+          {t('panels.delete')}
         </button>
         <button
           className={toolBtn}
           disabled={localSel.length === 0}
           onClick={() => uploadPaths(localSel.map((e) => e.path))}
         >
-          上传 →{localSel.length > 1 ? ` (${localSel.length})` : ''}
+          {localSel.length > 1
+            ? t('panels.uploadToCount', { count: localSel.length })
+            : t('panels.uploadTo')}
         </button>
         <button
           className={toolBtn}
           disabled={remoteSel.length === 0}
           onClick={() => downloadPaths(remoteSel.map((e) => e.path))}
         >
-          ← 下载{remoteSel.length > 1 ? ` (${remoteSel.length})` : ''}
+          {remoteSel.length > 1
+            ? t('panels.downloadFromCount', { count: remoteSel.length })
+            : t('panels.downloadFrom')}
         </button>
         <button
           className="ml-auto rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-800"
-          onClick={() => toggleSftp(tabId)}
-          aria-label="关闭 SFTP"
+          onClick={closeDock}
+          aria-label={t('panels.closeSftp')}
         >
           ×
         </button>
@@ -1415,14 +1436,18 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         <div className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-850 px-2 py-1">
           <span className="text-neutral-400">
             {prompt.action === 'mkdir'
-              ? `目录名（${prompt.side === 'local' ? '本地' : '远程'}）`
+              ? t('panels.promptDirName', {
+                  side: t(prompt.side === 'local' ? 'panels.local' : 'panels.remote'),
+                })
               : prompt.action === 'touch'
-                ? `文件名（${prompt.side === 'local' ? '本地' : '远程'}）`
+                ? t('panels.promptFileName', {
+                    side: t(prompt.side === 'local' ? 'panels.local' : 'panels.remote'),
+                  })
                 : prompt.action === 'rename'
-                  ? '新名称'
+                  ? t('panels.promptNewName')
                   : prompt.action === 'move'
-                    ? '目标目录'
-                    : '权限(八进制)'}
+                    ? t('panels.promptTargetDir')
+                    : t('panels.promptPerms')}
           </span>
           <input
             className="w-56 rounded border border-neutral-700 bg-neutral-800 px-1.5 py-0.5 text-neutral-200 outline-none focus:border-blue-600"
@@ -1438,10 +1463,10 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             className="rounded bg-blue-700 px-2 py-0.5 text-white"
             onClick={() => void runPrompt()}
           >
-            确定
+            {t('panels.ok')}
           </button>
           <button className="rounded px-2 py-0.5 text-neutral-400" onClick={() => setPrompt(null)}>
-            取消
+            {t('panels.cancel')}
           </button>
         </div>
       )}
@@ -1451,10 +1476,17 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         <ConfirmDialog
           title={
             confirmDel.length > 1
-              ? `删除 ${confirmDel.length} 个项目？`
-              : `删除${confirmDel[0]?.kind === 'dir' ? '目录' : '文件'}“${confirmDel[0]?.name}”？`
+              ? t('panels.deleteConfirmTitleN', { count: confirmDel.length })
+              : t('panels.deleteConfirmTitle', {
+                  kind: t(confirmDel[0]?.kind === 'dir' ? 'panels.kindDir' : 'panels.kindFile'),
+                  name: confirmDel[0]?.name ?? '',
+                })
           }
-          confirmLabel={confirmDel.some((e) => e.kind === 'dir') ? '递归删除' : '删除'}
+          confirmLabel={
+            confirmDel.some((e) => e.kind === 'dir')
+              ? t('panels.deleteRecursive')
+              : t('panels.delete')
+          }
           onCancel={() => setConfirmDel(null)}
           onConfirm={() => {
             const entries = confirmDel;
@@ -1466,9 +1498,9 @@ export function SftpPanel({ tabId }: { tabId: string }) {
             <p className="mb-1 break-all font-mono text-neutral-300">{confirmDel[0]?.path}</p>
           )}
           {confirmDel.some((e) => e.kind === 'dir') && (
-            <p className="mb-1 text-red-300">包含目录，目录将被递归删除，其中所有内容都会丢失。</p>
+            <p className="mb-1 text-red-300">{t('panels.deleteDirWarning')}</p>
           )}
-          <p>共 {confirmDel.length} 个项目。此操作无法恢复。</p>
+          <p>{t('panels.deleteConfirmBody', { count: confirmDel.length })}</p>
         </ConfirmDialog>
       )}
 
@@ -1487,9 +1519,13 @@ export function SftpPanel({ tabId }: { tabId: string }) {
           x={favMenu.x}
           y={favMenu.y}
           items={[
-            { label: '打开', icon: '▶', onSelect: () => void navSide(favMenu.side, favMenu.path) },
             {
-              label: '移除收藏',
+              label: t('panels.open'),
+              icon: '▶',
+              onSelect: () => void navSide(favMenu.side, favMenu.path),
+            },
+            {
+              label: t('panels.removeFavorite'),
               icon: '🗑',
               danger: true,
               onSelect: () =>
@@ -1505,16 +1541,14 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       {/* 覆盖确认（批次十一 1）：整批冲突统一策略，默认聚焦续传；Esc/遮罩=取消整批 */}
       {conflictAsk && (
         <Dialog
-          title="目标已存在"
+          title={t('panels.conflictTitle')}
           onClose={() => resolveConflict(null)}
           panelClass="w-96 rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
         >
           <h2 className="mb-2 text-base font-semibold text-neutral-100">
-            目标已存在 {conflictAsk.count} 个文件
+            {t('panels.conflictHeading', { count: conflictAsk.count })}
           </h2>
-          <p className="mb-4 text-xs leading-5 text-neutral-400">
-            对本批全部冲突文件统一应用所选策略；取消则不开始传输。
-          </p>
+          <p className="mb-4 text-xs leading-5 text-neutral-400">{t('panels.conflictDesc')}</p>
           <div className="flex justify-end gap-2">
             <button
               data-autofocus
@@ -1522,28 +1556,28 @@ export function SftpPanel({ tabId }: { tabId: string }) {
               className="rounded bg-blue-700 px-3 py-1 text-white hover:bg-blue-600"
               onClick={() => resolveConflict('resume')}
             >
-              续传
+              {t('panels.resumeTransfer')}
             </button>
             <button
               type="button"
               className="rounded px-3 py-1 text-neutral-300 hover:bg-neutral-800"
               onClick={() => resolveConflict('overwrite')}
             >
-              覆盖
+              {t('panels.overwrite')}
             </button>
             <button
               type="button"
               className="rounded px-3 py-1 text-neutral-300 hover:bg-neutral-800"
               onClick={() => resolveConflict('skip')}
             >
-              跳过
+              {t('panels.skip')}
             </button>
             <button
               type="button"
               className="rounded px-3 py-1 text-neutral-300 hover:bg-neutral-800"
               onClick={() => resolveConflict('rename')}
             >
-              自动重命名
+              {t('panels.autoRename')}
             </button>
           </div>
         </Dialog>
@@ -1624,19 +1658,23 @@ export function SftpPanel({ tabId }: { tabId: string }) {
         </div>
       </div>
 
-      {/* 传输摘要（批次六 5）：完整队列/逐任务控制在 TransferCenter 抽屉 */}
+      {/* 传输摘要（批次六 5）：完整队列/逐任务控制在 dock 的「传输中心」页签 */}
       <div className="flex items-center gap-2 border-t border-neutral-800 px-2 py-1 text-neutral-500">
         <span>
-          传输
-          {liveCount > 0 && `：${liveCount} 个进行中`}
-          {failedCount > 0 && <span className="text-red-400">，{failedCount} 个失败</span>}
-          {liveCount === 0 && failedCount === 0 && '：空闲'}
+          {t('panels.transfers')}
+          {liveCount > 0 && t('panels.transferActiveSuffix', { count: liveCount })}
+          {failedCount > 0 && (
+            <span className="text-red-400">
+              {t('panels.transferFailedSuffix', { count: failedCount })}
+            </span>
+          )}
+          {liveCount === 0 && failedCount === 0 && t('panels.transferIdleSuffix')}
         </span>
         <button
           className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800"
-          onClick={() => useTransferStore.getState().setOpen(true)}
+          onClick={() => useAppStore.getState().openDock('transfer')}
         >
-          打开传输管理
+          {t('panels.openTransferManager')}
         </button>
       </div>
     </div>

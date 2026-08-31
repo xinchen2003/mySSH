@@ -503,6 +503,7 @@ pub async fn resolve_session_target(
             shell: rec.shell.clone(),
             workdir: rec.workdir.clone(),
             command: rec.command.clone(),
+            encoding: rec.encoding.clone(),
         }));
     }
     let mut visited = std::collections::HashSet::new();
@@ -555,6 +556,7 @@ async fn resolve_spec_inner(
         jump_chain,
         term: None,
         command: rec.command.clone(),
+        encoding: rec.encoding.clone(),
     })
 }
 

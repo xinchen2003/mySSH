@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { useAppStore } from '../state/app-store';
 import { useTransferStore } from '../state/transfer-store';
+import { useT } from '../i18n';
 
 /** 数字部分格式化（模块级缓存；观感同 toFixed(1)/toFixed(2)） */
 const sizeNum1 = new Intl.NumberFormat('en-US', {
@@ -23,9 +25,9 @@ function fmtSize(n: number): string {
  *  活跃数降到 0 的边沿：绿色「全部完成」/ 红色「有失败」小结，3s 后隐去。
  *  纯展示组件；订阅由 SftpPanel / TransferCenter 建立（无订阅源则无数据、不显示）。 */
 export function TransferIndicator() {
+  const t = useT();
   const bySession = useTransferStore((s) => s.bySession);
   const drawerOpen = useTransferStore((s) => s.open);
-  const setOpen = useTransferStore((s) => s.setOpen);
   const live = Object.values(bySession)
     .flat()
     .filter((t) => !t.history);
@@ -72,9 +74,9 @@ export function TransferIndicator() {
             ? 'border-red-700 bg-red-950 text-red-200'
             : 'border-green-700 bg-green-950 text-green-200'
         }`}
-        onClick={() => setOpen(true)}
+        onClick={() => useAppStore.getState().openDock('transfer')}
       >
-        {failed ? '✕ 有传输失败，点击查看' : '✓ 全部传输完成'}
+        {failed ? `✕ ${t('panels.transfersFailedClick')}` : `✓ ${t('panels.allTransfersDone')}`}
       </button>
     );
   }
@@ -83,14 +85,18 @@ export function TransferIndicator() {
     <button
       role="status"
       aria-live="polite"
-      title="点击查看传输中心"
+      title={t('panels.clickTransferManager')}
       className="myssh-row-in fixed right-4 bottom-12 z-40 flex w-64 flex-col gap-1.5 rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-left text-xs text-neutral-200 shadow-xl"
-      onClick={() => setOpen(true)}
+      onClick={() => useAppStore.getState().openDock('transfer')}
     >
       <div className="flex items-center gap-2">
         <span className="animate-pulse text-blue-400">⇅</span>
         <span className="min-w-0 flex-1 truncate tabular-nums">
-          传输中 {activeCount} 项 · {fmtSize(sumDone)} / {fmtSize(sumTotal)}
+          {t('panels.transferringSummary', {
+            count: activeCount,
+            done: fmtSize(sumDone),
+            total: fmtSize(sumTotal),
+          })}
         </span>
         <span className="shrink-0 text-neutral-400 tabular-nums">{pct.toFixed(0)}%</span>
       </div>

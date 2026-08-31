@@ -27,6 +27,8 @@ export interface SessionRecord {
   groupPath: string;
   /** 标签颜色（hex，如 '#e5484d'；null/缺省 = 无色） */
   color?: string | null;
+  /** 终端编码（encoding_rs 标签；缺省 'utf-8' = 直通不转码） */
+  encoding?: string;
   tags: string[];
   command?: string | null;
   createdAt: string;
@@ -130,7 +132,13 @@ export interface TransferHistoryView {
  *  不依赖 sessions 列表查表（档案未加载/已删除而标签还在时不误判）。 */
 export type ConnectTarget =
   | { kind: 'spec'; spec: TermOpenSpec }
-  | { kind: 'session'; sessionId: string; sessionKind?: 'ssh' | 'local' };
+  | {
+      kind: 'session';
+      sessionId: string;
+      sessionKind?: 'ssh' | 'local';
+      /** 建档时的终端编码快照；后端缺省回退档案值 */
+      encoding?: string | null;
+    };
 
 export interface TermOpenSpec {
   host: string;
@@ -141,6 +149,8 @@ export interface TermOpenSpec {
   term?: string;
   /** 缺省为登录 shell */
   command?: string;
+  /** 终端编码（缺省 'utf-8' = 直通不转码） */
+  encoding?: string;
 }
 
 export interface HostKeyPromptFrame {

@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useAppStore } from '../state/app-store';
 import { retryHistoryTransfer, transferCmd, useTransferStore } from '../state/transfer-store';
-import { usePanelWidth } from './panel-height';
 import type { TransferHistoryView, TransferView } from '../term/types';
 import { ConfirmDialog } from './ConfirmDialog';
+import { useT, type MsgKey } from '../i18n';
 
-/** 传输管理中心（批次六 5）：右侧抽屉，跨 session 聚合全部传输任务。
+/** 传输管理中心（批次六 5）：跨 session 聚合全部传输任务。
  *  SftpPanel 只保留摘要入口，完整列表与逐任务控制集中在此。
+ *  渲染位置：底部 dock 的「传输中心」页签内容（原右侧抽屉已并入 dock，全宽渲染）；
+ *  开关经 app-store openDock/closeDock 同步 transfer-store.open，
  *  打开时为当前窗口全部 session 标签建立订阅（transfer-store 惰性去重）。 */
 
 /** 数字部分格式化（模块级缓存；观感同 toFixed(1)/toFixed(2)） */
@@ -42,13 +44,13 @@ function fmtHistTime(d: Date): string {
   return `${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
 }
 
-const STATE_LABEL: Record<TransferView['state'], string> = {
-  queued: '排队',
-  running: '传输中',
-  paused: '已暂停',
-  done: '完成',
-  failed: '失败',
-  canceled: '已取消',
+const STATE_KEY: Record<TransferView['state'], MsgKey> = {
+  queued: 'panels.stateQueued',
+  running: 'panels.stateRunning',
+  paused: 'panels.statePaused',
+  done: 'panels.stateDone',
+  failed: 'panels.stateFailed',
+  canceled: 'panels.stateCanceled',
 };
 
 function baseName(path: string): string {
@@ -58,6 +60,7 @@ function baseName(path: string): string {
 
 /** 历史记录行（失败/取消可一键重试续传；其余终态只读） */
 function HistoryRow({ h, serverName }: { h: TransferHistoryView; serverName: string }) {
+  const t = useT();
   const src = h.direction === 'upload' ? h.local : h.remote;
   const dst = h.direction === 'upload' ? h.remote : h.local;
   // SQLite UTC 时间串 → 本地 MM-DD HH:mm
@@ -76,7 +79,7 @@ function HistoryRow({ h, serverName }: { h: TransferHistoryView; serverName: str
       // 历史列表行：屏外行跳过渲染（行高 py-0.5 + text-xs ≈ 20px）
       style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 20px' }}
     >
-      <span title={h.direction === 'upload' ? '上传' : '下载'}>
+      <span title={h.direction === 'upload' ? t('panels.upload') : t('panels.download')}>
         {h.direction === 'upload' ? '⬆' : '⬇'}
       </span>
       <span className="min-w-0 flex-1 truncate text-neutral-200">
@@ -85,12 +88,12 @@ function HistoryRow({ h, serverName }: { h: TransferHistoryView; serverName: str
       <span className="max-w-20 shrink-0 truncate text-neutral-400" title={serverName}>
         {serverName}
       </span>
-      <span className={`shrink-0 ${color}`}>{STATE_LABEL[h.state] ?? h.state}</span>
+      <span className={`shrink-0 ${color}`}>{t(STATE_KEY[h.state])}</span>
       {(h.state === 'failed' || h.state === 'canceled') && (
         <button
           className="shrink-0 rounded px-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
-          title="重试（断点续传）"
-          aria-label="重试（断点续传）"
+          title={t('panels.retryResume')}
+          aria-label={t('panels.retryResume')}
           onClick={() => void retryHistoryTransfer(h)}
         >
           ↻
@@ -102,6 +105,7 @@ function HistoryRow({ h, serverName }: { h: TransferHistoryView; serverName: str
 }
 
 function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
+  const tr = useT();
   const [showErr, setShowErr] = useState(false);
   // 终态闪烁（批次十 1）：state 转移进 done/failed 时整行底色闪一次。
   // 渲染期派生重置（React 官方模式）；挂载即终态（历史回放帧）不闪。
@@ -136,7 +140,7 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
       }`}
     >
       <div className="flex items-center gap-2 py-0.5 text-neutral-400">
-        <span title={t.direction === 'upload' ? '上传' : '下载'}>
+        <span title={t.direction === 'upload' ? tr('panels.upload') : tr('panels.download')}>
           {t.direction === 'upload' ? '⬆' : '⬇'}
         </span>
         <span className="min-w-0 flex-1 truncate text-neutral-200" title={`${src}\n→ ${dst}`}>
@@ -158,13 +162,13 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
         </div>
         <span className="w-10 shrink-0 text-right tabular-nums">{pct.toFixed(0)}%</span>
         <span className="w-16 shrink-0 text-right text-neutral-400 tabular-nums">
-          {t.state === 'running' ? `${fmtSize(t.rate ?? 0)}/s` : STATE_LABEL[t.state]}
+          {t.state === 'running' ? `${fmtSize(t.rate ?? 0)}/s` : tr(STATE_KEY[t.state])}
         </span>
         {!t.history && t.state === 'running' && (
           <button
             className={btn}
-            title="暂停"
-            aria-label="暂停"
+            title={tr('panels.pause')}
+            aria-label={tr('panels.pause')}
             onClick={() => void transferCmd(sessionId, 'transfer_pause', { transferId: t.id })}
           >
             ⏸
@@ -173,8 +177,8 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
         {!t.history && t.state === 'paused' && (
           <button
             className={btn}
-            title="继续"
-            aria-label="继续"
+            title={tr('panels.resume')}
+            aria-label={tr('panels.resume')}
             onClick={() => void transferCmd(sessionId, 'transfer_resume', { transferId: t.id })}
           >
             ▶
@@ -183,8 +187,8 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
         {!t.history && (t.state === 'running' || t.state === 'queued' || t.state === 'paused') && (
           <button
             className={btn}
-            title="取消"
-            aria-label="取消"
+            title={tr('panels.cancel')}
+            aria-label={tr('panels.cancel')}
             onClick={() => void transferCmd(sessionId, 'transfer_cancel', { transferId: t.id })}
           >
             ✕
@@ -193,8 +197,8 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
         {!t.history && (t.state === 'failed' || t.state === 'canceled') && (
           <button
             className={btn}
-            title="重试（从断点续传）"
-            aria-label="重试（从断点续传）"
+            title={tr('panels.retryResume')}
+            aria-label={tr('panels.retryResume')}
             onClick={() => void transferCmd(sessionId, 'transfer_retry', { transferId: t.id })}
           >
             ↻
@@ -203,8 +207,8 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
         {!t.history && t.error && (
           <button
             className={btn}
-            title="查看错误"
-            aria-label="查看错误"
+            title={tr('panels.viewError')}
+            aria-label={tr('panels.viewError')}
             onClick={() => setShowErr((v) => !v)}
           >
             ⓘ
@@ -213,14 +217,14 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
         {!t.history && terminal && (
           <button
             className={btn}
-            title="从队列移除"
-            aria-label="从队列移除"
+            title={tr('panels.removeFromQueue')}
+            aria-label={tr('panels.removeFromQueue')}
             onClick={() => void transferCmd(sessionId, 'transfer_remove', { transferId: t.id })}
           >
             🗑
           </button>
         )}
-        {t.history && <span className="shrink-0 text-neutral-400">上次</span>}
+        {t.history && <span className="shrink-0 text-neutral-400">{tr('panels.lastTime')}</span>}
       </div>
       {showErr && t.error && <div className="ml-6 break-all py-0.5 text-red-400">{t.error}</div>}
     </div>
@@ -228,25 +232,25 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
 }
 
 export function TransferCenter() {
+  const t = useT();
   const open = useTransferStore((s) => s.open);
-  const setOpen = useTransferStore((s) => s.setOpen);
+  const closeDock = useAppStore((s) => s.closeDock);
   const bySession = useTransferStore((s) => s.bySession);
   const tabs = useAppStore((s) => s.tabs);
   const history = useTransferStore((s) => s.history);
   const clearHistory = useTransferStore((s) => s.clearHistory);
   const sessions = useAppStore((s) => s.sessions);
   const [confirmClear, setConfirmClear] = useState(false);
-  const { width, widthHandle } = usePanelWidth('ui.transferCenterWidth', 480);
 
-  // Esc 关闭抽屉
+  // Esc 关闭 dock
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') closeDock();
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [open, setOpen]);
+  }, [open, closeDock]);
 
   if (!open) return null;
 
@@ -279,45 +283,43 @@ export function TransferCenter() {
     'rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-40';
 
   return (
-    <div
-      className="fixed inset-y-0 right-0 z-40 flex flex-col border-l border-neutral-700 bg-neutral-900 text-xs text-neutral-200 shadow-xl"
-      style={{ width }}
-    >
-      {widthHandle}
+    <div className="flex h-full min-h-0 flex-col bg-neutral-900 text-xs text-neutral-200">
       <div className="flex items-center gap-2 border-b border-neutral-700 px-4 py-2">
-        <span className="text-sm font-semibold text-neutral-100">传输管理</span>
+        <span className="text-sm font-semibold text-neutral-100">
+          {t('panels.transferManager')}
+        </span>
         <button
           className={qbtn}
           disabled={sessionIds.length === 0}
           onClick={() => forEachSession('transfer_pause_all')}
         >
-          全部暂停
+          {t('panels.pauseAll')}
         </button>
         <button
           className={qbtn}
           disabled={sessionIds.length === 0}
           onClick={() => forEachSession('transfer_resume_all')}
         >
-          全部继续
+          {t('panels.resumeAll')}
         </button>
         <button
           className={qbtn}
           disabled={sessionIds.length === 0}
           onClick={() => forEachSession('transfer_clear', { filter: 'done' })}
         >
-          清除已完成
+          {t('panels.clearCompleted')}
         </button>
         <button
           className={qbtn}
           disabled={sessionIds.length === 0}
           onClick={() => forEachSession('transfer_clear', { filter: 'failed' })}
         >
-          清除失败
+          {t('panels.clearFailed')}
         </button>
         <button
           className="ml-auto rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
-          onClick={() => setOpen(false)}
-          aria-label="关闭传输管理"
+          onClick={closeDock}
+          aria-label={t('panels.closeTransferManager')}
         >
           ✕
         </button>
@@ -331,14 +333,24 @@ export function TransferCenter() {
             />
           </div>
           <span className="shrink-0 text-neutral-400">
-            {active.length} 项 · {fmtSize(sumDone)} / {fmtSize(sumTotal)}
-            {sumRate > 0 ? ` · ${fmtSize(sumRate)}/s` : ''}
+            {sumRate > 0
+              ? t('panels.transferSummaryRate', {
+                  count: active.length,
+                  done: fmtSize(sumDone),
+                  total: fmtSize(sumTotal),
+                  rate: fmtSize(sumRate),
+                })
+              : t('panels.transferSummary', {
+                  count: active.length,
+                  done: fmtSize(sumDone),
+                  total: fmtSize(sumTotal),
+                })}
           </span>
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-2">
         {sessionIds.length === 0 && (
-          <div className="px-1 py-4 text-neutral-400">（暂无传输任务）</div>
+          <div className="px-1 py-4 text-neutral-400">{t('panels.noTransfers')}</div>
         )}
         {sessionIds.map((sid) => (
           <div key={sid} className="mb-2">
@@ -351,35 +363,35 @@ export function TransferCenter() {
           </div>
         ))}
         <div className="mt-2 flex items-center gap-2 border-t border-neutral-800 py-1 font-medium text-neutral-300">
-          历史记录
+          {t('panels.history')}
           <button
             className={qbtn}
             disabled={history.length === 0}
             onClick={() => setConfirmClear(true)}
           >
-            清空
+            {t('panels.clear')}
           </button>
         </div>
         {hist.length === 0 ? (
-          <div className="px-1 py-2 text-neutral-400">（暂无历史记录）</div>
+          <div className="px-1 py-2 text-neutral-400">{t('panels.noHistory')}</div>
         ) : (
           hist.map((h) => <HistoryRow key={h.id} h={h} serverName={serverName(h.sessionId)} />)
         )}
       </div>
       {confirmClear && (
         <ConfirmDialog
-          title="清空全部传输历史记录？"
-          confirmLabel="清空"
+          title={t('panels.clearHistoryTitle')}
+          confirmLabel={t('panels.clear')}
           onCancel={() => setConfirmClear(false)}
           onConfirm={() => {
             setConfirmClear(false);
             void clearHistory();
           }}
         >
-          <p className="text-neutral-300">共 {history.length} 条，跨全部服务器。</p>
-          <p className="text-red-300">
-            历史记录是断点续传的凭据，清空后未完成的传输无法跨重启恢复。
+          <p className="text-neutral-300">
+            {t('panels.clearHistoryBody', { count: history.length })}
           </p>
+          <p className="text-red-300">{t('panels.clearHistoryWarning')}</p>
         </ConfirmDialog>
       )}
     </div>

@@ -1,5 +1,6 @@
 //! 快捷键注册表（M5）：动作 → 组合键，方案预设（default/vim/emacs）+ 自定义覆盖。
 //! 约束：组合键必须带修饰键（终端占用裸键）；vim/emacs 方案只重排修饰组合，不引入和弦。
+import { tNow, type MsgKey } from '../i18n';
 
 export interface KeyAction {
   id: string;
@@ -12,50 +13,36 @@ export interface KeyAction {
   alias?: string;
 }
 
+/** 动作条目：label 用 getter 取值时翻译——模块加载期不冻结语言，消费方重渲染即读到新文案 */
+const action = (a: Omit<KeyAction, 'label'>): KeyAction => ({
+  ...a,
+  get label() {
+    return tNow(`state.key.${a.id}` as MsgKey);
+  },
+});
+
 export const KEY_ACTIONS: KeyAction[] = [
-  { id: 'copy', label: '复制选中', default: 'Ctrl+Shift+C', alias: 'Ctrl+Insert' },
-  { id: 'paste', label: '粘贴', default: 'Ctrl+Shift+V', alias: 'Shift+Insert' },
-  { id: 'palette', label: '命令面板', default: 'Ctrl+Shift+P' },
-  { id: 'search', label: '终端内搜索', default: 'Ctrl+Shift+F' },
-  { id: 'newTab', label: '新建会话', default: 'Ctrl+Shift+N' },
+  action({ id: 'copy', default: 'Ctrl+Shift+C', alias: 'Ctrl+Insert' }),
+  action({ id: 'paste', default: 'Ctrl+Shift+V', alias: 'Shift+Insert' }),
+  action({ id: 'palette', default: 'Ctrl+Shift+P' }),
+  action({ id: 'search', default: 'Ctrl+Shift+F' }),
+  action({ id: 'newTab', default: 'Ctrl+Shift+N' }),
   // 批次十一：Ctrl+Shift+T 让位给重开已关闭标签（浏览器/终端行业惯例），新建会话迁 Ctrl+Shift+N
-  { id: 'reopenClosedTab', label: '重开已关闭标签', default: 'Ctrl+Shift+T' },
-  { id: 'closeTab', label: '关闭标签', default: 'Ctrl+Shift+W' },
-  {
-    id: 'nextTab',
-    label: '下一标签',
-    default: 'Ctrl+Tab',
-    vim: 'Alt+L',
-    emacs: 'Ctrl+PageDown',
-  },
-  {
-    id: 'prevTab',
-    label: '上一标签',
-    default: 'Ctrl+Shift+Tab',
-    vim: 'Alt+H',
-    emacs: 'Ctrl+PageUp',
-  },
-  { id: 'sftp', label: 'SFTP 面板', default: 'Ctrl+Shift+E' },
-  { id: 'metrics', label: '监控面板', default: 'Ctrl+Shift+M' },
-  { id: 'tunnels', label: '隧道面板', default: 'Ctrl+Shift+U' },
-  { id: 'settings', label: '设置', default: 'Ctrl+,' },
-  {
-    id: 'splitRow',
-    label: '向右分屏',
-    default: 'Ctrl+Shift+ArrowRight',
-    vim: 'Alt+V',
-  },
-  {
-    id: 'splitCol',
-    label: '向下分屏',
-    default: 'Ctrl+Shift+ArrowDown',
-    vim: 'Alt+S',
-  },
+  action({ id: 'reopenClosedTab', default: 'Ctrl+Shift+T' }),
+  action({ id: 'closeTab', default: 'Ctrl+Shift+W' }),
+  action({ id: 'nextTab', default: 'Ctrl+Tab', vim: 'Alt+L', emacs: 'Ctrl+PageDown' }),
+  action({ id: 'prevTab', default: 'Ctrl+Shift+Tab', vim: 'Alt+H', emacs: 'Ctrl+PageUp' }),
+  action({ id: 'sftp', default: 'Ctrl+Shift+E' }),
+  action({ id: 'metrics', default: 'Ctrl+Shift+M' }),
+  action({ id: 'tunnels', default: 'Ctrl+Shift+U' }),
+  action({ id: 'settings', default: 'Ctrl+,' }),
+  action({ id: 'splitRow', default: 'Ctrl+Shift+ArrowRight', vim: 'Alt+V' }),
+  action({ id: 'splitCol', default: 'Ctrl+Shift+ArrowDown', vim: 'Alt+S' }),
   // 批次十一：字号缩放 / 窗格焦点切换
-  { id: 'zoomIn', label: '放大字号', default: 'Ctrl+=' },
-  { id: 'zoomOut', label: '缩小字号', default: 'Ctrl+-' },
-  { id: 'resetZoom', label: '重置字号', default: 'Ctrl+0' },
-  { id: 'nextPane', label: '下一窗格', default: 'Ctrl+Alt+ArrowRight' },
+  action({ id: 'zoomIn', default: 'Ctrl+=' }),
+  action({ id: 'zoomOut', default: 'Ctrl+-' }),
+  action({ id: 'resetZoom', default: 'Ctrl+0' }),
+  action({ id: 'nextPane', default: 'Ctrl+Alt+ArrowRight' }),
 ];
 
 export type KeymapScheme = 'default' | 'vim' | 'emacs';
