@@ -714,7 +714,7 @@ export function Sidebar() {
           const n =
             v.id === 'favorites'
               ? sessions.filter((x) => favorites.has(x.id)).length
-              : sessions.filter((x) => x.groupPath === '').length;
+              : sessions.length; // 默认=全部会话;
           return (
             <button
               key={v.id}

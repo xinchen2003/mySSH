@@ -113,14 +113,14 @@ describe('虚拟分组过滤', () => {
 
   it('收藏/默认', () => {
     expect(filterVirtual('favorites', sessions, ctx).map((s) => s.id)).toEqual(['1']);
-    expect(filterVirtual('ungrouped', sessions, ctx).map((s) => s.id)).toEqual(['2']);
+    expect(filterVirtual('ungrouped', sessions, ctx).map((s) => s.id)).toEqual(['1', '2', '3']);
   });
-  it('「默认」过滤：仅 groupPath 为空串的会话；嵌套分组不混入', () => {
+  it('「默认」视图：显示全部会话，含已分组与未分组', () => {
     const list = [rec('a', '生产'), rec('b', ''), rec('c', '生产/华东'), rec('d', '')];
-    expect(filterVirtual('ungrouped', list, ctx).map((s) => s.id)).toEqual(['b', 'd']);
-    expect(virtualCount('ungrouped', list, ctx)).toBe(2);
-    // 空集合/全已分组时为 0，不抛错
-    expect(virtualCount('ungrouped', [rec('x', 'g')], ctx)).toBe(0);
+    expect(filterVirtual('ungrouped', list, ctx).map((s) => s.id)).toEqual(['a', 'b', 'c', 'd']);
+    expect(virtualCount('ungrouped', list, ctx)).toBe(4);
+    // 空集合时为 0，不抛错
+    expect(virtualCount('ungrouped', [], ctx)).toBe(0);
   });
 });
 

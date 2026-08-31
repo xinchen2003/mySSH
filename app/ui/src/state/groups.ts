@@ -179,7 +179,7 @@ export function collectGroupPaths(root: GroupTree): string[] {
 
 // ---------- 虚拟分组（8.5）：纯过滤，不改真实归属 ----------
 
-/** ungrouped 即「默认」过滤项：仅显示未分组（groupPath 为空串）的会话 */
+/** ungrouped 即「默认」视图：显示全部会话（id 为历史命名，语义已是「默认视图」） */
 export type VirtualView = 'favorites' | 'ungrouped';
 
 export interface VirtualCtx {
@@ -217,7 +217,7 @@ export function filterVirtual(
   switch (view) {
     case 'favorites':
       return sessions.filter((s) => ctx.favorites.has(s.id));
-    case 'ungrouped': // UI 显示为「默认」：未分组（或默认组）会话
-      return sessions.filter((s) => s.groupPath === '');
+    case 'ungrouped': // UI 显示为「默认」：全部会话
+      return sessions;
   }
 }
