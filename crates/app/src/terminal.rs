@@ -275,8 +275,9 @@ pub async fn term_open(
         crate::sessions::ResolvedTarget::Ssh(s) => s,
         crate::sessions::ResolvedTarget::Local(ls) => {
             // 本地会话：ConPTY 直连读循环；无 SSH 连接/hostkey/KI/随会话隧道
-            // 终端编码：中文 Windows ConPTY 默认 GBK，非 utf-8 时流式转码
-            let out_encoding = effective_encoding(encoding.as_deref(), &ls.encoding);
+            // ConPTY 协议面恒为 UTF-8（控制台代码页由 ConPTY 内部转译），
+            // 任何转码都会把 UTF-8 流毁成乱码——忽略显式入参与档案值，恒直通
+            let out_encoding = None;
             let input_enc =
                 out_encoding.map(|e| Arc::new(Mutex::new(crate::encoding::InputEncoder::new(e))));
             let pty = tauri::async_runtime::spawn_blocking(move || {

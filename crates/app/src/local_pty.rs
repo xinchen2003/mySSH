@@ -17,7 +17,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 const READ_CHAN_CAP: usize = 64;
 const READ_BUF: usize = 64 * 1024;
 
-/// 本地会话启动参数（SessionRecord 的 shell/workdir/command/encoding 解析后形态）
+/// 本地会话启动参数（SessionRecord 的 shell/workdir/command 解析后形态）
 pub struct LocalShellSpec {
     /// powershell|pwsh|cmd 或自定义可执行路径；None = 自动（pwsh → powershell）
     pub shell: Option<String>,
@@ -25,8 +25,7 @@ pub struct LocalShellSpec {
     pub workdir: Option<String>,
     /// 启动命令：在 shell 内执行后保持交互（cmd /k、powershell -NoExit -Command）
     pub command: Option<String>,
-    /// 终端编码（encoding_rs 标签；'utf-8' = 直通）。转码在 terminal.rs 数据通路层完成
-    pub encoding: String,
+    // 无 encoding 字段：ConPTY 协议面恒为 UTF-8，转码必乱码（terminal.rs 直通）
 }
 
 pub struct LocalPty {
@@ -300,7 +299,6 @@ mod tests {
                 shell: Some("cmd".into()),
                 workdir: None,
                 command: None,
-                encoding: "utf-8".into(),
             },
             80,
             24,

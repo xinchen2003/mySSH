@@ -496,23 +496,25 @@ function ConnectForm({
                 </label>
               </>
             )}
-            {/* 终端编码：SSH 与本地会话共用；中文 Windows 本地终端通常选 GBK */}
-            <label>
-              <span className="mb-0.5 block text-xs text-neutral-400">
-                {t('dialogs.encodingLabel')}
-              </span>
-              <select
-                className={input}
-                value={encoding}
-                onChange={(e) => setEncoding(e.target.value)}
-              >
-                {ENCODING_OPTIONS.map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {t(label)}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {/* 终端编码：仅 SSH 会话可选；本地 ConPTY 协议面恒为 UTF-8，转码会出乱码 */}
+            {sessKind === 'ssh' && (
+              <label>
+                <span className="mb-0.5 block text-xs text-neutral-400">
+                  {t('dialogs.encodingLabel')}
+                </span>
+                <select
+                  className={input}
+                  value={encoding}
+                  onChange={(e) => setEncoding(e.target.value)}
+                >
+                  {ENCODING_OPTIONS.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {t(label)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </>
         )}
 
