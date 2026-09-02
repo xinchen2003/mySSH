@@ -2,9 +2,41 @@
 //! 主题：根节点 data-ui（chrome 换肤）+ 全部已开终端的 xterm 调色板热切换。
 //! 终端：字体族/字号热改 + fit 重算；回滚行数只影响新建终端（xterm 不支持在线改）。
 
-import { fitRegistry, termRegistry } from '../term/registry';
+import { fitRegistry, termRegistry, webglRegistry } from '../term/registry';
 import type { ITheme } from '@xterm/xterm';
+import { WebglAddon } from '@xterm/addon-webgl';
 import { resolveTheme, type ThemeDef } from '../term/themes';
+/** 背景图热更：CSS 变量写根节点，全部 pane 的背景层自动跟随。
+ *  WebGL 画布不透明（实测）：有图时 dispose 已载 WebGL 回退内置渲染器；清图后重建恢复加速。 */
+export function applyTerminalBackground(settings: Record<string, unknown>): void {
+  const bg = readTermBackground(settings);
+  const root = document.documentElement.style;
+  root.setProperty('--myssh-term-bg-image', bg.image ? `url("${bg.image}")` : 'none');
+  root.setProperty('--myssh-term-bg-opacity', String(bg.opacity));
+  // 有图时视口放行：xterm.css 的 .xterm-viewport 默认黑底会盖住背景层
+  document.documentElement.dataset.termBg = bg.image ? '1' : '';
+  if (bg.image) {
+    for (const [paneId, addon] of webglRegistry) {
+      try {
+        addon.dispose();
+      } catch {
+        // 已 dispose 的 addon 重复 dispose 抛错，忽略
+      }
+      webglRegistry.delete(paneId);
+    }
+  } else {
+    for (const [paneId, term] of termRegistry) {
+      if (webglRegistry.has(paneId)) continue;
+      try {
+        const addon = new WebglAddon();
+        term.loadAddon(addon);
+        webglRegistry.set(paneId, addon);
+      } catch {
+        // WebGL 不可用则保持内置渲染器
+      }
+    }
+  }
+}
 
 export interface TerminalSettings {
   fontFamily: string;
@@ -66,16 +98,6 @@ export function readTermBackground(s: Record<string, unknown>): TermBackground {
 export function effectiveXtermTheme(settings: Record<string, unknown>, def: ThemeDef): ITheme {
   if (!readTermBackground(settings).image) return def.xterm;
   return { ...def.xterm, background: 'transparent' };
-}
-
-/** 背景图热更：CSS 变量写根节点，全部 pane 的 .myssh-term-bg 层自动跟随 */
-export function applyTerminalBackground(settings: Record<string, unknown>): void {
-  const bg = readTermBackground(settings);
-  const root = document.documentElement.style;
-  root.setProperty('--myssh-term-bg-image', bg.image ? `url("${bg.image}")` : 'none');
-  root.setProperty('--myssh-term-bg-opacity', String(bg.opacity));
-  // 有图时视口放行：xterm.css 的 .xterm-viewport 默认黑底会盖住背景层
-  document.documentElement.dataset.termBg = bg.image ? '1' : '';
 }
 
 /** 字体/字号热改 + fit；回滚行数不动既有终端。 */

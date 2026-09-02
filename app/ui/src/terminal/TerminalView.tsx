@@ -9,7 +9,7 @@ import { SerializeAddon } from '@xterm/addon-serialize';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
 import { isLocalTarget, useAppStore, type Pane, type Tab } from '../state/app-store';
-import { fitRegistry, reconnectRegistry, termRegistry } from '../term/registry';
+import { fitRegistry, reconnectRegistry, termRegistry, webglRegistry } from '../term/registry';
 import { resolveTheme } from '../term/themes';
 import {
   effectiveXtermTheme,
@@ -226,12 +226,14 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
         }
       });
 
-      // WebGL 渲染器不支持透明背景：配置了终端背景图时跳过加载，用内置 canvas 渲染器
+      // 背景图模式跳过 WebGL（实测 WebGL 画布不透明）；运行期设置变更由 apply-settings 热切换
       if (readTermBackground(settings).image) {
-        // 背景图模式：内置 canvas 渲染（支持 allowTransparency）
+        // 内置渲染器（支持透明）
       } else {
         try {
-          term.loadAddon(new WebglAddon());
+          const webgl = new WebglAddon();
+          term.loadAddon(webgl);
+          webglRegistry.set(pane.id, webgl);
         } catch {
           // @xterm/addon-canvas 尚未支持 xterm 6（peer ^5），降级用 xterm 核心内置 canvas 渲染器
         }
@@ -328,6 +330,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
     return () => {
       observer.disconnect();
       termRegistry.delete(pane.id);
+      webglRegistry.delete(pane.id);
       fitRegistry.delete(pane.id);
       reconnectRegistry.delete(pane.id);
       searchRef.current = null;

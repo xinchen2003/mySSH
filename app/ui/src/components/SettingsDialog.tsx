@@ -1,4 +1,6 @@
 import { useAppStore } from '../state/app-store';
+import { invoke } from '@tauri-apps/api/core';
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { BUILTIN_THEMES } from '../term/themes';
 import { KEY_ACTIONS, keymapFromSettings, type KeymapScheme } from '../term/keymap';
 import { readTermBackground, readTerminalSettings } from '../state/apply-settings';
@@ -45,6 +47,11 @@ export function SettingsDialog() {
   const termBg = readTermBackground(settings);
   const bgImage = termBg.image;
   const bgOpacity = termBg.opacity;
+  // MCP 服务端（批次二十一）：端口/令牌读 settings KV；启停走 mcp_restart 热生效
+  const mcpPortRaw = settings['mcp.port'];
+  const mcpPort = typeof mcpPortRaw === 'number' ? mcpPortRaw : 17345;
+  const mcpToken = typeof settings['mcp.token'] === 'string' ? settings['mcp.token'] : '';
+  const notify = useAppStore((s) => s.notify);
   // 批次十一 8：断线重连次数（0-20，默认 5）
   const reconnectRaw = settings['terminal.reconnectAttempts'];
   const reconnectAttempts =
@@ -285,6 +292,57 @@ export function SettingsDialog() {
           />
           <span className="text-neutral-500">{t('dialogs.clickToConnectHint')}</span>
         </label>
+      </section>
+
+      <section className="mb-4">
+        <h3 className="mb-1.5 font-semibold text-neutral-200">MCP</h3>
+        <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
+          <label htmlFor="set-mcp-enabled">{t('dialogs.mcpEnabled')}</label>
+          <input
+            id="set-mcp-enabled"
+            type="checkbox"
+            checked={settings['mcp.enabled'] === true}
+            onChange={(e) => {
+              setSetting('mcp.enabled', e.target.checked);
+              void invoke('mcp_restart').catch(() => undefined);
+            }}
+          />
+          <label htmlFor="set-mcp-port">{t('dialogs.mcpPort')}</label>
+          <input
+            id="set-mcp-port"
+            type="number"
+            className={inputCls}
+            min={1024}
+            max={65535}
+            value={mcpPort}
+            onChange={(e) => {
+              const v = Math.trunc(Number(e.target.value));
+              if (v >= 1024 && v <= 65535) {
+                setSetting('mcp.port', v);
+                void invoke('mcp_restart').catch(() => undefined);
+              }
+            }}
+          />
+          <span>{t('dialogs.mcpToken')}</span>
+          <span className="flex items-center gap-2">
+            <code className="min-w-0 flex-1 truncate rounded bg-neutral-800 px-2 py-0.5 font-mono">
+              {mcpToken || '—'}
+            </code>
+            {mcpToken && (
+              <button
+                className="shrink-0 rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800"
+                onClick={() => {
+                  void writeText(mcpToken)
+                    .then(() => notify(t('dialogs.mcpTokenCopied'), 'success'))
+                    .catch(() => undefined);
+                }}
+              >
+                {t('dialogs.mcpTokenCopy')}
+              </button>
+            )}
+          </span>
+        </div>
+        <p className="mt-1.5 text-neutral-600">{t('dialogs.mcpHint')}</p>
       </section>
 
       <section>

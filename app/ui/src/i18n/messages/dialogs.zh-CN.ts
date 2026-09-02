@@ -106,6 +106,13 @@ export const zhDialogs = {
   'dialogs.backgroundImageChooseAria': '选择终端背景图片',
   'dialogs.backgroundImageClear': '清除',
   'dialogs.backgroundOpacity': '背景图不透明度',
+  'dialogs.mcpEnabled': '启用 MCP 服务端',
+  'dialogs.mcpPort': '端口',
+  'dialogs.mcpToken': '访问令牌',
+  'dialogs.mcpTokenCopy': '复制',
+  'dialogs.mcpTokenCopied': '令牌已复制',
+  'dialogs.mcpHint':
+    'AI 客户端（如 Claude Code）接入：POST http://127.0.0.1:<端口>/mcp，请求头 Authorization: Bearer <令牌>。勾选启用后自动生成令牌；仅监听本机回环。',
   'dialogs.terminal': '终端',
   'dialogs.font': '字体',
   'dialogs.fontSize': '字号',

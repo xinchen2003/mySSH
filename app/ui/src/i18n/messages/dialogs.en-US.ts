@@ -110,6 +110,13 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   'dialogs.backgroundImageChooseAria': 'Choose terminal background image',
   'dialogs.backgroundImageClear': 'Clear',
   'dialogs.backgroundOpacity': 'Background image opacity',
+  'dialogs.mcpEnabled': 'Enable MCP server',
+  'dialogs.mcpPort': 'Port',
+  'dialogs.mcpToken': 'Access token',
+  'dialogs.mcpTokenCopy': 'Copy',
+  'dialogs.mcpTokenCopied': 'Token copied',
+  'dialogs.mcpHint':
+    'For AI clients (e.g. Claude Code): POST http://127.0.0.1:<port>/mcp with header "Authorization: Bearer <token>". A token is generated when first enabled; listens on loopback only.',
   'dialogs.terminal': 'Terminal',
   'dialogs.font': 'Font',
   'dialogs.fontSize': 'Font Size',
