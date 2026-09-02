@@ -629,6 +629,13 @@ export function Sidebar() {
           e.preventDefault();
           setMenu({ x: e.clientX, y: e.clientY, items: groupMenu(path, count) });
         }}
+        onDoubleClick={(e) => {
+          // 整行双击折叠/展开；落在行内按钮（三角/新建子分组）上的双击不重复触发
+          if ((e.target as HTMLElement).closest('button')) return;
+          persistCollapsed(
+            isCollapsed ? [...collapsed].filter((p) => p !== path) : [...collapsed, path],
+          );
+        }}
         onKeyDown={(e) => {
           if (menuKeyHit(e)) {
             e.preventDefault();

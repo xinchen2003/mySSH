@@ -11,7 +11,11 @@ import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
 import { isLocalTarget, useAppStore, type Pane, type Tab } from '../state/app-store';
 import { fitRegistry, reconnectRegistry, termRegistry } from '../term/registry';
 import { resolveTheme } from '../term/themes';
-import { readTerminalSettings } from '../state/apply-settings';
+import {
+  effectiveXtermTheme,
+  readTermBackground,
+  readTerminalSettings,
+} from '../state/apply-settings';
 import { keymapFromSettings, matchAction, matchCombo } from '../term/keymap';
 import type { SessionStateFrame } from '../term/types';
 import { SearchBar, type SearchOptions, type SearchResults } from '../components/SearchBar';
@@ -146,12 +150,17 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
         allowProposedApi: true,
         fontFamily: termOpts.fontFamily,
         fontSize: termOpts.fontSize,
-        theme: resolveTheme(
-          typeof settings['theme'] === 'string' ? settings['theme'] : 'one-dark',
-          typeof settings['theme.customJson'] === 'string'
-            ? settings['theme.customJson']
-            : undefined,
-        ).xterm,
+        // 背景图模式需透明背景（allowTransparency 只允许构造期设置，恒开无开销）
+        allowTransparency: true,
+        theme: effectiveXtermTheme(
+          settings,
+          resolveTheme(
+            typeof settings['theme'] === 'string' ? settings['theme'] : 'one-dark',
+            typeof settings['theme.customJson'] === 'string'
+              ? settings['theme.customJson']
+              : undefined,
+          ),
+        ),
       });
       const fit = new FitAddon();
       const search = new SearchAddon();
@@ -217,10 +226,15 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
         }
       });
 
-      try {
-        term.loadAddon(new WebglAddon());
-      } catch {
-        // @xterm/addon-canvas 尚未支持 xterm 6（peer ^5），降级用 xterm 核心内置 canvas 渲染器
+      // WebGL 渲染器不支持透明背景：配置了终端背景图时跳过加载，用内置 canvas 渲染器
+      if (readTermBackground(settings).image) {
+        // 背景图模式：内置 canvas 渲染（支持 allowTransparency）
+      } else {
+        try {
+          term.loadAddon(new WebglAddon());
+        } catch {
+          // @xterm/addon-canvas 尚未支持 xterm 6（peer ^5），降级用 xterm 核心内置 canvas 渲染器
+        }
       }
 
       // 快捷键（keymap 注册表）：搜索/复制/粘贴在此拦截，其余按键全部放行给终端。
@@ -341,7 +355,7 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
         if (next !== cur) s.setSetting('terminal.fontSize', next);
       }}
     >
-      <div ref={hostRef} className="h-full w-full p-1" />
+      <div ref={hostRef} className="myssh-term-host relative h-full w-full p-1" />
       {dead && (
         <div className="absolute bottom-2 left-1/2 z-10 flex max-w-[95%] -translate-x-1/2 items-center gap-2 rounded border border-neutral-700 bg-neutral-900/95 px-3 py-1.5 text-xs shadow-lg">
           <span className="min-w-0 max-w-64 truncate text-red-300" title={dead}>

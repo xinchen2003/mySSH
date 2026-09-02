@@ -1,7 +1,7 @@
 import { useAppStore } from '../state/app-store';
 import { BUILTIN_THEMES } from '../term/themes';
 import { KEY_ACTIONS, keymapFromSettings, type KeymapScheme } from '../term/keymap';
-import { readTerminalSettings } from '../state/apply-settings';
+import { readTermBackground, readTerminalSettings } from '../state/apply-settings';
 import { Dialog } from './Dialog';
 import { useT } from '../i18n';
 
@@ -42,6 +42,9 @@ export function SettingsDialog() {
   const customJson =
     typeof settings['theme.customJson'] === 'string' ? settings['theme.customJson'] : '';
   const term = readTerminalSettings(settings);
+  const termBg = readTermBackground(settings);
+  const bgImage = termBg.image;
+  const bgOpacity = termBg.opacity;
   // 批次十一 8：断线重连次数（0-20，默认 5）
   const reconnectRaw = settings['terminal.reconnectAttempts'];
   const reconnectAttempts =
@@ -115,6 +118,59 @@ export function SettingsDialog() {
             value={customJson}
             onChange={(e) => setSetting('theme.customJson', e.target.value)}
           />
+        )}
+        <div className="mt-2 flex items-center gap-2">
+          <span className="text-neutral-500">{t('dialogs.backgroundImage')}</span>
+          <label className="cursor-pointer rounded bg-neutral-800 px-2 py-0.5 text-neutral-300 hover:bg-neutral-700">
+            {t('dialogs.backgroundImageChoose')}
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              aria-label={t('dialogs.backgroundImageChooseAria')}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = '';
+                if (!f) return;
+                // data URL 存 settings KV（本地优先，免走 asset 协议）
+                const r = new FileReader();
+                r.onload = () =>
+                  setSetting(
+                    'terminal.backgroundImage',
+                    typeof r.result === 'string' ? r.result : '',
+                  );
+                r.readAsDataURL(f);
+              }}
+            />
+          </label>
+          {bgImage && (
+            <button
+              className="rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800"
+              onClick={() => setSetting('terminal.backgroundImage', '')}
+            >
+              {t('dialogs.backgroundImageClear')}
+            </button>
+          )}
+        </div>
+        {bgImage && (
+          <div className="mt-2 flex items-center gap-2">
+            <label htmlFor="set-bg-opacity" className="text-neutral-500">
+              {t('dialogs.backgroundOpacity')}
+            </label>
+            <input
+              id="set-bg-opacity"
+              type="range"
+              min={5}
+              max={100}
+              step={5}
+              className="w-40"
+              value={Math.round(bgOpacity * 100)}
+              onChange={(e) =>
+                setSetting('terminal.backgroundOpacity', Number(e.target.value) / 100)
+              }
+            />
+            <span className="tabular-nums text-neutral-500">{Math.round(bgOpacity * 100)}%</span>
+          </div>
         )}
       </section>
 

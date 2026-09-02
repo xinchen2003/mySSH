@@ -3,7 +3,8 @@
 //! 终端：字体族/字号热改 + fit 重算；回滚行数只影响新建终端（xterm 不支持在线改）。
 
 import { fitRegistry, termRegistry } from '../term/registry';
-import { resolveTheme } from '../term/themes';
+import type { ITheme } from '@xterm/xterm';
+import { resolveTheme, type ThemeDef } from '../term/themes';
 
 export interface TerminalSettings {
   fontFamily: string;
@@ -44,9 +45,37 @@ export function applyTheme(settings: Record<string, unknown>): string {
   );
   document.documentElement.dataset.ui = def.ui;
   for (const term of termRegistry.values()) {
-    term.options.theme = def.xterm;
+    term.options.theme = effectiveXtermTheme(settings, def);
   }
   return def.id;
+}
+/** 终端背景图设置：image 为 data URL（空 = 无图），opacity 0.05-1 */
+export interface TermBackground {
+  image: string;
+  opacity: number;
+}
+
+export function readTermBackground(s: Record<string, unknown>): TermBackground {
+  return {
+    image: str(s['terminal.backgroundImage'], ''),
+    opacity: num(s['terminal.backgroundOpacity'], 0.35, 0.05, 1),
+  };
+}
+
+/** 有背景图时 xterm 背景透明化（需构造时 allowTransparency），否则用主题原色 */
+export function effectiveXtermTheme(settings: Record<string, unknown>, def: ThemeDef): ITheme {
+  if (!readTermBackground(settings).image) return def.xterm;
+  return { ...def.xterm, background: 'transparent' };
+}
+
+/** 背景图热更：CSS 变量写根节点，全部 pane 的 .myssh-term-bg 层自动跟随 */
+export function applyTerminalBackground(settings: Record<string, unknown>): void {
+  const bg = readTermBackground(settings);
+  const root = document.documentElement.style;
+  root.setProperty('--myssh-term-bg-image', bg.image ? `url("${bg.image}")` : 'none');
+  root.setProperty('--myssh-term-bg-opacity', String(bg.opacity));
+  // 有图时视口放行：xterm.css 的 .xterm-viewport 默认黑底会盖住背景层
+  document.documentElement.dataset.termBg = bg.image ? '1' : '';
 }
 
 /** 字体/字号热改 + fit；回滚行数不动既有终端。 */

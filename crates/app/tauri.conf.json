@@ -16,6 +16,7 @@
         "title": "mySSH",
         "width": 1440,
         "height": 900,
+        "center": true,
         "dragDropEnabled": true,
         "windowEffects": { "effects": ["mica"], "state": "followsWindowActiveState" }
       }

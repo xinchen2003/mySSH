@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   applyMenuSettings,
+  applyTerminalBackground,
   applyTerminalSettings,
   applyTheme,
   readTerminalSettings,
@@ -167,6 +168,7 @@ export function App() {
     }
     applyTheme(settings);
     applyTerminalSettings(settings);
+    applyTerminalBackground(settings);
     applyMenuSettings();
   }, [settings, settingsLoaded, loadSettings]);
 

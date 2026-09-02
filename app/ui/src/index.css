@@ -120,6 +120,26 @@ html[data-ui='light'] .hover\:text-neutral-100:hover {
 .myssh-flash-fail {
   animation: myssh-flash-fail 1.2s ease-out;
 }
+/* 终端背景图层（批次二十一）：图片与透明度走根节点 CSS 变量（applyTerminalBackground 热更）。
+   伪元素叠在 pane 底色之上、xterm 之下——xterm 需 allowTransparency + 主题背景透明才可见 */
+.myssh-term-host::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: var(--myssh-term-bg-image, none);
+  background-size: cover;
+  background-position: center;
+  opacity: var(--myssh-term-bg-opacity, 0.35);
+  pointer-events: none;
+}
+.myssh-term-host .xterm {
+  position: relative;
+}
+/* 背景图模式：xterm 把主题背景写成内联样式（scrollable-element），须 !important 放行透明 */
+html[data-term-bg='1'] .myssh-term-host .xterm-viewport,
+html[data-term-bg='1'] .myssh-term-host .xterm-scrollable-element {
+  background-color: transparent !important;
+}
 
 /* 减少动态（无障碍）：停掉全部自定义装饰动画与 Tailwind pulse */
 @media (prefers-reduced-motion: reduce) {
