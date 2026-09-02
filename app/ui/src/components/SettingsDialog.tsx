@@ -33,6 +33,42 @@ function installedFonts(): string[] {
   }
 }
 
+/** MCP 客户端配置片段：omp/pi 用 .omp/mcp.json；Claude Code 同构（mcpServers.http）；
+ *  OpenCode 用 opencode.json 的 mcp 键 + type remote */
+function mcpConfigOmp(port: number, token: string): string {
+  return JSON.stringify(
+    {
+      mcpServers: {
+        myssh: {
+          type: 'http',
+          url: `http://127.0.0.1:${port}/mcp`,
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+function mcpConfigClaude(port: number, token: string): string {
+  return mcpConfigOmp(port, token);
+}
+function mcpConfigOpencode(port: number, token: string): string {
+  return JSON.stringify(
+    {
+      mcp: {
+        myssh: {
+          type: 'remote',
+          url: `http://127.0.0.1:${port}/mcp`,
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+
 export function SettingsDialog() {
   const settings = useAppStore((s) => s.settings);
   const setSetting = useAppStore((s) => s.setSetting);
@@ -52,6 +88,16 @@ export function SettingsDialog() {
   const mcpPort = typeof mcpPortRaw === 'number' ? mcpPortRaw : 17345;
   const mcpToken = typeof settings['mcp.token'] === 'string' ? settings['mcp.token'] : '';
   const notify = useAppStore((s) => s.notify);
+  /** MCP 设置写入：setSetting 落库是 fire-and-forget，须等 settings_set 完成再 mcp_restart，否则读到旧值 */
+  const setMcp = async (key: string, value: unknown) => {
+    setSetting(key, value);
+    try {
+      await invoke('settings_set', { key, value });
+      await invoke('mcp_restart');
+    } catch {
+      // 落库/重启失败：设置面板下次打开按库中值渲染，不阻断 UI
+    }
+  };
   // 批次十一 8：断线重连次数（0-20，默认 5）
   const reconnectRaw = settings['terminal.reconnectAttempts'];
   const reconnectAttempts =
@@ -303,8 +349,7 @@ export function SettingsDialog() {
             type="checkbox"
             checked={settings['mcp.enabled'] === true}
             onChange={(e) => {
-              setSetting('mcp.enabled', e.target.checked);
-              void invoke('mcp_restart').catch(() => undefined);
+              void setMcp('mcp.enabled', e.target.checked);
             }}
           />
           <label htmlFor="set-mcp-port">{t('dialogs.mcpPort')}</label>
@@ -317,30 +362,59 @@ export function SettingsDialog() {
             value={mcpPort}
             onChange={(e) => {
               const v = Math.trunc(Number(e.target.value));
-              if (v >= 1024 && v <= 65535) {
-                setSetting('mcp.port', v);
-                void invoke('mcp_restart').catch(() => undefined);
-              }
+              if (v >= 1024 && v <= 65535) void setMcp('mcp.port', v);
             }}
           />
-          <span>{t('dialogs.mcpToken')}</span>
+          <label htmlFor="set-mcp-token">{t('dialogs.mcpToken')}</label>
           <span className="flex items-center gap-2">
-            <code className="min-w-0 flex-1 truncate rounded bg-neutral-800 px-2 py-0.5 font-mono">
-              {mcpToken || '—'}
-            </code>
-            {mcpToken && (
-              <button
-                className="shrink-0 rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800"
-                onClick={() => {
-                  void writeText(mcpToken)
-                    .then(() => notify(t('dialogs.mcpTokenCopied'), 'success'))
-                    .catch(() => undefined);
-                }}
-              >
-                {t('dialogs.mcpTokenCopy')}
-              </button>
-            )}
+            <input
+              id="set-mcp-token"
+              className={`${inputCls} min-w-0 flex-1 font-mono`}
+              spellCheck={false}
+              value={mcpToken}
+              placeholder={t('dialogs.mcpTokenPlaceholder')}
+              onChange={(e) => void setMcp('mcp.token', e.target.value)}
+            />
+            <button
+              className="shrink-0 rounded px-2 py-0.5 text-neutral-400 hover:bg-neutral-800"
+              onClick={() => {
+                const tok = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+                  .map((b) => b.toString(16).padStart(2, '0'))
+                  .join('');
+                void setMcp('mcp.token', tok);
+              }}
+            >
+              {t('dialogs.mcpTokenRegen')}
+            </button>
           </span>
+          {mcpToken && (
+            <>
+              <span>{t('dialogs.mcpCopyConfig')}</span>
+              <span className="flex flex-wrap items-center gap-1.5">
+                {(
+                  [
+                    ['omp', mcpConfigOmp(mcpPort, mcpToken)],
+                    ['Claude Code', mcpConfigClaude(mcpPort, mcpToken)],
+                    ['OpenCode', mcpConfigOpencode(mcpPort, mcpToken)],
+                  ] as const
+                ).map(([label, json]) => (
+                  <button
+                    key={label}
+                    className="rounded bg-neutral-800 px-2 py-0.5 text-neutral-300 hover:bg-neutral-700"
+                    onClick={() => {
+                      void writeText(json)
+                        .then(() =>
+                          notify(t('dialogs.mcpConfigCopied', { agent: label }), 'success'),
+                        )
+                        .catch(() => undefined);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </span>
+            </>
+          )}
         </div>
         <p className="mt-1.5 text-neutral-600">{t('dialogs.mcpHint')}</p>
       </section>

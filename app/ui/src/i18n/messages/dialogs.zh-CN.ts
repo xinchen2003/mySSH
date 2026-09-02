@@ -110,7 +110,10 @@ export const zhDialogs = {
   'dialogs.mcpPort': '端口',
   'dialogs.mcpToken': '访问令牌',
   'dialogs.mcpTokenCopy': '复制',
-  'dialogs.mcpTokenCopied': '令牌已复制',
+  'dialogs.mcpTokenRegen': '重新生成',
+  'dialogs.mcpTokenPlaceholder': '留空 = 不鉴权（不推荐）',
+  'dialogs.mcpCopyConfig': '一键复制配置',
+  'dialogs.mcpConfigCopied': '{agent} 配置已复制',
   'dialogs.mcpHint':
     'AI 客户端（如 Claude Code）接入：POST http://127.0.0.1:<端口>/mcp，请求头 Authorization: Bearer <令牌>。勾选启用后自动生成令牌；仅监听本机回环。',
   'dialogs.terminal': '终端',

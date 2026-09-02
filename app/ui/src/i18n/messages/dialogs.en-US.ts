@@ -114,7 +114,10 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   'dialogs.mcpPort': 'Port',
   'dialogs.mcpToken': 'Access token',
   'dialogs.mcpTokenCopy': 'Copy',
-  'dialogs.mcpTokenCopied': 'Token copied',
+  'dialogs.mcpTokenRegen': 'Regenerate',
+  'dialogs.mcpTokenPlaceholder': 'Empty = no auth (not recommended)',
+  'dialogs.mcpCopyConfig': 'Copy config for',
+  'dialogs.mcpConfigCopied': '{agent} config copied',
   'dialogs.mcpHint':
     'For AI clients (e.g. Claude Code): POST http://127.0.0.1:<port>/mcp with header "Authorization: Bearer <token>". A token is generated when first enabled; listens on loopback only.',
   'dialogs.terminal': 'Terminal',
