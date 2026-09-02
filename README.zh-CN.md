@@ -16,19 +16,26 @@ Tauri 2（Rust 后端 + WebView2）+ React 前端。
 - **SFTP**：左右分栏文件管理器，本地/远程双向拖拽、OS 文件直接拖入上传（含文件夹递归）；队列化传输（并发控制、断点续传、失败重试）、跨会话传输历史；与终端当前目录联动（OSC 7）；远程文件直编（本地编辑器打开、保存自动回传）
 - **监控**：CPU / 内存 / 磁盘 / 网络实时图表（独立采样通道，采集失败静默降级）
 - **导出**：配置导出（明文或 Argon2id+AES-256-GCM 口令加密）
-- **主题**：多套配色（暗色/浅色/Nord 等），UI 与终端配色独立
+- **主题**：多套配色（暗色/浅色/Nord 等），支持自定义终端背景图与不透明度调节，UI 与终端配色独立
+- **MCP 服务端**：内置 MCP server（Streamable HTTP，仅监听本机回环 + Bearer 令牌），AI agent（Claude Code / OMP / OpenCode 等）可经 `list_sessions` / `ssh_exec` 在已保存的 SSH 会话上执行命令；设置面板一键复制各 agent 配置
+- **多语言**：简体中文 / English 界面，设置中切换
+- **终端编码**：按会话配置远程编码（UTF-8 / GBK / GB18030 / Big5 / Shift_JIS / EUC-KR），流式转码，UTF-8 零拷贝直通
+
+## 路线图
+
+- Agent CLI：可脚本化的命令行接口（规划中）
 
 ## 技术栈
 
-| 层 | 选型 |
-|---|---|
-| 桌面框架 | Tauri 2.11（Rust + WebView2） |
-| 前端 | TypeScript + React 19 + Vite + zustand + Tailwind 4 |
-| 终端渲染 | xterm.js 6 + WebGL addon（canvas 降级） |
-| SSH | russh 0.62 / russh-sftp 2.4 |
-| 本地终端 | portable-pty（ConPTY） |
-| 存储 | SQLite（sqlx）+ DPAPI 凭据保险库 |
-| 异步 | tokio |
+| 层       | 选型                                                |
+| -------- | --------------------------------------------------- |
+| 桌面框架 | Tauri 2.11（Rust + WebView2）                       |
+| 前端     | TypeScript + React 19 + Vite + zustand + Tailwind 4 |
+| 终端渲染 | xterm.js 6 + WebGL addon（canvas 降级）             |
+| SSH      | russh 0.62 / russh-sftp 2.4                         |
+| 本地终端 | portable-pty（ConPTY）                              |
+| 存储     | SQLite（sqlx）+ DPAPI 凭据保险库                    |
+| 异步     | tokio                                               |
 
 ## 构建
 

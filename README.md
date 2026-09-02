@@ -16,19 +16,26 @@ Built with Tauri 2 (Rust backend + WebView2) and a React frontend.
 - **SFTP**: dual-pane file manager, bidirectional drag & drop (including OS files and folders), queued transfers (concurrency control, resume, retry), cross-session transfer history, remote file editing (open in local editor, auto-upload on save), follows the terminal's working directory (OSC 7)
 - **Monitoring**: live CPU / memory / disk / network charts on an isolated channel, silently degrades on failure
 - **Export**: export config in plaintext or passphrase-encrypted (Argon2id + AES-256-GCM)
-- **Themes**: multiple color schemes (dark / light / Nord and more), UI and terminal palettes independent
+- **Themes**: multiple color schemes (dark / light / Nord and more), custom terminal background image with adjustable opacity, UI and terminal palettes independent
+- **MCP server**: built-in MCP server (Streamable HTTP, loopback + Bearer token) lets AI agents (Claude Code, OMP, OpenCode…) run commands on saved SSH sessions via `list_sessions` / `ssh_exec`; one-click config copy from Settings
+- **i18n**: Simplified Chinese / English UI, switchable in Settings
+- **Terminal encoding**: per-session remote encoding (UTF-8 / GBK / GB18030 / Big5 / Shift_JIS / EUC-KR), streaming transcode with zero-copy passthrough for UTF-8
+
+## Roadmap
+
+- Agent CLI: scriptable command-line interface (planned)
 
 ## Tech Stack
 
-| Layer | Choice |
-|---|---|
-| Desktop | Tauri 2.11 (Rust + WebView2) |
-| Frontend | TypeScript + React 19 + Vite + zustand + Tailwind 4 |
-| Terminal | xterm.js 6 + WebGL addon (canvas fallback) |
-| SSH | russh 0.62 / russh-sftp 2.4 |
-| Local shell | portable-pty (ConPTY) |
-| Storage | SQLite (sqlx) + DPAPI credential vault |
-| Async | tokio |
+| Layer       | Choice                                              |
+| ----------- | --------------------------------------------------- |
+| Desktop     | Tauri 2.11 (Rust + WebView2)                        |
+| Frontend    | TypeScript + React 19 + Vite + zustand + Tailwind 4 |
+| Terminal    | xterm.js 6 + WebGL addon (canvas fallback)          |
+| SSH         | russh 0.62 / russh-sftp 2.4                         |
+| Local shell | portable-pty (ConPTY)                               |
+| Storage     | SQLite (sqlx) + DPAPI credential vault              |
+| Async       | tokio                                               |
 
 ## Build
 
