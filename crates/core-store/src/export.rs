@@ -94,8 +94,8 @@ pub async fn export_plain(store: &Store) -> Result<String, StoreError> {
 pub async fn export_encrypted(store: &Store, passphrase: &[u8]) -> Result<String, StoreError> {
     let mut credentials = Vec::new();
     for s in store.sessions().list().await? {
-        // 当前模型：每会话至多一条凭据（password 或 key_passphrase）
-        if let Ok((kind, sec)) = store.credentials().get_with_kind(&s.id).await {
+        // 迁移 0009 起每会话可并存多条凭据（password / key_passphrase / su_password）
+        for (kind, sec) in store.credentials().get_all(&s.id).await? {
             credentials.push(CredEntry {
                 session_id: s.id.clone(),
                 kind: kind.as_str().into(),

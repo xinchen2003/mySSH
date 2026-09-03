@@ -58,6 +58,11 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   'dialogs.keyPath': 'Private Key File',
   'dialogs.keyPathPlaceholder': 'C:\\Users\\…\\.ssh\\id_ed25519 or .ppk',
   'dialogs.passphraseLabel': 'Passphrase (Optional)',
+  'dialogs.suSection': 'Switch user after login (su)',
+  'dialogs.suUser': 'Target username',
+  'dialogs.suUserPlaceholder': 'e.g. root (empty = no switch)',
+  'dialogs.suPassword': 'Target user password',
+  'dialogs.suPasswordPlaceholder': 'Empty = type manually after su',
   'dialogs.jumpNeedSave': 'Check "Save Session" to configure the jump chain',
   'dialogs.tunnelsNeedSave':
     'Save the session to configure tunnels here; tunnels are bound to this server',

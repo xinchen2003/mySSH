@@ -76,6 +76,12 @@ pub struct TermOpenSpec {
     /// 终端编码（encoding_rs 标签）；默认 utf-8 = 直通不转码
     #[serde(default = "default_encoding")]
     pub encoding: String,
+    /// 登录后切换用户（su）目标用户名；None/空 = 不切换（批次二十二）
+    #[serde(default)]
+    pub su_user: Option<String>,
+    /// su 密码（内存经手即弃；档案路径由 resolve 从保险库读出）
+    #[serde(default)]
+    pub su_password: Option<String>,
 }
 
 fn default_encoding() -> String {
@@ -176,6 +182,39 @@ struct SshReconnect {
     opts: ConnectOptions,
     term: String,
     command: Option<String>,
+}
+
+/// su 二级登录配置（批次二十二）：登录 shell 起来后自动 `su - <user>`，
+/// 配了密码则在密码提示出现时自动应答一次（绝不重试——答错交回用户手输，
+/// 避免错误密码反复触发锁定策略）
+struct SuConfig {
+    user: String,
+    password: Option<Zeroizing<String>>,
+}
+
+/// 读循环内的一次性密码 expect：deadline 后或应答后即失效
+struct SuWatch {
+    password: Option<Zeroizing<String>>,
+    deadline: Instant,
+    answered: bool,
+}
+
+impl SuWatch {
+    /// 密码提示识别（原始字节匹配，编码无关）：
+    /// "assword" 覆盖 Password:/password:；UTF-8 与 GBK 的「密码」
+    fn is_password_prompt(chunk: &[u8]) -> bool {
+        const MARKERS: [&[u8]; 4] = [
+            b"assword",
+            "密码".as_bytes(),
+            &[0xC3, 0xDC, 0xC2, 0xEB], // GBK「密码」
+            "口令".as_bytes(),
+        ];
+        MARKERS.iter().any(|m| {
+            chunk
+                .windows(m.len())
+                .any(|w| w.eq_ignore_ascii_case(m) || w == *m)
+        })
+    }
 }
 
 struct TermSession {
@@ -288,6 +327,7 @@ pub async fn term_open(
             let shell = pty.shell.clone();
             let credits = Arc::new(Semaphore::new(CREDIT_HIGH as usize));
             let outstanding = Arc::new(AtomicI64::new(0));
+            let writer = Arc::new(AnyWriter::Local(pty.writer));
             let task = tauri::async_runtime::spawn(supervise(SuperviseCtx {
                 tab_id: tab_id.clone(),
                 mgr: mgr.clone(),
@@ -295,6 +335,9 @@ pub async fn term_open(
                 tunnel_mgr: tunnels_state.mgr.clone(),
                 store: sessions.store.clone(),
                 backend: Backend::Local,
+                // 本地会话无 su（Windows ConPTY 无此概念）
+                su: None,
+                writer: writer.clone(),
                 out_encoding,
                 data,
                 events: events.clone(),
@@ -305,7 +348,7 @@ pub async fn term_open(
             mgr.sessions.lock().insert(
                 tab_id.clone(),
                 TermSession {
-                    writer: Arc::new(AnyWriter::Local(pty.writer)),
+                    writer,
                     session_id: via_session,
                     input_enc,
                     credits,
@@ -428,6 +471,17 @@ pub async fn term_open(
         .await
         .map_err(|e| e.to_string())?;
     let (reader, writer) = pty.split();
+    // su 二级登录：档案配了 su_user 才启用；密码包装 Zeroizing 随连接存活
+    let su = spec
+        .su_user
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .map(|u| SuConfig {
+            user: u.to_string(),
+            password: spec.su_password.clone().map(Zeroizing::new),
+        });
+    let writer = Arc::new(AnyWriter::Ssh(writer));
 
     let credits = Arc::new(Semaphore::new(CREDIT_HIGH as usize));
     let outstanding = Arc::new(AtomicI64::new(0));
@@ -442,6 +496,8 @@ pub async fn term_open(
             term,
             command: spec.command.clone(),
         })),
+        su,
+        writer: writer.clone(),
         out_encoding,
         data,
         events: events.clone(),
@@ -453,7 +509,7 @@ pub async fn term_open(
     mgr.sessions.lock().insert(
         tab_id.clone(),
         TermSession {
-            writer: Arc::new(AnyWriter::Ssh(writer)),
+            writer,
             session_id: via_session,
             input_enc,
             credits,
@@ -502,6 +558,10 @@ struct SuperviseCtx {
     tunnel_mgr: Arc<core_tunnel::TunnelManager>,
     store: Arc<core_store::Store>,
     backend: Backend,
+    /// su 二级登录（批次二十二）：None = 不启用；重连后自动重放
+    su: Option<SuConfig>,
+    /// 当前写半（重连即换）：su 命令与密码应答的写入通道
+    writer: Arc<AnyWriter>,
     /// 输出转码（非 utf-8 会话）：读循环内建 Decoder，重连即重建
     out_encoding: Option<&'static encoding_rs::Encoding>,
     data: Channel<Response>,
@@ -513,12 +573,29 @@ struct SuperviseCtx {
 
 async fn supervise(mut ctx: SuperviseCtx) {
     loop {
+        // su 二级登录：每轮新 shell（首连/重连）重放一次。先入队 su 命令（shell 未就绪
+        // 时 PTY 输入缓冲会保留），read_loop 里一次性 expect 密码提示并应答。
+        // 配置 command 的会话不 su——command 取代登录 shell，su 无意义
+        let mut su_watch = match (&ctx.backend, &ctx.su) {
+            (Backend::Ssh(rc), Some(su)) if rc.command.is_none() => {
+                let cmd = format!("su - {}\r", su.user);
+                let _ = ctx.writer.write(cmd.as_bytes()).await;
+                Some(SuWatch {
+                    password: su.password.clone(),
+                    deadline: Instant::now() + Duration::from_secs(30),
+                    answered: false,
+                })
+            }
+            _ => None,
+        };
         read_loop(
             &mut ctx.reader,
             &ctx.data,
             &ctx.credits,
             &ctx.outstanding,
             ctx.out_encoding,
+            su_watch.as_mut(),
+            &ctx.writer,
         )
         .await;
 
@@ -551,14 +628,16 @@ async fn supervise(mut ctx: SuperviseCtx) {
                 return;
             }
         };
-        // 换写半（输入路径无感）；表项中途被摘则放弃
+        // 换写半（输入路径无感 + ctx.writer 同步：su 重放用）；表项中途被摘则放弃
+        let new_writer = Arc::new(AnyWriter::Ssh(writer));
         {
             let mut sessions = ctx.mgr.sessions.lock();
             match sessions.get_mut(&ctx.tab_id) {
-                Some(s) => s.writer = Arc::new(AnyWriter::Ssh(writer)),
+                Some(s) => s.writer = new_writer.clone(),
                 None => return,
             }
         }
+        ctx.writer = new_writer;
         let _ = ctx.events.send(json!({
             "v": 1, "type": "session_state",
             "tabId": ctx.tab_id, "state": "connected", "reconnected": true,
@@ -742,6 +821,9 @@ async fn read_loop(
     credits: &Arc<Semaphore>,
     outstanding: &Arc<AtomicI64>,
     out_encoding: Option<&'static encoding_rs::Encoding>,
+    // su 二级登录：一次性密码 expect（Some = 本轮 shell 武装中）
+    mut su_watch: Option<&mut SuWatch>,
+    writer: &Arc<AnyWriter>,
 ) {
     let mut agg: Vec<u8> = Vec::with_capacity(AGG_CAP);
     let mut flush_at = Instant::now() + AGG_WINDOW;
@@ -756,6 +838,22 @@ async fn read_loop(
             msg = reader.next_data() => {
                 match msg {
                     Some(bytes) => {
+                        // su 密码应答：武装窗口内首个密码提示自动答一次；答错不重试
+                        // （防锁定），超窗/已答后 pure 旁路——零常态开销
+                        if let Some(w) = su_watch.as_mut() {
+                            if !w.answered && Instant::now() < w.deadline {
+                                if SuWatch::is_password_prompt(&bytes) {
+                                    w.answered = true;
+                                    if let Some(pw) = &w.password {
+                                        let mut buf = pw.as_bytes().to_vec();
+                                        buf.push(b'\r');
+                                        let _ = writer.write(&buf).await;
+                                    }
+                                }
+                            } else if Instant::now() >= w.deadline {
+                                su_watch = None; // 超窗解除武装
+                            }
+                        }
                         match decoder.as_mut() {
                             Some(dec) => dec.decode_append(&bytes, &mut agg),
                             None => agg.extend_from_slice(&bytes),
@@ -819,5 +917,23 @@ mod tests {
         assert_eq!(parse_reconnect_attempts(Some("20")), 20);
         // 超界 clamp 到 20
         assert_eq!(parse_reconnect_attempts(Some("99")), 20);
+    }
+
+    #[test]
+    fn su_password_prompt_detection() {
+        // 英文提示（大小写不敏感）
+        assert!(SuWatch::is_password_prompt(b"Password:"));
+        assert!(SuWatch::is_password_prompt(b"[sudo] password for ops: "));
+        // 中文提示：UTF-8 与 GBK
+        assert!(SuWatch::is_password_prompt("密码：".as_bytes()));
+        assert!(SuWatch::is_password_prompt(&[
+            0xC3, 0xDC, 0xC2, 0xEB, 0xA3, 0xBA
+        ])); // GBK「密码：」
+        assert!(SuWatch::is_password_prompt("口令:".as_bytes()));
+        // 普通输出不误判
+        assert!(!SuWatch::is_password_prompt(b"[ops@web ~]$ "));
+        assert!(!SuWatch::is_password_prompt(
+            "普通命令输出，无任何提示词".as_bytes()
+        ));
     }
 }

@@ -45,6 +45,7 @@ fn sample(id: &str, name: &str) -> SessionRecord {
         group_path: "生产/华东".into(),
         color: None,
         encoding: "utf-8".into(),
+        su_user: None,
         tags: vec!["prod".into(), "web".into()],
         jump_chain: vec![],
         command: None,
@@ -120,7 +121,10 @@ async fn credential_roundtrip_and_cascade() {
         )
         .await
         .expect("put");
-    let got = creds.get("s1").await.expect("get");
+    let got = creds
+        .get("s1", CredentialKind::Password)
+        .await
+        .expect("get");
     assert_eq!(got.expose(), b"correct horse");
     // Debug 不含明文
     assert!(!format!("{got:?}").contains("correct"));
@@ -134,12 +138,19 @@ async fn credential_roundtrip_and_cascade() {
         )
         .await
         .expect("overwrite");
-    assert_eq!(creds.get("s1").await.unwrap().expose(), b"new secret");
+    assert_eq!(
+        creds
+            .get("s1", CredentialKind::Password)
+            .await
+            .unwrap()
+            .expose(),
+        b"new secret"
+    );
 
     // 会话删除级联清凭据
     store.sessions().delete("s1").await.expect("delete");
     assert!(matches!(
-        creds.get("s1").await,
+        creds.get("s1", CredentialKind::Password).await,
         Err(core_store::StoreError::NotFound(_))
     ));
 
@@ -413,7 +424,11 @@ async fn config_export_import_roundtrip() {
         .await
         .expect("import enc");
     assert_eq!(out2.credentials, 1);
-    let sec = store2.credentials().get("s1").await.expect("cred back");
+    let sec = store2
+        .credentials()
+        .get("s1", CredentialKind::Password)
+        .await
+        .expect("cred back");
     assert_eq!(sec.expose(), b"s3cret");
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -609,7 +624,10 @@ async fn group_delete_with_sessions_cascades_credentials() {
         Err(core_store::StoreError::NotFound(_))
     ));
     assert!(matches!(
-        store.credentials().get("s1").await,
+        store
+            .credentials()
+            .get("s1", CredentialKind::Password)
+            .await,
         Err(core_store::StoreError::NotFound(_))
     ));
     // 兄弟分组不受影响

@@ -116,6 +116,9 @@ function ConnectForm({
         : (initial?.authType ?? 'password'),
   );
   const [password, setPassword] = useState('');
+  // su 二级登录：目标用户名 + 密码（密码仅存保险库 kind=suPassword，不回读表单）
+  const [suUser, setSuUser] = useState(initial?.suUser ?? '');
+  const [suPassword, setSuPassword] = useState('');
   const [jumpChain, setJumpChain] = useState<string[]>(initial?.jumpChain ?? []);
   const [keyPath, setKeyPath] = useState(initial?.keyPath ?? '');
   const [passphrase, setPassphrase] = useState('');
@@ -236,8 +239,9 @@ function ConnectForm({
         groupPath: presetGroup ?? initial?.groupPath ?? '',
         color,
         encoding,
+        // su 二级登录：空 = 不启用；密码走 cred_set 进保险库
+        suUser: suUser.trim() || null,
         tags: initial?.tags ?? [],
-        command: initial?.command ?? null,
         createdAt: initial?.createdAt ?? '',
         updatedAt: '',
       };
@@ -247,6 +251,11 @@ function ConnectForm({
         await invoke('cred_set', { sessionId: id, kind: 'password', secret: password });
       if (kind === 'publicKey' && passphrase)
         await invoke('cred_set', { sessionId: id, kind: 'keyPassphrase', secret: passphrase });
+      // su 密码：配了才写；用户清空 suUser 时清掉保险库里的 su 密码（防残留生效）
+      if (suUser.trim() && suPassword)
+        await invoke('cred_set', { sessionId: id, kind: 'suPassword', secret: suPassword });
+      if (!suUser.trim() && initial?.suUser)
+        await invoke('cred_delete', { sessionId: id, kind: 'suPassword' });
       await loadSessions();
       if (connectAfter) connectBySession(id, record.name);
       else close();
@@ -579,9 +588,44 @@ function ConnectForm({
                 </label>
               </>
             )}
+            {/* su 二级登录（批次二十二）：用普通用户登入后自动 su 到目标用户（如 root）。
+                密码仅存保险库；留空密码 = su 后手输 */}
+            <div className="mt-2 border-t border-neutral-800 pt-2">
+              <span className="mb-1 block text-xs font-medium text-neutral-300">
+                {t('dialogs.suSection')}
+              </span>
+              <div className="flex gap-2">
+                <label className="flex-1">
+                  <span className="mb-0.5 block text-xs text-neutral-400">
+                    {t('dialogs.suUser')}
+                  </span>
+                  <input
+                    className={input}
+                    value={suUser}
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder={t('dialogs.suUserPlaceholder')}
+                    onChange={(e) => setSuUser(e.target.value)}
+                  />
+                </label>
+                <label className="flex-1">
+                  <span className="mb-0.5 block text-xs text-neutral-400">
+                    {t('dialogs.suPassword')}
+                  </span>
+                  <input
+                    className={input}
+                    type="password"
+                    value={suPassword}
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    placeholder={t('dialogs.suPasswordPlaceholder')}
+                    onChange={(e) => setSuPassword(e.target.value)}
+                  />
+                </label>
+              </div>
+            </div>
           </>
         )}
-
         {tab === 'jump' &&
           (save ? (
             <JumpChainEditor

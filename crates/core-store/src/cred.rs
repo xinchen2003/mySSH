@@ -12,6 +12,8 @@ use crate::Secret;
 pub enum CredentialKind {
     Password,
     KeyPassphrase,
+    /// 登录后切换用户（su）的密码（批次二十二）
+    SuPassword,
 }
 
 impl CredentialKind {
@@ -19,6 +21,7 @@ impl CredentialKind {
         match self {
             Self::Password => "password",
             Self::KeyPassphrase => "key_passphrase",
+            Self::SuPassword => "su_password",
         }
     }
 
@@ -26,6 +29,7 @@ impl CredentialKind {
         match s {
             "password" => Ok(Self::Password),
             "key_passphrase" => Ok(Self::KeyPassphrase),
+            "su_password" => Ok(Self::SuPassword),
             other => Err(StoreError::Corrupt(format!("未知凭据类型 {other}"))),
         }
     }
@@ -67,7 +71,7 @@ impl CredentialStore {
         sqlx::query(
             "INSERT INTO credentials (session_id, kind, blob, updated_at)
              VALUES (?,?,?,datetime('now'))
-             ON CONFLICT(session_id) DO UPDATE SET kind=excluded.kind, blob=excluded.blob, updated_at=datetime('now')",
+             ON CONFLICT(session_id, kind) DO UPDATE SET blob=excluded.blob, updated_at=excluded.updated_at",
         )
         .bind(session_id)
         .bind(kind.as_str())
@@ -78,33 +82,60 @@ impl CredentialStore {
         Ok(())
     }
 
-    pub async fn get(&self, session_id: &str) -> Result<Secret, StoreError> {
-        self.get_with_kind(session_id).await.map(|(_, s)| s)
-    }
-
-    /// 连类型一起取（配置导出用）
-    pub async fn get_with_kind(
-        &self,
-        session_id: &str,
-    ) -> Result<(CredentialKind, Secret), StoreError> {
-        let row: Option<(String, Vec<u8>)> =
-            sqlx::query_as("SELECT kind, blob FROM credentials WHERE session_id = ?")
+    /// 取指定类型凭据（迁移 0009 起每会话可并存多条，必须带 kind）
+    pub async fn get(&self, session_id: &str, kind: CredentialKind) -> Result<Secret, StoreError> {
+        let row: Option<(Vec<u8>,)> =
+            sqlx::query_as("SELECT blob FROM credentials WHERE session_id = ? AND kind = ?")
                 .bind(session_id)
+                .bind(kind.as_str())
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(|e| StoreError::Query(e.to_string()))?;
-        let (kind, blob) =
+        let (blob,) =
             row.ok_or_else(|| StoreError::NotFound(format!("credential {session_id}")))?;
-        let plain = unprotect(&blob)?;
-        Ok((CredentialKind::parse(&kind)?, Secret::new(plain)))
+        Ok(Secret::new(unprotect(&blob)?))
     }
 
-    pub async fn delete(&self, session_id: &str) -> Result<(), StoreError> {
-        sqlx::query("DELETE FROM credentials WHERE session_id = ?")
-            .bind(session_id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| StoreError::Query(e.to_string()))?;
+    /// 取会话全部凭据（配置导出用）
+    pub async fn get_all(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<(CredentialKind, Secret)>, StoreError> {
+        let rows: Vec<(String, Vec<u8>)> =
+            sqlx::query_as("SELECT kind, blob FROM credentials WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StoreError::Query(e.to_string()))?;
+        rows.into_iter()
+            .map(|(kind, blob)| {
+                Ok((
+                    CredentialKind::parse(&kind)?,
+                    Secret::new(unprotect(&blob)?),
+                ))
+            })
+            .collect()
+    }
+
+    /// 删除指定类型；kind=None 删会话全部凭据（会话删除级联用）
+    pub async fn delete(
+        &self,
+        session_id: &str,
+        kind: Option<CredentialKind>,
+    ) -> Result<(), StoreError> {
+        match kind {
+            Some(k) => sqlx::query("DELETE FROM credentials WHERE session_id = ? AND kind = ?")
+                .bind(session_id)
+                .bind(k.as_str())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StoreError::Query(e.to_string()))?,
+            None => sqlx::query("DELETE FROM credentials WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StoreError::Query(e.to_string()))?,
+        };
         Ok(())
     }
 }

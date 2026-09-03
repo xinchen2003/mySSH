@@ -15,8 +15,11 @@ export function installDevHooks(): void {
       useAppStore.getState().connectBySession(sessionId, title),
     loadSessions: () => useAppStore.getState().loadSessions(),
     upsertSession: (record: SessionRecord) => invoke('session_upsert', { record }),
-    credSet: (sessionId: string, kind: 'password' | 'keyPassphrase', secret: string) =>
-      invoke('cred_set', { sessionId, kind, secret }),
+    credSet: (
+      sessionId: string,
+      kind: 'password' | 'keyPassphrase' | 'suPassword',
+      secret: string,
+    ) => invoke('cred_set', { sessionId, kind, secret }),
     sessions: () => useAppStore.getState().sessions,
     splitActive: (dir: 'row' | 'col') => useAppStore.getState().splitActive(dir),
     tabs: () =>

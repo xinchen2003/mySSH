@@ -207,6 +207,7 @@ pub async fn cred_set(
     let kind = match kind {
         CredentialKindSpec::Password => CredentialKind::Password,
         CredentialKindSpec::KeyPassphrase => CredentialKind::KeyPassphrase,
+        CredentialKindSpec::SuPassword => CredentialKind::SuPassword,
     };
     state
         .store
@@ -216,15 +217,22 @@ pub async fn cred_set(
         .map_err(|e| e.to_string())
 }
 
+/// 删除凭据；kind 缺省 = 删会话全部凭据，指定则只删该类型（如清空 su 配置只删 su 密码）
 #[tauri::command]
 pub async fn cred_delete(
     session_id: String,
+    kind: Option<CredentialKindSpec>,
     state: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<(), String> {
+    let kind = kind.map(|k| match k {
+        CredentialKindSpec::Password => CredentialKind::Password,
+        CredentialKindSpec::KeyPassphrase => CredentialKind::KeyPassphrase,
+        CredentialKindSpec::SuPassword => CredentialKind::SuPassword,
+    });
     state
         .store
         .credentials()
-        .delete(&session_id)
+        .delete(&session_id, kind)
         .await
         .map_err(|e| e.to_string())
 }
@@ -234,6 +242,8 @@ pub async fn cred_delete(
 pub enum CredentialKindSpec {
     Password,
     KeyPassphrase,
+    /// 登录后切换用户（su）的密码
+    SuPassword,
 }
 
 #[tauri::command]
@@ -350,7 +360,7 @@ async fn resolve_test_auth(store: &Store, req: &TestConnectRequest) -> Result<Au
                     let sid = req.session_id.as_deref().ok_or("未提供密码且未关联会话")?;
                     let secret = store
                         .credentials()
-                        .get(sid)
+                        .get(sid, CredentialKind::Password)
                         .await
                         .map_err(|_| format!("会话 {sid} 未存密码（cred_set）"))?;
                     String::from_utf8(secret.expose().to_vec())
@@ -381,7 +391,11 @@ async fn resolve_test_auth(store: &Store, req: &TestConnectRequest) -> Result<Au
                 Some(p) => Some(p.to_string()),
                 None => match &req.session_id {
                     // passphrase 可选：保险库里没有就当无
-                    Some(sid) => match store.credentials().get(sid).await {
+                    Some(sid) => match store
+                        .credentials()
+                        .get(sid, CredentialKind::KeyPassphrase)
+                        .await
+                    {
                         Ok(s) => Some(
                             String::from_utf8(s.expose().to_vec())
                                 .map_err(|_| "凭据非 UTF-8".to_string())?,
@@ -553,6 +567,28 @@ async fn resolve_spec_inner(
             auth: hop.auth,
         });
     }
+    // su 二级登录：配了目标用户才生效；密码从保险库读（可选——不配则 su 后用户手输）
+    let su_user = rec
+        .su_user
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .map(str::to_string);
+    let su_password = if su_user.is_some() {
+        match store
+            .credentials()
+            .get(&rec.id, CredentialKind::SuPassword)
+            .await
+        {
+            Ok(s) => Some(
+                String::from_utf8(s.expose().to_vec())
+                    .map_err(|_| "su 密码非 UTF-8".to_string())?,
+            ),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
     Ok(crate::terminal::TermOpenSpec {
         host: rec.host.clone(),
         port: rec.port,
@@ -562,6 +598,8 @@ async fn resolve_spec_inner(
         term: None,
         command: rec.command.clone(),
         encoding: rec.encoding.clone(),
+        su_user,
+        su_password,
     })
 }
 
@@ -570,7 +608,7 @@ async fn resolve_auth(store: &Store, rec: &SessionRecord) -> Result<AuthSpec, St
         AuthType::Password => {
             let secret = store
                 .credentials()
-                .get(&rec.id)
+                .get(&rec.id, CredentialKind::Password)
                 .await
                 .map_err(|_| format!("会话 {} 未存密码（cred_set）", rec.id))?;
             let text = String::from_utf8(secret.expose().to_vec())
@@ -584,7 +622,11 @@ async fn resolve_auth(store: &Store, rec: &SessionRecord) -> Result<AuthSpec, St
                 .ok_or_else(|| format!("会话 {} 未配 keyPath", rec.id))?;
             let key_pem = read_key_file(key_path)?;
             // passphrase 可选：保险库里没有就当无
-            let passphrase = match store.credentials().get(&rec.id).await {
+            let passphrase = match store
+                .credentials()
+                .get(&rec.id, CredentialKind::KeyPassphrase)
+                .await
+            {
                 Ok(s) => Some(
                     String::from_utf8(s.expose().to_vec())
                         .map_err(|_| "凭据非 UTF-8".to_string())?,

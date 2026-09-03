@@ -56,6 +56,13 @@ function KiForm({ pending }: { pending: KiChallengeFrame }) {
               onChange={(e) =>
                 setAnswers((prev) => prev.map((a, j) => (j === i ? e.target.value : a)))
               }
+              onKeyDown={(e) => {
+                // Enter = 提交（Dialog 基座的 enterAction 在 input 焦点上不触发，这里补）
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  submit(answers);
+                }
+              }}
             />
           </label>
         ))}

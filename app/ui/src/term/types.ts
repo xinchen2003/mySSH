@@ -29,6 +29,8 @@ export interface SessionRecord {
   color?: string | null;
   /** 终端编码（encoding_rs 标签；缺省 'utf-8' = 直通不转码） */
   encoding?: string;
+  /** 登录后切换用户（su）目标用户名；null/缺省/空 = 不切换。密码存保险库 kind=suPassword */
+  suUser?: string | null;
   tags: string[];
   command?: string | null;
   createdAt: string;
