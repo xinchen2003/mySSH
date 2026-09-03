@@ -256,7 +256,14 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
           }
           return false;
         }
-        if (matchAction(e, bindings, 'paste')) {
+        // 粘贴（注册表 Ctrl+Shift+V/Shift+Insert + Windows 惯例 Ctrl+V）。必须
+        // preventDefault：Chromium 原生会把这些组合贴进 xterm 隐藏 textarea 再触发
+        // 一次 paste 事件——只 return false 不拦默认行为会导致双发
+        if (
+          matchAction(e, bindings, 'paste') ||
+          (e.ctrlKey && !e.altKey && !e.shiftKey && /^v$/i.test(e.key))
+        ) {
+          e.preventDefault();
           readClipboard();
           return false;
         }

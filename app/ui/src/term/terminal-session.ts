@@ -66,7 +66,7 @@ export class TerminalSession {
       rows: openedRows,
     });
     this.tabId = res.tabId;
-    // 补发开链前缓冲的写入（OSC 7 钩子、分屏初始 cd 等）
+    // 补发开链前缓冲的写入
     for (const s of this.pendingWrites.splice(0)) this.write(s);
 
     // OSC 7：shell 上报 cwd（file://host/path），SFTP 面板「跟随终端」用
@@ -98,7 +98,7 @@ export class TerminalSession {
     return this.tabId;
   }
 
-  /** 发送一段输入（广播扇出 / OSC 7 钩子注入 / 分屏初始 cd 用）。
+  /** 发送一段输入（广播扇出用；OSC 7 钩子/分屏 cd 注入已移除——不向远程 shell 注入字节）。
    *  connected 事件可能先于 term_open 返回抵达（tabId 未赋值），
    *  此时入队缓冲，开链后按序补发；close 时清空。 */
   write(s: string): void {

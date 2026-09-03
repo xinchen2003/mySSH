@@ -360,59 +360,15 @@ describe('分屏保活与同服务器新 pane（UX-6）', () => {
     expect(newPane.id).not.toBe(oldPane.id);
   });
 
-  it('源 pane cwd 已知时新 pane 携带初始目录；cwd 未知则不携带', () => {
+  it('连接成功（首连与重连）均不向远程 shell 写入任何字节（注入已移除）', () => {
     const s = state();
     s.connect(spec);
-    const tab = state().tabs[0];
-    tab.panes[tab.activePaneId].session.cwd = '/var/log';
-    s.splitActive('row');
-    expect(state().tabs[0].panes[state().tabs[0].activePaneId].initialCwd).toBe('/var/log');
-
-    // 第二个分屏的源 pane 无 cwd → 不带初始目录
-    const t2 = state().tabs[0];
-    t2.panes[t2.activePaneId].session.cwd = null;
-    s.splitActive('col');
-    const t3 = state().tabs[0];
-    expect(t3.panes[t3.activePaneId].initialCwd).toBeUndefined();
-  });
-
-  it('首连成功（非重连）后向新 pane 写入一次 cd 并消费 initialCwd', () => {
-    const s = state();
-    s.connect(spec);
-    const t0 = state().tabs[0];
-    t0.panes[t0.activePaneId].session.cwd = "/opt/a'b"; // 含单引号需转义
-    s.splitActive('row');
     const tab = state().tabs[0];
     const p = tab.panes[tab.activePaneId];
     const writeSpy = vi.spyOn(p.session, 'write').mockImplementation(() => undefined);
 
-    // 注入序列：先 stty -echo 关回显（唯一可见行），cd 同步写入（无回显更干净），
-    // 600ms 后写 OSC 7 钩子并恢复回显（钩子整段不上屏）
-    vi.useFakeTimers(); // 须在 onEvent 前挂钟，注入定时器才受控
-    // 模拟后端 connected 帧（等价事件通道回调；onEvent 公开作测试接缝）
     p.session.onEvent({ v: 1, type: 'session_state', tabId: 'x', state: 'connected' });
-    expect(writeSpy).toHaveBeenCalledTimes(2);
-    expect(writeSpy.mock.calls[0][0]).toBe('stty -echo\n');
-    expect(writeSpy.mock.calls[1][0]).toBe("cd '/opt/a'\\''b'\n");
-    vi.advanceTimersByTime(700);
-    vi.useRealTimers();
-    expect(writeSpy).toHaveBeenCalledTimes(3);
-    expect(writeSpy.mock.calls[2][0]).toContain('_myssh_osc7');
-    expect(writeSpy.mock.calls[2][0]).toContain('stty echo');
-    expect(state().tabs[0].panes[p.id].initialCwd).toBeUndefined(); // 已消费
-  });
-
-  it('断线重连成功（reconnected=true）不触发初始 cd', async () => {
-    const s = state();
-    s.connect(spec);
-    const t0 = state().tabs[0];
-    t0.panes[t0.activePaneId].session.cwd = '/var/log';
-    s.splitActive('row');
-    const tab = state().tabs[0];
-    const p = tab.panes[tab.activePaneId];
-    const writeSpy = vi.spyOn(p.session, 'write').mockImplementation(() => undefined);
-
-    vi.useFakeTimers(); // 须在 onEvent 前挂钟，注入定时器才受控
+    expect(writeSpy).not.toHaveBeenCalled();
     p.session.onEvent({
       v: 1,
       type: 'session_state',
@@ -420,15 +376,7 @@ describe('分屏保活与同服务器新 pane（UX-6）', () => {
       state: 'connected',
       reconnected: true,
     });
-    // 重连 = 新 shell 进程，OSC 7 钩子需重注（stty -echo → 600ms 后钩子）；初始 cd 不触发
-    expect(writeSpy).toHaveBeenCalledTimes(1);
-    expect(writeSpy.mock.calls[0][0]).toBe('stty -echo\n');
-    vi.advanceTimersByTime(700);
-    vi.useRealTimers();
-    expect(writeSpy).toHaveBeenCalledTimes(2);
-    expect(writeSpy.mock.calls[1][0]).toContain('_myssh_osc7');
-    expect(writeSpy.mock.calls[1][0]).not.toContain('cd ');
-    expect(state().tabs[0].panes[p.id].initialCwd).toBe('/var/log'); // 留给真正的首连
+    expect(writeSpy).not.toHaveBeenCalled();
   });
 });
 

@@ -318,10 +318,16 @@ async fn test_connect_inner(store: &Store, req: &TestConnectRequest) -> Result<u
         window_size: 4 * 1024 * 1024,
         max_packet_size: 32768,
         keepalive: KeepaliveConfig::default(),
-        // 测试连接无弹窗通路：首连/变更一律 fail-closed 拒绝（经正式连接学入 known_hosts）
+        // 测试连接无弹窗通路：未知密钥仅本次放行（不学习，正式连接仍会弹窗学入
+        // known_hosts）；密钥变更仍 fail-closed 拒绝——那是中间人信号，不能静默放行
         host_key_check: HostKeyCheck::KnownHosts(KnownHostsPolicy {
             path: crate::terminal::known_hosts_path(),
-            prompter: Arc::new(|_: HostKeyPrompt| async { HostKeyDecision::Reject }),
+            prompter: Arc::new(|prompt: HostKeyPrompt| async move {
+                match prompt {
+                    HostKeyPrompt::Unknown { .. } => HostKeyDecision::AcceptOnce,
+                    HostKeyPrompt::Changed { .. } => HostKeyDecision::Reject,
+                }
+            }),
         }),
         ki_prompter: None,
     };

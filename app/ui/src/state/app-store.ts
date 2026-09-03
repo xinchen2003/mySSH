@@ -63,8 +63,6 @@ export interface Pane {
   id: string;
   session: TerminalSession;
   state: PaneState;
-  /** 分屏新 pane 的初始目录（来源 pane 的 OSC 7 cwd；首连成功 cd 一次后即消费） */
-  initialCwd?: string;
 }
 
 export interface Tab {
@@ -90,30 +88,12 @@ export function initIdPrefix(label: string): void {
   idPrefix = label === 'main' ? '' : `${label}-`;
 }
 
-/** POSIX 单引号转义（分屏新 pane 初始 cd 用） */
-const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
-/** Shell 集成注入（批次六 10 根因修复）：bash/zsh 装 OSC 7 cwd 上报钩子。
- *  「跟随终端目录」/分屏 cwd 继承此前依赖服务器 shell 自发 OSC 7，默认 bash 不发 → 功能无效。
- *  仅在连接成功的会话内定义临时函数并挂 PROMPT_COMMAND/precmd，不写用户配置文件；
- *  case 守卫幂等；自定义 command 的目标（可能不是 shell）不注入。 */
-const OSC7_HOOK = `if [ -n "\${BASH_VERSION:-}" ]; then _myssh_osc7(){ printf '\\033]7;file://%s%s\\007' "\${HOSTNAME:-localhost}" "$PWD"; }; PROMPT_COMMAND="_myssh_osc7\${PROMPT_COMMAND:+;$PROMPT_COMMAND}"; elif [ -n "\${ZSH_VERSION:-}" ]; then _myssh_osc7(){ printf '\\033]7;file://%s%s\\007' "\${HOSTNAME:-localhost}" "$PWD"; }; autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd _myssh_osc7 2>/dev/null; fi; _myssh_osc7 2>/dev/null\n`;
-/** 注入 OSC 7 钩子但不上屏：tty 回显在字节到达时发生，直接写钩子会被当键盘输入
- *  整段打出来。先写 `stty -echo`（仅此一行可见），延迟等 bash 执行生效后再写钩子
- *  并恢复回显。幂等守卫不需要——每次连接都是全新远程 shell。
- *  副作用窗口：600ms 内用户击键不回显（输入不丢）。 */
-function injectOsc7(session: { write(data: string): void }): void {
-  session.write('stty -echo\n');
-  setTimeout(() => session.write(`${OSC7_HOOK}stty echo\n`), 600);
-}
+// Shell 集成不注入：曾向远程 shell 写 stty/OSC 7 钩子（PROMPT_COMMAND/precmd）
+// 与分屏 cd，在密码过期强制改密等登录交互里会污染输入造成死循环。OSC 7 仅被动
+// 解析（terminal-session.ts）：服务器 shell 原生上报时「跟随终端目录」仍可用。
 
-/** 目标是否配置了自定义启动命令（注入了也没人执行，只会污染程序输入） */
-function targetHasCommand(target: ConnectTarget): boolean {
-  if (target.kind === 'spec') return !!target.spec.command;
-  const rec = useAppStore.getState().sessions.find((r) => r.id === target.sessionId);
-  return !!rec?.command;
-}
 /** 目标是否为本地会话（session 档案 kind==='local'）；spec/档案缺失一律按远程处理。
- *  本地会话禁用：OSC 7 注入、initialCwd cd（POSIX 语法）、SFTP/监控/隧道等 SSH 专属功能 */
+ *  本地会话禁用：SFTP/监控/隧道等 SSH 专属功能 */
 export function isLocalTarget(target: ConnectTarget): boolean {
   if (target.kind !== 'session') return false;
   // 建标签时已定死 kind，直接读；旧标签（无 sessionKind）回落查表
@@ -298,25 +278,8 @@ export const useAppStore = create<AppStore>((set, get) => {
         if (ev.type === 'session_state' && ev.state === 'connected') {
           const tab = get().tabs.find((t) => t.id === tabId);
           if (tab && tab.target.kind === 'session') get().clearConnectFailure(tab.target.sessionId);
-          // 6b：分屏新 pane 落同 cwd——首连成功（非断线重连）cd 一次即消费，
-          // 避免用户之后手动重连时被 cd 回旧目录
-          const p = tab?.panes[id];
-          // shell 集成：每次连上（含重连，新 shell 进程）都注入 OSC 7 钩子；
-          // 先于 initialCwd 的 cd，使 cd 后 cwd 即刻上报
-          // 本地会话是 Windows shell（cmd/PowerShell），POSIX 钩子与 cd 注入都会污染输入——整段跳过
-          if (tab && p && !targetHasCommand(tab.target) && !isLocalTarget(tab.target))
-            injectOsc7(p.session);
-          if (p?.initialCwd && !ev.reconnected && tab && !isLocalTarget(tab.target)) {
-            const cwd = p.initialCwd;
-            set((s) => ({
-              tabs: s.tabs.map((t) =>
-                t.id === tabId
-                  ? { ...t, panes: { ...t.panes, [id]: { ...t.panes[id], initialCwd: undefined } } }
-                  : t,
-              ),
-            }));
-            p.session.write(`cd ${shellQuote(cwd)}\n`);
-          }
+          // 连接成功（含重连）不向远程 shell 注入任何字节——批次六的 stty/OSC 7 钩子
+          // 与分屏 cd 已移除：密码过期强制改密等登录交互会被注入污染成死循环
         }
       }
     };
@@ -751,11 +714,9 @@ export const useAppStore = create<AppStore>((set, get) => {
       const { tabs, activeId } = get();
       const tab = tabs.find((t) => t.id === activeId);
       if (!tab) return;
-      const src = tab.panes[tab.activePaneId];
       const pane = makePane(tab.id);
-      // 6b：新 pane 复用 tab.target（TerminalView 以同一 target attach = 同服务器新通道）；
-      // 源 pane cwd 已知且目标无自定义命令（command 会取代登录 shell）时作为初始目录
-      if (src?.session.cwd && !targetHasCommand(tab.target)) pane.initialCwd = src.session.cwd;
+      // 6b：新 pane 复用 tab.target（TerminalView 以同一 target attach = 同服务器新通道）。
+      // 不再注入 cd 继承源 pane cwd（注入移除，见 makePane 内说明）
       set((s) => ({
         tabs: s.tabs.map((t) =>
           t.id === tab.id
