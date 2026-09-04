@@ -125,6 +125,8 @@ export const zhChrome = {
   'chrome.menuFavorite': '添加收藏',
   'chrome.menuUnfavorite': '取消收藏',
   'chrome.menuDelete': '删除',
+  'chrome.menuMoveTo': '移动到分组',
+  'chrome.menuMoveToBatch': '移动到分组（{count}）',
   'chrome.menuFavoriteBatch': '添加收藏（{count}）',
   'chrome.menuDeleteBatch': '删除（{count}）…',
   'chrome.menuNewSubgroup': '新建子分组…',

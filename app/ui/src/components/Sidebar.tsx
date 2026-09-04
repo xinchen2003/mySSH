@@ -70,8 +70,6 @@ export function Sidebar() {
   const [batchDel, setBatchDel] = useState<SessionRecord[] | null>(null);
   /** 虚拟分组视图 */
   const [virt, setVirt] = useState<'favorites' | null>(null);
-  /** 拖拽悬停目标（分组路径；'' = 根/未分组） */
-  const [dropTarget, setDropTarget] = useState<string | null>(null);
 
   useEffect(() => {
     void load();
@@ -341,6 +339,20 @@ export function Sidebar() {
 
   const sessionMenu = (rec: SessionRecord): MenuItem[] => {
     const fav = favorites.has(rec.id);
+    const moveChildren: MenuItem[] = [
+      {
+        label: t('chrome.ungrouped'),
+        icon: '⇢',
+        disabled: rec.groupPath === '',
+        onSelect: () => void moveSessions([rec.id], ''),
+      },
+      ...collectGroupPaths(tree).map((p): MenuItem => ({
+        label: p,
+        icon: '⇢',
+        disabled: p === rec.groupPath,
+        onSelect: () => void moveSessions([rec.id], p),
+      })),
+    ];
     return [
       { label: t('chrome.menuEdit'), icon: '⚙', onSelect: () => openConnect(rec) },
       {
@@ -352,6 +364,11 @@ export function Sidebar() {
         label: t('chrome.menuDuplicate'),
         icon: '❐',
         onSelect: () => void s().duplicateSession(rec),
+      },
+      {
+        label: t('chrome.menuMoveTo'),
+        icon: '⇢',
+        children: moveChildren,
       },
       {
         label: fav ? t('chrome.menuUnfavorite') : t('chrome.menuFavorite'),
@@ -375,6 +392,22 @@ export function Sidebar() {
       onSelect: () => {
         for (const id of ids) if (!favorites.has(id)) s().toggleFavorite(id);
       },
+    },
+    {
+      label: t('chrome.menuMoveToBatch', { count: ids.length }),
+      icon: '⇢',
+      children: [
+        {
+          label: t('chrome.ungrouped'),
+          icon: '⇢',
+          onSelect: () => void moveSessions(ids, ''),
+        },
+        ...collectGroupPaths(tree).map((p): MenuItem => ({
+          label: p,
+          icon: '⇢',
+          onSelect: () => void moveSessions(ids, p),
+        })),
+      ],
     },
     'separator',
     {
@@ -401,6 +434,25 @@ export function Sidebar() {
       icon: '✎',
       onSelect: () =>
         setPrompt({ mode: 'group-rename', path, input: path.split('/').pop() ?? path }),
+    },
+    {
+      label: t('chrome.menuMoveTo'),
+      icon: '⇢',
+      children: [
+        {
+          label: t('chrome.ungrouped'),
+          icon: '⇢',
+          disabled: !path.includes('/'),
+          onSelect: () => void moveGroupTo(path, ''),
+        },
+        ...collectGroupPaths(tree)
+          .filter((p) => canMoveGroup(path, p ? `${p}/${path.split('/').pop()}` : ''))
+          .map((p): MenuItem => ({
+            label: p,
+            icon: '⇢',
+            onSelect: () => void moveGroupTo(path, p),
+          })),
+      ],
     },
     'separator',
     {
@@ -429,39 +481,6 @@ export function Sidebar() {
     { label: t('chrome.menuRefresh'), icon: '↻', onSelect: () => void load() },
   ];
 
-  // ---------- 拖拽 ----------
-
-  const dragSessions = (e: React.DragEvent, rec: SessionRecord) => {
-    const ids = sel.ids.includes(rec.id) && sel.ids.length > 1 ? sel.ids : [rec.id];
-    e.dataTransfer.setData('application/x-myssh-sessions', JSON.stringify(ids));
-  };
-
-  const dropOnGroup = (e: React.DragEvent, path: string) => {
-    e.preventDefault();
-    // 阻止冒泡到根容器（根有自己的 drop → 移到未分组，会覆盖本目标）
-    e.stopPropagation();
-    setDropTarget(null);
-    const ss = e.dataTransfer.getData('application/x-myssh-sessions');
-    if (ss) {
-      const ids = JSON.parse(ss) as string[];
-      void moveSessions(ids, path);
-      return;
-    }
-    const g = e.dataTransfer.getData('application/x-myssh-group');
-    if (g) void moveGroupTo(g, path);
-  };
-
-  const dropOnRoot = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDropTarget(null);
-    const ss = e.dataTransfer.getData('application/x-myssh-sessions');
-    if (ss) void moveSessions(JSON.parse(ss) as string[], '');
-    else {
-      const g = e.dataTransfer.getData('application/x-myssh-group');
-      if (g) void moveGroupTo(g, '');
-    }
-  };
-
   // ---------- 渲染 ----------
 
   /** §10.4：键盘打开右键菜单（ContextMenu 键或 Shift+F10），位置取行矩形 */
@@ -476,15 +495,6 @@ export function Sidebar() {
         role="option"
         aria-selected={selected}
         tabIndex={0}
-        draggable
-        onDragStart={(e) => dragSessions(e, rec)}
-        onDragOver={(e) => {
-          // 拖到会话行 = 落入该行所在分组；阻止冒泡到根（未分组）处理器
-          e.preventDefault();
-          e.stopPropagation();
-          setDropTarget(rec.groupPath);
-        }}
-        onDrop={(e) => dropOnGroup(e, rec.groupPath)}
         onClick={(e) => clickRow(rec, e)}
         onDoubleClick={() => connect(rec, 'new-tab')}
         onKeyDown={(e) => {
@@ -616,15 +626,6 @@ export function Sidebar() {
       <div
         key={path}
         tabIndex={0}
-        draggable
-        onDragStart={(e) => e.dataTransfer.setData('application/x-myssh-group', path)}
-        onDragOver={(e) => {
-          e.preventDefault();
-          e.stopPropagation(); // 同上：防根容器把悬停目标改写成未分组
-          setDropTarget(path);
-        }}
-        onDragLeave={() => setDropTarget((t) => (t === path ? null : t))}
-        onDrop={(e) => dropOnGroup(e, path)}
         onContextMenu={(e) => {
           e.preventDefault();
           setMenu({ x: e.clientX, y: e.clientY, items: groupMenu(path, count) });
@@ -643,9 +644,7 @@ export function Sidebar() {
             setMenu({ x: r.left + 16, y: r.bottom, items: groupMenu(path, count) });
           }
         }}
-        className={`group flex cursor-pointer select-none items-center rounded px-1 py-0.5 text-xs text-neutral-500 hover:bg-neutral-800 ${
-          dropTarget === path ? 'ring-1 ring-blue-500' : ''
-        }`}
+        className="group flex cursor-pointer select-none items-center rounded px-1 py-0.5 text-xs text-neutral-500 hover:bg-neutral-800"
         style={{ paddingLeft: `${depth * 12 + 4}px` }}
       >
         <button
@@ -760,14 +759,8 @@ export function Sidebar() {
       </div>
 
       <div
-        className={`flex-1 overflow-y-auto px-1 pb-2 ${dropTarget === '' ? 'ring-1 ring-inset ring-blue-500' : ''}`}
+        className="flex-1 overflow-y-auto px-1 pb-2"
         role="listbox"
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDropTarget('');
-        }}
-        onDragLeave={() => setDropTarget((t) => (t === '' ? null : t))}
-        onDrop={dropOnRoot}
         onContextMenu={(e) => {
           if (e.target === e.currentTarget) {
             e.preventDefault();
