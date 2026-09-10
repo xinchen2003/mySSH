@@ -439,6 +439,13 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     anchor: null,
   });
   const [followTerm, setFollowTerm] = useState(true);
+  /** 目录上报（服务器侧 OSC 7 集成）开关状态，带会话归属（渲染时校验，规避
+   *  effect 内同步 setState 的 lint 错误）；null=未查询/查询失败/非本会话 */
+  const [shellReportSt, setShellReportSt] = useState<{ sid: string; enabled: boolean } | null>(
+    null,
+  );
+  /** 切换中防重入 */
+  const shellReportBusy = useRef(false);
   const [prompt, setPrompt] = useState<{
     action: 'mkdir' | 'rename' | 'chmod' | 'move' | 'touch';
     side: Side;
@@ -672,6 +679,43 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     }, 1000);
     return () => clearInterval(timer);
   }, [followTerm, sessionId, tabId]);
+
+  // 目录上报（服务器侧 OSC 7 集成）：状态 = 服务器 rc 文件里有无标记块，换会话重查。
+  // 结果带 sid 归属（shellReport 渲染时校验），无需在 effect 里同步重置。
+  useEffect(() => {
+    if (!sessionId) return;
+    let alive = true;
+    invoke<{ enabled: boolean }>('shell_integration_status', { sessionId })
+      .then((r) => {
+        if (alive) setShellReportSt({ sid: sessionId, enabled: r.enabled });
+      })
+      .catch(() => setShellReportSt(null)); // 查询失败=状态未知（按钮禁用态）
+    return () => {
+      alive = false;
+    };
+  }, [sessionId]);
+
+  /** 本会话的目录上报状态（归属校验后派生） */
+  const shellReport =
+    shellReportSt && shellReportSt.sid === sessionId ? shellReportSt.enabled : null;
+
+  /** 开/关目录上报：写/剥服务器 rc 文件标记块（新终端会话生效，当前终端不受影响） */
+  const toggleShellReport = () => {
+    if (!sessionId || shellReport === null || shellReportBusy.current) return;
+    shellReportBusy.current = true;
+    const target = !shellReport;
+    void (async () => {
+      try {
+        await invoke('shell_integration_set', { sessionId, enable: target });
+        setShellReportSt({ sid: sessionId, enabled: target });
+        notify(t(target ? 'panels.shellReportEnabled' : 'panels.shellReportDisabled'), 'success');
+      } catch (e) {
+        notify(t('panels.shellReportFailed', { error: String(e) }), 'error');
+      } finally {
+        shellReportBusy.current = false;
+      }
+    })();
+  };
 
   // 批次十二：传输达终态自动刷新目标栏（上传→远程栏，下载→本地栏；失败/取消可能留有
   // 残件，一并刷新）。此前上传完列表不动，用户看不到新文件。500ms 防抖合并批量完成；
@@ -1361,6 +1405,17 @@ export function SftpPanel({ tabId }: { tabId: string }) {
           />
           {t('panels.followTerminal')}
         </label>
+        {sessionId && (
+          <button
+            className={toolBtn}
+            disabled={shellReport === null}
+            title={t(shellReport ? 'panels.shellReportTitleOn' : 'panels.shellReportTitleOff')}
+            onClick={toggleShellReport}
+          >
+            {t('panels.shellReport')}
+            {shellReport ? ' ✓' : ''}
+          </button>
+        )}
         <button
           className={toolBtn}
           onClick={() => {

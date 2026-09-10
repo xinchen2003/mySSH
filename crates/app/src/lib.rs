@@ -125,6 +125,8 @@ pub fn run() {
             sftp::sftp_chmod,
             sftp::sftp_touch,
             sftp::sftp_home,
+            sftp::shell_integration_status,
+            sftp::shell_integration_set,
             sftp::local_list,
             sftp::sftp_upload,
             sftp::sftp_download,

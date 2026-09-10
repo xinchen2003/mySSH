@@ -7,10 +7,12 @@
 
 mod client;
 mod error;
+mod shellint;
 mod transfer;
 
 pub use client::{DirEntry, EntryKind, SftpClient};
 pub use error::SftpError;
+pub use shellint::{add_integration, has_integration, remove_integration};
 pub use transfer::{
     rename_candidate, OnExists, ProgressFn, TransferId, TransferInfo, TransferQueue, TransferState,
 };

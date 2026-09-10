@@ -89,6 +89,13 @@ export const zhPanels = {
 
   // SFTP 工具行
   'panels.followTerminal': '跟随终端目录',
+  'panels.shellReport': '目录上报',
+  'panels.shellReportTitleOff':
+    '点击启用：写入 OSC 7 目录上报到服务器 ~/.bashrc（及已有 ~/.zshrc），重连终端后「跟随终端目录」恢复可用',
+  'panels.shellReportTitleOn': '已启用。点击关闭：从服务器 shell 配置移除上报块',
+  'panels.shellReportEnabled': '目录上报已启用：已写入服务器 shell 配置，重连终端后生效',
+  'panels.shellReportDisabled': '目录上报已关闭：已从服务器 shell 配置移除',
+  'panels.shellReportFailed': '目录上报开关失败: {error}',
   'panels.permissions': '权限',
   'panels.delete': '删除',
   'panels.uploadTo': '上传 →',

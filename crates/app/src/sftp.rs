@@ -296,6 +296,16 @@ pub async fn sftp_touch(
 /// 解析远端家目录绝对路径（SFTP 面板初始定位 / 权限失败回退用，批次六）。
 /// 优先 expand-path@openssh.com 扩展（~ → .）；老服务器无此扩展时回退 REALPATH(.)
 /// （SFTP v3 基础协议，均支持），解析 SFTP 会话默认起点即家目录的绝对路径。
+async fn resolve_home_abs(client: &SftpClient) -> Result<String, String> {
+    if let Some(p) = client.expand_path("~").await.map_err(|e| e.to_string())? {
+        return Ok(p);
+    }
+    if let Some(p) = client.expand_path(".").await.map_err(|e| e.to_string())? {
+        return Ok(p);
+    }
+    client.canonicalize(".").await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn sftp_home(
     session_id: String,
@@ -303,26 +313,88 @@ pub async fn sftp_home(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<String, String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    if let Some(p) = ctx
-        .client
-        .expand_path("~")
-        .await
-        .map_err(|e| e.to_string())?
-    {
-        return Ok(p);
+    resolve_home_abs(&ctx.client).await
+}
+
+// ---------- Shell 集成（OSC 7 目录上报） ----------
+// SFTP 面板「目录上报」开关的后端：往 ~/.bashrc / 已有的 ~/.zshrc 追加或剥离
+// 标记块（core_sftp::shellint 纯函数）。走 SFTP 通道写文件，不触碰 shell
+// 输入流——与「不向远程 shell 注入字节」的禁令不冲突。标记块即状态，不落库。
+
+/// 读 rc 小文件；不存在 → None；存在但读失败 → 报错（绝不按空内容处理，
+/// 否则 enable 会用纯集成块覆盖掉读不出的原文件）。上限 1 MiB 防异常。
+async fn read_rc_file(client: &SftpClient, path: &str) -> Result<Option<String>, String> {
+    use tokio::io::AsyncReadExt;
+    if client.lstat(path).await.is_err() {
+        return Ok(None);
     }
-    if let Some(p) = ctx
-        .client
-        .expand_path(".")
+    let f = client.open_read(path).await.map_err(|e| e.to_string())?;
+    let mut buf = Vec::new();
+    f.take(1024 * 1024)
+        .read_to_end(&mut buf)
         .await
-        .map_err(|e| e.to_string())?
-    {
-        return Ok(p);
+        .map_err(|e| e.to_string())?;
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
+/// 集成开关状态：~/.bashrc 或 ~/.zshrc 任一含标记块即视为已启用。
+#[tauri::command]
+pub async fn shell_integration_status(
+    session_id: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    let home = resolve_home_abs(&ctx.client).await?;
+    let bash = read_rc_file(&ctx.client, &format!("{home}/.bashrc")).await?;
+    let zsh = read_rc_file(&ctx.client, &format!("{home}/.zshrc")).await?;
+    let enabled = [&bash, &zsh]
+        .into_iter()
+        .flatten()
+        .any(|c| core_sftp::has_integration(c));
+    Ok(json!({ "enabled": enabled }))
+}
+
+/// 开/关目录上报：~/.bashrc 总是目标（不存在则创建）；~/.zshrc 仅当服务器上
+/// 已存在才碰（不给 zsh 用户塞 bash 文件，也不给 bash 用户新建 zshrc）。
+#[tauri::command]
+pub async fn shell_integration_set(
+    session_id: String,
+    enable: bool,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    let home = resolve_home_abs(&ctx.client).await?;
+    let mut targets = vec![format!("{home}/.bashrc")];
+    let zshrc = format!("{home}/.zshrc");
+    if ctx.client.lstat(&zshrc).await.is_ok() {
+        targets.push(zshrc);
     }
-    ctx.client
-        .canonicalize(".")
-        .await
-        .map_err(|e| e.to_string())
+    let mut touched: Vec<String> = Vec::new();
+    for path in &targets {
+        let content = read_rc_file(&ctx.client, path).await?.unwrap_or_default();
+        let next = if enable {
+            core_sftp::add_integration(&content)
+        } else {
+            core_sftp::remove_integration(&content)
+        };
+        if next != content {
+            ctx.client
+                .overwrite(path, next.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            touched.push(path.clone());
+        }
+    }
+    audit(
+        &sessions.store,
+        &session_id,
+        "shell_integration_set",
+        &format!("enable={enable} touched={touched:?}"),
+    )
+    .await;
+    Ok(json!({ "enabled": enable, "touched": touched }))
 }
 
 /// 本地目录列表（"" 或 "/" → Windows 盘符枚举）
