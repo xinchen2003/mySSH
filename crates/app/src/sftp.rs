@@ -44,6 +44,10 @@ impl SftpCtx {
     pub(crate) fn conn(&self) -> &core_ssh::SshConnection {
         &self._conn
     }
+    /// MCP SFTP 工具复用（与 UI 共享 Bulk 连接池，避免 agent 高频小操作反复握手）
+    pub(crate) fn client(&self) -> &Arc<SftpClient> {
+        &self.client
+    }
 }
 
 impl SftpManagerState {
@@ -151,7 +155,7 @@ pub(crate) async fn ensure_ctx(
 
 // ---------- 浏览与元操作 ----------
 
-fn entry_to_json(e: &DirEntry) -> Value {
+pub(crate) fn entry_to_json(e: &DirEntry) -> Value {
     json!({
         "name": e.name,
         "path": e.path,
@@ -296,7 +300,7 @@ pub async fn sftp_touch(
 /// 解析远端家目录绝对路径（SFTP 面板初始定位 / 权限失败回退用，批次六）。
 /// 优先 expand-path@openssh.com 扩展（~ → .）；老服务器无此扩展时回退 REALPATH(.)
 /// （SFTP v3 基础协议，均支持），解析 SFTP 会话默认起点即家目录的绝对路径。
-async fn resolve_home_abs(client: &SftpClient) -> Result<String, String> {
+pub(crate) async fn resolve_home_abs(client: &SftpClient) -> Result<String, String> {
     if let Some(p) = client.expand_path("~").await.map_err(|e| e.to_string())? {
         return Ok(p);
     }

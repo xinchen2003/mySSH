@@ -3,7 +3,9 @@
 //! 传输为 MCP Streamable HTTP（2025-03-26 子集）：单端点 POST /mcp，
 //! 每次请求独立 JSON 响应（不开 SSE 流）；仅绑定 127.0.0.1。
 //! 工具面：list_sessions（列会话档案，不含凭据）、ssh_exec（一次性 Bulk
-//! 连接跑命令，收集 stdout/stderr/exit code）。鉴权为 Bearer token
+//! 连接跑命令，收集 stdout/stderr/exit code）、sftp_*（home/list/stat/read/
+//! write/mkdir/delete/rename/chmod，与 UI 共享 SFTP Bulk 连接池，写操作落
+//! audit 且 actor=mcp）。鉴权为 Bearer token
 //!（设置键 mcp.token，空 = 不鉴权；首次启用自动生成随机 token）。
 //! 生命周期由 lib.rs 装配：setup 时按 mcp.enabled/mcp.port/mcp.token 启动，
 //! mcp_restart 命令供设置变更后重载。
@@ -154,12 +156,14 @@ impl McpManager {
     pub async fn start(
         self: &Arc<Self>,
         store: Arc<Store>,
+        sftp: Arc<crate::sftp::SftpManagerState>,
         port: u16,
         token: String,
     ) -> Result<(), String> {
         self.stop().await;
         let state = Arc::new(ServerState {
             store,
+            sftp,
             token: token.clone(),
         });
         let router = Router::new()
@@ -231,8 +235,11 @@ impl McpManager {
     }
 }
 
-/// setup 钩子：按当前设置启动（enabled 才动；绑定失败仅日志，不影响应用）
-pub async fn boot_from_settings(mgr: Arc<McpManager>, store: Arc<Store>) {
+pub async fn boot_from_settings(
+    mgr: Arc<McpManager>,
+    store: Arc<Store>,
+    sftp: Arc<crate::sftp::SftpManagerState>,
+) {
     let cfg = match read_mcp_config(&store).await {
         Ok(c) => c,
         Err(e) => {
@@ -244,15 +251,15 @@ pub async fn boot_from_settings(mgr: Arc<McpManager>, store: Arc<Store>) {
         return;
     }
     let token = ensure_token(&store, cfg.token).await;
-    if let Err(e) = mgr.start(store, cfg.port, token).await {
+    if let Err(e) = mgr.start(store, sftp, cfg.port, token).await {
         tracing::error!(error = %e, "MCP 服务启动失败");
     }
 }
 
-/// mcp_restart 命令实现：停旧实例，按当前 settings 重启（enabled=false 则仅停）
 pub async fn restart_from_settings(
     mgr: &Arc<McpManager>,
     store: Arc<Store>,
+    sftp: Arc<crate::sftp::SftpManagerState>,
 ) -> Result<Value, String> {
     mgr.stop().await;
     let cfg = read_mcp_config(&store).await?;
@@ -260,7 +267,7 @@ pub async fn restart_from_settings(
         let token = ensure_token(&store, cfg.token).await;
         // 绑定失败直接回报前端，同时把 token 记入状态便于排查
         mgr.inner.lock().token = token.clone();
-        mgr.start(store, cfg.port, token).await?;
+        mgr.start(store, sftp, cfg.port, token).await?;
     }
     Ok(mgr.status())
 }
@@ -274,13 +281,16 @@ pub async fn mcp_status(state: tauri::State<'_, Arc<McpManager>>) -> Result<Valu
 pub async fn mcp_restart(
     state: tauri::State<'_, Arc<McpManager>>,
     sessions: tauri::State<'_, Arc<crate::sessions::SessionManagerState>>,
+    sftp: tauri::State<'_, Arc<crate::sftp::SftpManagerState>>,
 ) -> Result<Value, String> {
-    restart_from_settings(&state, sessions.store.clone()).await
+    restart_from_settings(&state, sessions.store.clone(), sftp.inner().clone()).await
 }
 
 /// HTTP 服务共享状态
 struct ServerState {
     store: Arc<Store>,
+    /// SFTP 连接池（与 UI 共享；agent 高频小操作复用 Bulk 连接，不反复握手）
+    sftp: Arc<crate::sftp::SftpManagerState>,
     token: String,
 }
 
@@ -458,6 +468,125 @@ fn tools_list() -> Value {
                     "required": ["session_id", "command"],
                     "additionalProperties": false
                 }
+            },
+            {
+                "name": "sftp_home",
+                "description": "解析会话远端家目录绝对路径",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "session_id": { "type": "string" } },
+                    "required": ["session_id"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "sftp_list",
+                "description": "列出远端目录内容（name/path/kind/size/mtime/permissions）。SFTP 操作与 UI 共享 Bulk 连接池。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "path": { "type": "string", "description": "远端目录绝对路径" }
+                    },
+                    "required": ["session_id", "path"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "sftp_stat",
+                "description": "远端路径元数据（不跟随软链接）",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "path": { "type": "string" }
+                    },
+                    "required": ["session_id", "path"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "sftp_read",
+                "description": "读远端文本文件（默认上限 256KiB，max_bytes 最大 1MiB；超出置 truncated=true）",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "path": { "type": "string" },
+                        "max_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576, "default": 262144 }
+                    },
+                    "required": ["session_id", "path"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "sftp_write",
+                "description": "覆盖写远端文件（不存在则创建；内容上限 1MiB）。注意：会整体替换文件内容。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "path": { "type": "string" },
+                        "content": { "type": "string", "description": "完整新内容（UTF-8）" }
+                    },
+                    "required": ["session_id", "path", "content"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "sftp_mkdir",
+                "description": "远端新建目录",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "path": { "type": "string" }
+                    },
+                    "required": ["session_id", "path"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "sftp_delete",
+                "description": "删除远端文件/目录；目录需 recursive=true 才递归删除",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "path": { "type": "string" },
+                        "recursive": { "type": "boolean", "default": false }
+                    },
+                    "required": ["session_id", "path"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "sftp_rename",
+                "description": "远端移动/重命名",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "from": { "type": "string" },
+                        "to": { "type": "string" }
+                    },
+                    "required": ["session_id", "from", "to"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "sftp_chmod",
+                "description": "改远端权限，mode 为八进制字符串（如 \"755\"）",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "path": { "type": "string" },
+                        "mode": { "type": "string", "description": "八进制权限，如 755 / 644" }
+                    },
+                    "required": ["session_id", "path", "mode"],
+                    "additionalProperties": false
+                }
             }
         ]
     })
@@ -482,6 +611,11 @@ async fn call_tool(st: &ServerState, name: &str, args: &Value) -> Value {
             Err(e) => err_content(e),
         },
         "ssh_exec" => match ssh_exec_tool(&st.store, args).await {
+            Ok(text) => ok_content(text),
+            Err(e) => err_content(e),
+        },
+        // SFTP 工具族：30s 超时兜底，错误走 isError 内容
+        n if n.starts_with("sftp_") => match sftp_tool(st, n, args).await {
             Ok(text) => ok_content(text),
             Err(e) => err_content(e),
         },
@@ -632,5 +766,211 @@ fn push_capped(buf: &mut Vec<u8>, data: &[u8], truncated: &mut bool) {
     } else {
         buf.extend_from_slice(&data[..room]);
         *truncated = true;
+    }
+}
+
+// ---------- SFTP 工具族 ----------
+/// 单操作超时（浏览/元操作/小文件读写；大传输走 UI 传输队列，不在 MCP 面内）
+const SFTP_OP_TIMEOUT: Duration = Duration::from_secs(30);
+/// sftp_read 默认/最大返回字节；sftp_write 内容上限
+const SFTP_READ_DEFAULT_CAP: u64 = 256 * 1024;
+const SFTP_IO_MAX: u64 = 1024 * 1024;
+
+/// 解析 session_id 并取/建 SFTP 上下文（ensure_ctx 内含 KI 拒绝与连接复用）
+async fn sftp_ctx(
+    st: &ServerState,
+    args: &Value,
+    tool: &str,
+) -> Result<(String, Arc<crate::sftp::SftpCtx>), String> {
+    let session_id = args
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("{tool} 缺少参数 session_id"))?;
+    let ctx = crate::sftp::ensure_ctx(&st.sftp, &st.store, session_id).await?;
+    Ok((session_id.to_string(), ctx))
+}
+
+fn req_str<'a>(args: &'a Value, key: &str, tool: &str) -> Result<&'a str, String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("{tool} 缺少参数 {key}"))
+}
+
+/// MCP 侧写操作审计（Actor::Mcp，与 UI 的 Actor::Gui 区分来源）
+async fn mcp_audit(st: &ServerState, session_id: &str, action: &str, detail: &Value) {
+    let _ = st
+        .store
+        .audit()
+        .append(core_store::Actor::Mcp, Some(session_id), action, detail)
+        .await;
+}
+
+/// SFTP 工具分发（外层 call_tool 已按 sftp_ 前缀过滤；此处再校验具体名）
+async fn sftp_tool(st: &ServerState, name: &str, args: &Value) -> Result<String, String> {
+    let run = sftp_tool_inner(st, name, args);
+    match tokio::time::timeout(SFTP_OP_TIMEOUT, run).await {
+        Ok(r) => r,
+        Err(_) => Err(format!("SFTP 操作超时（{}s）", SFTP_OP_TIMEOUT.as_secs())),
+    }
+}
+
+async fn sftp_tool_inner(st: &ServerState, name: &str, args: &Value) -> Result<String, String> {
+    match name {
+        "sftp_home" => {
+            let (_sid, ctx) = sftp_ctx(st, args, name).await?;
+            let home = crate::sftp::resolve_home_abs(ctx.client()).await?;
+            Ok(json!({ "path": home }).to_string())
+        }
+        "sftp_list" => {
+            let (_sid, ctx) = sftp_ctx(st, args, name).await?;
+            let path = req_str(args, "path", name)?;
+            let entries = ctx.client().list(path).await.map_err(|e| e.to_string())?;
+            let items: Vec<Value> = entries.iter().map(crate::sftp::entry_to_json).collect();
+            Ok(json!({ "path": path, "entries": items }).to_string())
+        }
+        "sftp_stat" => {
+            let (_sid, ctx) = sftp_ctx(st, args, name).await?;
+            let path = req_str(args, "path", name)?;
+            let e = ctx.client().lstat(path).await.map_err(|e| e.to_string())?;
+            Ok(crate::sftp::entry_to_json(&e).to_string())
+        }
+        "sftp_read" => {
+            use tokio::io::AsyncReadExt;
+            let (_sid, ctx) = sftp_ctx(st, args, name).await?;
+            let path = req_str(args, "path", name)?;
+            let max = args
+                .get("max_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(SFTP_READ_DEFAULT_CAP)
+                .clamp(1, SFTP_IO_MAX);
+            let f = ctx
+                .client()
+                .open_read(path)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut buf = Vec::new();
+            f.take(max + 1)
+                .read_to_end(&mut buf)
+                .await
+                .map_err(|e| e.to_string())?;
+            let truncated = buf.len() as u64 > max;
+            buf.truncate(max as usize);
+            Ok(json!({
+                "path": path,
+                "bytes": buf.len(),
+                "truncated": truncated,
+                "content": String::from_utf8_lossy(&buf),
+            })
+            .to_string())
+        }
+        "sftp_write" => {
+            let (sid, ctx) = sftp_ctx(st, args, name).await?;
+            let path = req_str(args, "path", name)?;
+            let content = args
+                .get("content")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "sftp_write 缺少参数 content".to_string())?;
+            if content.len() as u64 > SFTP_IO_MAX {
+                return Err(format!(
+                    "content 超过上限 {} 字节（大文件请用 UI 传输队列）",
+                    SFTP_IO_MAX
+                ));
+            }
+            ctx.client()
+                .overwrite(path, content.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            mcp_audit(
+                st,
+                &sid,
+                "mcp_sftp_write",
+                &json!({ "path": path, "bytes": content.len() }),
+            )
+            .await;
+            Ok(json!({ "path": path, "bytes": content.len() }).to_string())
+        }
+        "sftp_mkdir" => {
+            let (sid, ctx) = sftp_ctx(st, args, name).await?;
+            let path = req_str(args, "path", name)?;
+            ctx.client().mkdir(path).await.map_err(|e| e.to_string())?;
+            mcp_audit(st, &sid, "mcp_sftp_mkdir", &json!({ "path": path })).await;
+            Ok(json!({ "ok": true, "path": path }).to_string())
+        }
+        "sftp_delete" => {
+            let (sid, ctx) = sftp_ctx(st, args, name).await?;
+            let path = req_str(args, "path", name)?;
+            let recursive = args
+                .get("recursive")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let meta = ctx.client().lstat(path).await.map_err(|e| e.to_string())?;
+            match meta.kind {
+                core_sftp::EntryKind::Dir => {
+                    if recursive {
+                        ctx.client()
+                            .remove_recursive(path)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    } else {
+                        ctx.client()
+                            .remove_dir(path)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                _ => ctx
+                    .client()
+                    .remove_file(path)
+                    .await
+                    .map_err(|e| e.to_string())?,
+            }
+            mcp_audit(
+                st,
+                &sid,
+                "mcp_sftp_delete",
+                &json!({ "path": path, "recursive": recursive }),
+            )
+            .await;
+            Ok(json!({ "ok": true, "path": path }).to_string())
+        }
+        "sftp_rename" => {
+            let (sid, ctx) = sftp_ctx(st, args, name).await?;
+            let from = req_str(args, "from", name)?;
+            let to = req_str(args, "to", name)?;
+            ctx.client()
+                .rename(from, to)
+                .await
+                .map_err(|e| e.to_string())?;
+            mcp_audit(
+                st,
+                &sid,
+                "mcp_sftp_rename",
+                &json!({ "from": from, "to": to }),
+            )
+            .await;
+            Ok(json!({ "ok": true, "from": from, "to": to }).to_string())
+        }
+        "sftp_chmod" => {
+            let (sid, ctx) = sftp_ctx(st, args, name).await?;
+            let path = req_str(args, "path", name)?;
+            let mode_raw = req_str(args, "mode", name)?;
+            let mode = u32::from_str_radix(mode_raw, 8)
+                .map_err(|_| format!("mode 需为八进制字符串（如 755），收到: {mode_raw}"))?;
+            ctx.client()
+                .chmod(path, mode)
+                .await
+                .map_err(|e| e.to_string())?;
+            mcp_audit(
+                st,
+                &sid,
+                "mcp_sftp_chmod",
+                &json!({ "path": path, "mode": mode_raw }),
+            )
+            .await;
+            Ok(json!({ "ok": true, "path": path, "mode": mode_raw }).to_string())
+        }
+        other => Err(format!("未知工具：{other}")),
     }
 }

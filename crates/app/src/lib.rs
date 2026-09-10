@@ -59,7 +59,7 @@ pub fn run() {
         .manage(Arc::new(TerminalManager::default()))
         .manage(session_state.clone())
         .manage(tunnel_mgr_state.clone())
-        .manage(sftp_state)
+        .manage(sftp_state.clone())
         .manage(monitor_state)
         .manage(mcp_manager.clone())
         .setup(move |app| {
@@ -71,8 +71,9 @@ pub fn run() {
             });
             // MCP 服务端：按 mcp.enabled/port/token 设置启动（绑定失败仅日志）
             let store = session_state.store.clone();
+            let sftp = sftp_state.clone();
             tauri::async_runtime::spawn(async move {
-                crate::mcp::boot_from_settings(mcp_manager, store).await;
+                crate::mcp::boot_from_settings(mcp_manager, store, sftp).await;
             });
             let _ = app;
             Ok(())
