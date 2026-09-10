@@ -49,6 +49,9 @@ export function TunnelEditor({
   const stopTunnel = useAppStore((s) => s.stopTunnel);
   const notify = useAppStore((s) => s.notify);
   const t = useT();
+  const sessions = useAppStore((s) => s.sessions);
+  /** 隧道是 SSH 能力：绑定候选排除本地会话 */
+  const sshSessions = sessions.filter((x) => x.kind !== 'local');
 
   const [draft, setDraft] = useState<TunnelDraft>(() =>
     initial
@@ -160,6 +163,24 @@ export function TunnelEditor({
       <h2 className="mb-3 text-base font-semibold text-neutral-100">
         {initial ? t('dialogs.editTunnel') : t('dialogs.newTunnel')}
       </h2>
+      {/* 绑定服务器：始终可见可选——隧道面板新建时默认绑第一台 SSH 服务器，
+          不显示会造成静默绑错（批次二十四修复） */}
+      <label className="mb-2 block">
+        <span className="mb-0.5 block text-xs text-neutral-400">{t('dialogs.tunnelServer')}</span>
+        <select
+          className={input}
+          value={draft.sessionId}
+          onChange={(e) => patch({ sessionId: e.target.value })}
+          aria-label={t('dialogs.tunnelServer')}
+        >
+          {sshSessions.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.groupPath ? `${s.groupPath} / ${s.name}` : s.name}（{s.username}@{s.host}:{s.port}
+              ）
+            </option>
+          ))}
+        </select>
+      </label>
 
       <label className="mb-2 block">
         <span className="mb-0.5 block text-xs text-neutral-400">{t('dialogs.templateLabel')}</span>

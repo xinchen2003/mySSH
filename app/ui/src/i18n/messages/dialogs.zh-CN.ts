@@ -175,6 +175,7 @@ export const zhDialogs = {
   'dialogs.tunnelKindRemote': '远程 -R',
   'dialogs.tunnelKindDynamic': '动态 -D',
   'dialogs.bindAddress': '绑定地址',
+  'dialogs.tunnelServer': '绑定服务器',
   'dialogs.bindPort': '绑定端口',
   'dialogs.wildcardWarning':
     '监听 0.0.0.0/:: 将允许局域网内其他机器连接此隧道，请确认网络环境可信。',

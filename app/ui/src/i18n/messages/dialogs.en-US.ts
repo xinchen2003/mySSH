@@ -186,6 +186,7 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   'dialogs.tunnelKindRemote': 'Remote -R',
   'dialogs.tunnelKindDynamic': 'Dynamic -D',
   'dialogs.bindAddress': 'Bind Address',
+  'dialogs.tunnelServer': 'Bound Server',
   'dialogs.bindPort': 'Bind Port',
   'dialogs.wildcardWarning':
     'Listening on 0.0.0.0/:: allows other machines on the LAN to connect to this tunnel. Make sure the network environment is trusted.',
