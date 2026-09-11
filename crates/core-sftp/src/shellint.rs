@@ -8,11 +8,18 @@
 pub const MARK_BEGIN: &str = "# >>> myssh osc7 >>>";
 pub const MARK_END: &str = "# <<< myssh osc7 <<<";
 
-/// 追加的集成块。bash/zsh 双判定，写进哪个 rc 文件都安全。
-/// PROMPT_COMMAND 追加而非覆盖，避免顶掉发行版既有钩子（如 history -a）。
+/// 追加到 rc 文件的集成块：只留一行 source 守卫，脚本本体在 ~/.myssh/osc7.sh。
+/// 瘦身后用户在 rc 文件/终端里看到的都只有一行，不再是整段脚本。
 pub const BLOCK: &str = "\
 # >>> myssh osc7 >>>
 # mySSH 终端目录上报（SFTP「跟随终端目录」数据源）；移除请用 mySSH SFTP 面板开关
+[ -f \"$HOME/.myssh/osc7.sh\" ] && . \"$HOME/.myssh/osc7.sh\"
+# <<< myssh osc7 <<<";
+
+/// 脚本本体（SFTP 写入 ~/.myssh/osc7.sh；rc 块与终端激活行都只是 source 它）。
+/// bash/zsh 双判定。PROMPT_COMMAND 追加而非覆盖，避免顶掉发行版既有钩子。
+pub const SCRIPT: &str = "\
+# mySSH OSC 7 目录上报钩子（由 mySSH 管理；删本文件即停用）
 if [ -n \"$BASH_VERSION\" ]; then
   __myssh_osc7() { printf '\\033]7;file://%s%s\\007' \"$HOSTNAME\" \"$PWD\"; }
   case \";${PROMPT_COMMAND:-};\" in
@@ -22,8 +29,12 @@ if [ -n \"$BASH_VERSION\" ]; then
 elif [ -n \"$ZSH_VERSION\" ]; then
   autoload -Uz add-zsh-hook
   __myssh_osc7() { printf '\\033]7;file://%s%s\\007' \"$HOST\" \"$PWD\"; }
+  add-zsh-hook precmd __myssh_osc7
 fi
-# <<< myssh osc7 <<<";
+";
+
+/// 脚本在远端的存放路径（相对家目录）
+pub const SCRIPT_REL: &str = ".myssh/osc7.sh";
 
 /// 内容中是否已有集成块
 pub fn has_integration(content: &str) -> bool {
@@ -88,7 +99,7 @@ mod tests {
     fn add_to_empty_creates_block() {
         let out = add_integration("");
         assert!(has_integration(&out));
-        assert!(out.contains("PROMPT_COMMAND"));
+        assert!(out.contains(".myssh/osc7.sh"));
         assert!(out.ends_with('\n'));
     }
 
@@ -140,15 +151,24 @@ mod tests {
     }
 
     #[test]
-    fn block_function_defs_close_with_semicolon() {
+    fn script_function_defs_close_with_semicolon() {
         // 回归护栏：bash/zsh 的 { cmd } 要求 } 前有 ; 或换行——54 实测曾因
         // zsh 分支函数缺 ; 导致整个 .bashrc 语法错误、PROMPT_COMMAND 未挂上。
-        for line in BLOCK.lines() {
+        for line in SCRIPT.lines() {
             if line.contains("() {") {
                 assert!(line.trim_end().ends_with("; }"), "坏函数定义行: {line}");
             }
         }
+    }
+
+    #[test]
+    fn block_is_single_source_line() {
+        // 瘦身契约：rc 块只剩 source 守卫一行有效内容，脚本本体在 SCRIPT
         assert!(BLOCK.starts_with(MARK_BEGIN));
         assert!(BLOCK.trim_end().ends_with(MARK_END));
+        assert!(BLOCK.contains(".myssh/osc7.sh"));
+        assert!(!BLOCK.contains("() {"), "rc 块不该再内联函数体");
+        assert!(SCRIPT.contains("PROMPT_COMMAND"));
+        assert!(SCRIPT.contains("add-zsh-hook"));
     }
 }

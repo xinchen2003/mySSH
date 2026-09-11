@@ -659,16 +659,14 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  /** 往指定标签的活动 pane 写一行 OSC 7 激活命令：等价用户在 shell 里手敲，
-   *  钩子立即生效且屏幕可见（注入例外：仅由「跟随终端目录」勾选显式触发）。
-   *  单行 if/then/fi，bash 与 zsh 通用；出错只在终端里留一行报错，无副作用。 */
+  /** 往指定标签的活动 pane 写一行激活命令：脚本本体已在服务器 ~/.myssh/osc7.sh，
+   *  这里只 source 它——终端上只显示一行短命令，前导空格使其多数情况不入 history。
+   *  （注入例外：仅由「跟随终端目录」勾选显式触发；出错只留一行 shell 报错） */
   function activateOsc7InCurrentShell(tabId: string) {
     const t = useAppStore.getState().tabs.find((x) => x.id === tabId);
     const p = t ? t.panes[t.activePaneId] : null;
     if (!p || p.state !== 'connected') return;
-    p.session.write(
-      'if [ -n "$BASH_VERSION" ]; then __myssh_osc7() { printf \'\\033]7;file://%s%s\\007\' "$HOSTNAME" "$PWD"; }; PROMPT_COMMAND="__myssh_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"; elif [ -n "$ZSH_VERSION" ]; then autoload -Uz add-zsh-hook; __myssh_osc7() { printf \'\\033]7;file://%s%s\\007\' "$HOST" "$PWD"; }; add-zsh-hook precmd __myssh_osc7; fi\n',
-    );
+    p.session.write(' . "$HOME/.myssh/osc7.sh"\n');
   }
 
   // 终端 cwd 跟随（OSC 7；非用户导航 → 不入历史栈）。

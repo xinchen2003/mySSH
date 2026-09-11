@@ -391,6 +391,28 @@ pub async fn shell_integration_set(
             touched.push(path.clone());
         }
     }
+    // 脚本本体 ~/.myssh/osc7.sh：enable 写入（目录不在则建），disable 删除。
+    // rc 块与终端激活行都只是 source 它——用户在 rc/终端里看到的只有一行。
+    let script = format!("{home}/{}", core_sftp::SCRIPT_REL);
+    if enable {
+        let dir = format!("{home}/.myssh");
+        if ctx.client.lstat(&dir).await.is_err() {
+            ctx.client.mkdir(&dir).await.map_err(|e| e.to_string())?;
+        }
+        ctx.client
+            .overwrite(&script, core_sftp::SCRIPT.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        touched.push(script);
+    } else if ctx.client.lstat(&script).await.is_ok() {
+        ctx.client
+            .remove_file(&script)
+            .await
+            .map_err(|e| e.to_string())?;
+        // 目录空则顺带收掉；非空（用户自己放了东西）remove_dir 会失败，忽略
+        let _ = ctx.client.remove_dir(&format!("{home}/.myssh")).await;
+        touched.push(script);
+    }
     audit(
         &sessions.store,
         &session_id,
