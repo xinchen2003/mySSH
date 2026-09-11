@@ -659,6 +659,18 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  /** 往指定标签的活动 pane 写一行 OSC 7 激活命令：等价用户在 shell 里手敲，
+   *  钩子立即生效且屏幕可见（注入例外：仅由「跟随终端目录」勾选显式触发）。
+   *  单行 if/then/fi，bash 与 zsh 通用；出错只在终端里留一行报错，无副作用。 */
+  function activateOsc7InCurrentShell(tabId: string) {
+    const t = useAppStore.getState().tabs.find((x) => x.id === tabId);
+    const p = t ? t.panes[t.activePaneId] : null;
+    if (!p || p.state !== 'connected') return;
+    p.session.write(
+      'if [ -n "$BASH_VERSION" ]; then __myssh_osc7() { printf \'\\033]7;file://%s%s\\007\' "$HOSTNAME" "$PWD"; }; PROMPT_COMMAND="__myssh_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"; elif [ -n "$ZSH_VERSION" ]; then autoload -Uz add-zsh-hook; __myssh_osc7() { printf \'\\033]7;file://%s%s\\007\' "$HOST" "$PWD"; }; add-zsh-hook precmd __myssh_osc7; fi\n',
+    );
+  }
+
   // 终端 cwd 跟随（OSC 7；非用户导航 → 不入历史栈）。
   // 批次六 10 修复：不再捕获渲染期的 pane/remotePath（pane 对象身份不随 cwd 变化，
   // tab 切换后引用过期），改为 tick 内从 store 按 tabId 取最新 pane，followTarget 去重。
@@ -700,7 +712,9 @@ export function SftpPanel({ tabId }: { tabId: string }) {
     shellReportSt && shellReportSt.sid === sessionId ? shellReportSt.enabled : null;
 
   /** 「跟随终端目录」勾选 = 目录上报总开关：
-   *  勾选 → 确保服务器 rc 文件有 OSC 7 上报块；本次新写入则自动重连终端使钩子立即生效
+   *  勾选 → 确保服务器 rc 文件有 OSC 7 上报块，并往当前终端写入一行激活命令
+   *  （等价用户手敲 export，屏幕上可见；注入例外，用户显式勾选触发）使钩子
+   *  立即生效——不重连，不打断当前 shell 的工作目录与运行中进程。
    *  取消 → 停止跟随并剥除服务器配置块（幂等，未启用时不发请求） */
   const onFollowChange = (on: boolean) => {
     setFollowTerm(on);
@@ -709,16 +723,13 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       shellReportBusy.current = true;
       void (async () => {
         try {
-          const res = await invoke<{ touched: string[] }>('shell_integration_set', {
+          await invoke<{ touched: string[] }>('shell_integration_set', {
             sessionId,
             enable: true,
           });
           setShellReportSt({ sid: sessionId, enabled: true });
-          if (res.touched.length > 0) {
-            // 新写入的配置只对新 shell 生效：自动重连当前标签，免手动操作
-            notify(t('panels.shellReportEnabledReconnect'), 'success');
-            useAppStore.getState().reconnectTab(tabId);
-          }
+          activateOsc7InCurrentShell(tabId);
+          notify(t('panels.shellReportEnabledLive'), 'success');
         } catch (e) {
           setFollowTerm(false); // 写配置失败回滚勾选态
           notify(t('panels.shellReportFailed', { error: String(e) }), 'error');
