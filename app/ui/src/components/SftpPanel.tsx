@@ -699,22 +699,47 @@ export function SftpPanel({ tabId }: { tabId: string }) {
   const shellReport =
     shellReportSt && shellReportSt.sid === sessionId ? shellReportSt.enabled : null;
 
-  /** 开/关目录上报：写/剥服务器 rc 文件标记块（新终端会话生效，当前终端不受影响） */
-  const toggleShellReport = () => {
-    if (!sessionId || shellReport === null || shellReportBusy.current) return;
-    shellReportBusy.current = true;
-    const target = !shellReport;
-    void (async () => {
-      try {
-        await invoke('shell_integration_set', { sessionId, enable: target });
-        setShellReportSt({ sid: sessionId, enabled: target });
-        notify(t(target ? 'panels.shellReportEnabled' : 'panels.shellReportDisabled'), 'success');
-      } catch (e) {
-        notify(t('panels.shellReportFailed', { error: String(e) }), 'error');
-      } finally {
-        shellReportBusy.current = false;
-      }
-    })();
+  /** 「跟随终端目录」勾选 = 目录上报总开关：
+   *  勾选 → 确保服务器 rc 文件有 OSC 7 上报块；本次新写入则自动重连终端使钩子立即生效
+   *  取消 → 停止跟随并剥除服务器配置块（幂等，未启用时不发请求） */
+  const onFollowChange = (on: boolean) => {
+    setFollowTerm(on);
+    if (!sessionId || shellReportBusy.current) return;
+    if (on) {
+      shellReportBusy.current = true;
+      void (async () => {
+        try {
+          const res = await invoke<{ touched: string[] }>('shell_integration_set', {
+            sessionId,
+            enable: true,
+          });
+          setShellReportSt({ sid: sessionId, enabled: true });
+          if (res.touched.length > 0) {
+            // 新写入的配置只对新 shell 生效：自动重连当前标签，免手动操作
+            notify(t('panels.shellReportEnabledReconnect'), 'success');
+            useAppStore.getState().reconnectTab(tabId);
+          }
+        } catch (e) {
+          setFollowTerm(false); // 写配置失败回滚勾选态
+          notify(t('panels.shellReportFailed', { error: String(e) }), 'error');
+        } finally {
+          shellReportBusy.current = false;
+        }
+      })();
+    } else if (shellReport === true) {
+      shellReportBusy.current = true;
+      void (async () => {
+        try {
+          await invoke('shell_integration_set', { sessionId, enable: false });
+          setShellReportSt({ sid: sessionId, enabled: false });
+          notify(t('panels.shellReportDisabled'), 'success');
+        } catch (e) {
+          notify(t('panels.shellReportFailed', { error: String(e) }), 'error');
+        } finally {
+          shellReportBusy.current = false;
+        }
+      })();
+    }
   };
 
   // 批次十二：传输达终态自动刷新目标栏（上传→远程栏，下载→本地栏；失败/取消可能留有
@@ -1397,25 +1422,17 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       {/* 工具行 */}
       <div className="flex items-center gap-2 border-b border-neutral-800 px-2 py-1">
         <span className="font-medium text-neutral-300">SFTP</span>
-        <label className="flex items-center gap-1 text-neutral-500">
+        <label
+          className="flex items-center gap-1 text-neutral-500"
+          title={t('panels.followTerminalTip')}
+        >
           <input
             type="checkbox"
-            checked={followTerm}
-            onChange={(e) => setFollowTerm(e.target.checked)}
+            checked={followTerm && shellReport === true}
+            onChange={(e) => onFollowChange(e.target.checked)}
           />
           {t('panels.followTerminal')}
         </label>
-        {sessionId && (
-          <button
-            className={toolBtn}
-            disabled={shellReport === null}
-            title={t(shellReport ? 'panels.shellReportTitleOn' : 'panels.shellReportTitleOff')}
-            onClick={toggleShellReport}
-          >
-            {t('panels.shellReport')}
-            {shellReport ? ' ✓' : ''}
-          </button>
-        )}
         <button
           className={toolBtn}
           onClick={() => {

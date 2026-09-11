@@ -100,7 +100,6 @@ export const zhState = {
   'state.menu.selectAll': '全选',
   'state.menu.search': '搜索',
   'state.menu.clearScreen': '清空屏幕',
-  'state.menu.clearScrollback': '清空回滚',
   'state.menu.reconnect': '重新连接',
   'state.menu.openSftp': '打开 SFTP',
 } as const;

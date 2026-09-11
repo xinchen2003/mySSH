@@ -485,7 +485,6 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
         icon: '⌫',
         onSelect: () => term?.write('\x1b[2J\x1b[H'),
       },
-      { label: t('state.menu.clearScrollback'), icon: '⌫', onSelect: () => term?.write('\x1b[3J') },
       'separator',
       { label: t('state.key.splitRow'), onSelect: () => s.splitActive('row') },
       { label: t('state.key.splitCol'), onSelect: () => s.splitActive('col') },

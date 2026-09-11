@@ -630,8 +630,8 @@ export function Sidebar() {
           e.preventDefault();
           setMenu({ x: e.clientX, y: e.clientY, items: groupMenu(path, count) });
         }}
-        onDoubleClick={(e) => {
-          // 整行双击折叠/展开；落在行内按钮（三角/新建子分组）上的双击不重复触发
+        onClick={(e) => {
+          // 整行单击折叠/展开；落在行内按钮（三角/新建/改名/删除）上的点击不重复触发
           if ((e.target as HTMLElement).closest('button')) return;
           persistCollapsed(
             isCollapsed ? [...collapsed].filter((p) => p !== path) : [...collapsed, path],
@@ -644,7 +644,7 @@ export function Sidebar() {
             setMenu({ x: r.left + 16, y: r.bottom, items: groupMenu(path, count) });
           }
         }}
-        className="group flex cursor-pointer select-none items-center rounded px-1 py-0.5 text-xs text-neutral-500 hover:bg-neutral-800"
+        className="group flex cursor-pointer select-none items-center rounded px-1 py-1 outline-none hover:bg-neutral-800 focus:bg-neutral-800"
         style={{ paddingLeft: `${depth * 12 + 4}px` }}
       >
         <button
@@ -658,10 +658,10 @@ export function Sidebar() {
         >
           {isCollapsed ? '▸' : '▾'}
         </button>
-        <span className="min-w-0 flex-1 truncate" title={path}>
+        <span className="min-w-0 flex-1 truncate text-sm text-neutral-300" title={path}>
           {name}
         </span>
-        <span className="shrink-0 text-neutral-600">{count}</span>
+        <span className="shrink-0 text-xs text-neutral-500">{count}</span>
         <span className="hidden shrink-0 gap-0.5 group-hover:flex">
           <button
             className="rounded px-0.5 hover:text-neutral-200"

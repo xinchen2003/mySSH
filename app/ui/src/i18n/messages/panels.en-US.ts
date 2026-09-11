@@ -93,14 +93,11 @@ export const enPanels: Record<keyof typeof zhPanels, string> = {
 
   // SFTP toolbar
   'panels.followTerminal': 'Follow Terminal Directory',
-  'panels.shellReport': 'Dir Reporting',
-  'panels.shellReportTitleOff':
-    'Click to enable: writes OSC 7 cwd reporting into server ~/.bashrc (and existing ~/.zshrc). Reconnect the terminal for "Follow Terminal Directory" to work',
-  'panels.shellReportTitleOn':
-    'Enabled. Click to disable: removes the reporting block from server shell config',
-  'panels.shellReportEnabled':
-    'Directory reporting enabled: written to server shell config; reconnect the terminal to take effect',
-  'panels.shellReportDisabled': 'Directory reporting disabled: removed from server shell config',
+  'panels.followTerminalTip':
+    'When checked, writes OSC 7 cwd reporting into server ~/.bashrc (and existing ~/.zshrc) and reconnects the terminal to activate it; unchecking removes the config',
+  'panels.shellReportEnabledReconnect':
+    'Directory reporting enabled; reconnecting the terminal to activate…',
+  'panels.shellReportDisabled': 'Directory reporting disabled and removed from server config',
   'panels.shellReportFailed': 'Failed to toggle directory reporting: {error}',
   'panels.permissions': 'Permissions',
   'panels.delete': 'Delete',
