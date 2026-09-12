@@ -21,6 +21,12 @@ export const zhDialogs = {
   'dialogs.tabBasic': '基本信息',
   'dialogs.tabAuth': '认证',
   'dialogs.tabTunnels': '隧道',
+  'dialogs.tabMcp': 'MCP 权限',
+  'dialogs.mcpPermInherit': '跟随全局',
+  'dialogs.mcpPermAllow': '允许',
+  'dialogs.mcpPermDeny': '禁止',
+  'dialogs.mcpPermHint':
+    '仅影响 AI 客户端经 MCP 对本会话的调用；会话级覆盖优先于全局默认（设置 → MCP → 工具权限）。',
   'dialogs.encodingUtf8': 'UTF-8（默认）',
   'dialogs.encodingGbk': 'GBK（简体中文）',
   'dialogs.encodingGb18030': 'GB18030（简体中文超集）',

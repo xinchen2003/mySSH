@@ -4,15 +4,18 @@
 //! 每次请求独立 JSON 响应（不开 SSE 流）；仅绑定 127.0.0.1。
 //! 工具面：list_sessions（列会话档案，不含凭据）、ssh_exec（一次性 Bulk
 //! 连接跑命令，收集 stdout/stderr/exit code）、sftp_*（home/list/stat/read/
-//! write/mkdir/delete/rename/chmod/upload/download，与 UI 共享 SFTP Bulk
-//! 连接池，写操作与传输落 audit 且 actor=mcp）。鉴权为 Bearer token
+//! write/mkdir/delete/rename/chmod，与 UI 共享 SFTP Bulk 连接池，写操作落
+//! audit 且 actor=mcp；upload/download 入队 UI 同款 TransferQueue 后台执行，
+//! 进度用 transfer_list 轮询）。鉴权为 Bearer token
 //!（设置键 mcp.token，空 = 不鉴权；首次启用自动生成随机 token）。
 //! 工具分组权限由设置键 mcp.allow.{list_sessions,ssh_exec,sftp_read,
 //! sftp_write,sftp_transfer} 控制（缺省全开；tools/list 同步过滤，
-//! tools/call 命中禁用组返回 isError）。
+//! tools/call 命中禁用组返回 isError）。会话编辑器可逐组覆盖
+//!（sessions.mcp_perms 稀疏映射），会话级覆盖优先于全局。
 //! 生命周期由 lib.rs 装配：setup 时按 mcp.enabled/mcp.port/mcp.token 启动，
 //! mcp_restart 命令供设置变更后重载。
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -27,6 +30,7 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
+use core_sftp::OnExists;
 use core_ssh::{
     ConnClass, ConnectOptions, HostKeyCheck, HostKeyDecision, HostKeyPrompt, KeepaliveConfig,
     KnownHostsPolicy, SshConnection,
@@ -55,7 +59,7 @@ struct McpConfig {
 }
 
 /// 工具分组权限（设置键 mcp.allow.*，缺省 = 允许：旧库无这些键时行为不变）。
-/// 粒度为分组而非单工具：13 个工具逐一切换噪音过大，读写分离已覆盖风险面。
+/// 粒度为分组而非单工具：14 个工具逐一切换噪音过大，读写分离已覆盖风险面。
 #[derive(Clone, Copy)]
 pub struct McpPerms {
     list_sessions: bool,
@@ -80,19 +84,47 @@ impl Default for McpPerms {
     }
 }
 
+/// 工具名 → 权限分组键（全局 mcp.allow.* 与会话 mcp_perms 覆盖共用同一组键名）
+fn tool_group_key(name: &str) -> Option<&'static str> {
+    match name {
+        "list_sessions" => Some("list_sessions"),
+        "ssh_exec" => Some("ssh_exec"),
+        "sftp_home" | "sftp_list" | "sftp_stat" | "sftp_read" => Some("sftp_read"),
+        "sftp_write" | "sftp_mkdir" | "sftp_delete" | "sftp_rename" | "sftp_chmod" => {
+            Some("sftp_write")
+        }
+        "sftp_upload" | "sftp_download" | "sftp_transfer_list" => Some("sftp_transfer"),
+        _ => None,
+    }
+}
+
 impl McpPerms {
-    /// 工具名 → 是否放行；未知名不拦截（交给原有「未知工具」分支）
+    /// 工具名 → 全局是否放行；未知名不拦截（交给原有「未知工具」分支）
     fn allows(&self, name: &str) -> bool {
-        match name {
-            "list_sessions" => self.list_sessions,
-            "ssh_exec" => self.ssh_exec,
-            "sftp_home" | "sftp_list" | "sftp_stat" | "sftp_read" => self.sftp_read,
-            "sftp_write" | "sftp_mkdir" | "sftp_delete" | "sftp_rename" | "sftp_chmod" => {
-                self.sftp_write
-            }
-            "sftp_upload" | "sftp_download" => self.sftp_transfer,
+        match tool_group_key(name) {
+            Some("list_sessions") => self.list_sessions,
+            Some("ssh_exec") => self.ssh_exec,
+            Some("sftp_read") => self.sftp_read,
+            Some("sftp_write") => self.sftp_write,
+            Some("sftp_transfer") => self.sftp_transfer,
             _ => true,
         }
+    }
+}
+
+/// 有效权限：会话级覆盖（sessions.mcp_perms）优先，缺省回退全局快照。
+/// 会话不存在时按全局放行——工具自身会报 NotFound。
+async fn tool_allowed(st: &ServerState, name: &str, args: &Value) -> bool {
+    let global = st.perms.allows(name);
+    let Some(key) = tool_group_key(name) else {
+        return global;
+    };
+    let Some(sid) = args.get("session_id").and_then(Value::as_str) else {
+        return global;
+    };
+    match st.store.sessions().get(sid).await {
+        Ok(rec) => rec.mcp_perms.get(key).copied().unwrap_or(global),
+        Err(_) => global,
     }
 }
 
@@ -651,14 +683,14 @@ fn tools_list(perms: &McpPerms) -> Value {
             },
             {
                 "name": "sftp_upload",
-                "description": "上传本地文件到远端（覆盖写；默认上限 64MiB，max_bytes 最大 256MiB，更大请用 UI 传输队列）",
+                "description": "上传本地文件到远端（覆盖写；入队后台传输队列执行，与 UI 传输面板共享，无大小上限）。wait_seconds>0 时同步等待终态返回（最长 600s，等待不占调用方上下文）；否则立即返回 queued 态，进度用 sftp_transfer_list 查询。",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "session_id": { "type": "string" },
                         "local_path": { "type": "string", "description": "本地文件绝对路径" },
                         "remote_path": { "type": "string", "description": "远端目标绝对路径" },
-                        "max_bytes": { "type": "integer", "minimum": 1, "maximum": 268435456, "default": 67108864 }
+                        "wait_seconds": { "type": "integer", "minimum": 0, "maximum": 600, "default": 0, "description": "同步等待传输终态的秒数；0 = 立即返回" }
                     },
                     "required": ["session_id", "local_path", "remote_path"],
                     "additionalProperties": false
@@ -666,16 +698,28 @@ fn tools_list(perms: &McpPerms) -> Value {
             },
             {
                 "name": "sftp_download",
-                "description": "下载远端文件到本地（覆盖写本地目标；默认上限 64MiB，max_bytes 最大 256MiB）",
+                "description": "下载远端文件到本地（覆盖写本地目标；入队后台传输队列执行，无大小上限）。wait_seconds 语义同 sftp_upload。",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "session_id": { "type": "string" },
                         "remote_path": { "type": "string", "description": "远端文件绝对路径" },
                         "local_path": { "type": "string", "description": "本地目标绝对路径" },
-                        "max_bytes": { "type": "integer", "minimum": 1, "maximum": 268435456, "default": 67108864 }
+                        "wait_seconds": { "type": "integer", "minimum": 0, "maximum": 600, "default": 0 }
                     },
                     "required": ["session_id", "remote_path", "local_path"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "sftp_transfer_list",
+                "description": "列出会话当前传输任务（id/方向/状态 queued|running|paused|done|failed|canceled/进度/错误），用于轮询 sftp_upload/download 的进度",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string" }
+                    },
+                    "required": ["session_id"],
                     "additionalProperties": false
                 }
             }
@@ -705,9 +749,9 @@ fn err_content(msg: impl Into<String>) -> Value {
 /// tools/call 分发：先过权限闸（设置 → MCP 工具权限），未知工具报 JSON-RPC 层错误之外，
 /// 工具执行失败走 isError 内容
 async fn call_tool(st: &ServerState, name: &str, args: &Value) -> Value {
-    if !st.perms.allows(name) {
+    if !tool_allowed(st, name, args).await {
         return err_content(format!(
-            "MCP 工具已被禁用：{name}（mySSH 设置 → MCP 工具权限）"
+            "MCP 工具已被禁用：{name}（mySSH 设置 → MCP 工具权限，或会话编辑器的 MCP 权限覆盖）"
         ));
     }
     match name {
@@ -875,15 +919,11 @@ fn push_capped(buf: &mut Vec<u8>, data: &[u8], truncated: &mut bool) {
 }
 
 // ---------- SFTP 工具族 ----------
-/// 单操作超时（浏览/元操作/小文件读写；大传输走 UI 传输队列，不在 MCP 面内）
-const SFTP_OP_TIMEOUT: Duration = Duration::from_secs(30);
-/// sftp_read 默认/最大返回字节；sftp_write 内容上限
+/// sftp_read 默认/最大返回字节；sftp_write 内容上限（字节要进模型上下文，必须有界）
 const SFTP_READ_DEFAULT_CAP: u64 = 256 * 1024;
 const SFTP_IO_MAX: u64 = 1024 * 1024;
-/// sftp_upload/download：默认上限 64MiB、硬上限 256MiB（更大走 UI 传输队列），整体超时 10 分钟
-const SFTP_TRANSFER_DEFAULT_CAP: u64 = 64 * 1024 * 1024;
-const SFTP_TRANSFER_MAX: u64 = 256 * 1024 * 1024;
-const SFTP_TRANSFER_TIMEOUT: Duration = Duration::from_secs(600);
+/// 单操作超时（浏览/元操作/小文件读写；上传/下载入队即返回，wait_seconds 另加预算）
+const SFTP_OP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 解析 session_id 并取/建 SFTP 上下文（ensure_ctx 内含 KI 拒绝与连接复用）
 async fn sftp_ctx(
@@ -917,12 +957,14 @@ async fn mcp_audit(st: &ServerState, session_id: &str, action: &str, detail: &Va
 }
 
 /// SFTP 工具分发（外层 call_tool 已按 sftp_ 前缀过滤；此处再校验具体名）。
-/// 上传/下载走传输档超时（10 分钟），其余小操作 30s。
+/// 均为快操作；仅上传/下载可带 wait_seconds 同步等待终态，超时预算随之放宽。
 async fn sftp_tool(st: &ServerState, name: &str, args: &Value) -> Result<String, String> {
-    let budget = match name {
-        "sftp_upload" | "sftp_download" => SFTP_TRANSFER_TIMEOUT,
-        _ => SFTP_OP_TIMEOUT,
-    };
+    let wait = args
+        .get("wait_seconds")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .min(600);
+    let budget = SFTP_OP_TIMEOUT + Duration::from_secs(wait);
     let run = sftp_tool_inner(st, name, args);
     match tokio::time::timeout(budget, run).await {
         Ok(r) => r,
@@ -1086,89 +1128,101 @@ async fn sftp_tool_inner(st: &ServerState, name: &str, args: &Value) -> Result<S
             Ok(json!({ "ok": true, "path": path, "mode": mode_raw }).to_string())
         }
         "sftp_upload" => {
-            use tokio::io::AsyncWriteExt;
             let (sid, ctx) = sftp_ctx(st, args, name).await?;
             let local = req_str(args, "local_path", name)?;
             let remote = req_str(args, "remote_path", name)?;
-            let cap = args
-                .get("max_bytes")
-                .and_then(Value::as_u64)
-                .unwrap_or(SFTP_TRANSFER_DEFAULT_CAP)
-                .clamp(1, SFTP_TRANSFER_MAX);
             let meta = tokio::fs::metadata(local)
                 .await
                 .map_err(|e| format!("本地文件读取失败 {local}: {e}"))?;
             if !meta.is_file() {
-                return Err(format!("本地路径不是文件：{local}"));
+                return Err(format!("本地路径不是文件（目录上传请用 UI）：{local}"));
             }
-            if meta.len() > cap {
-                return Err(format!(
-                    "本地文件 {} 字节超过上限 {cap}（更大请用 UI 传输队列）",
-                    meta.len()
-                ));
-            }
-            let mut src = tokio::fs::File::open(local)
-                .await
-                .map_err(|e| format!("本地文件打开失败 {local}: {e}"))?;
-            // offset=0 = create 截断重建（见 open_write_at 契约）
-            let mut dst = ctx
-                .client()
-                .open_write_at(remote, 0)
-                .await
-                .map_err(|e| e.to_string())?;
-            let n = tokio::io::copy(&mut src, &mut dst)
-                .await
-                .map_err(|e| e.to_string())?;
-            dst.shutdown().await.map_err(|e| e.to_string())?;
+            // 入队后台传输队列（与 UI 同一队列：进度进传输面板、终态落 transfers 表）；
+            // 无大小上限——字节不走模型上下文，全程文件到文件流式
+            let id = ctx
+                .queue()
+                .enqueue_upload(
+                    PathBuf::from(local),
+                    remote.to_string(),
+                    meta.len(),
+                    OnExists::Overwrite,
+                )
+                .await;
             mcp_audit(
                 st,
                 &sid,
                 "mcp_sftp_upload",
-                &json!({ "local": local, "remote": remote, "bytes": n }),
+                &json!({ "local": local, "remote": remote, "bytes": meta.len(), "transferId": id }),
             )
             .await;
-            Ok(json!({ "ok": true, "local": local, "remote": remote, "bytes": n }).to_string())
+            wait_transfer(&ctx, &id, args).await
         }
         "sftp_download" => {
-            use tokio::io::AsyncWriteExt;
             let (sid, ctx) = sftp_ctx(st, args, name).await?;
             let remote = req_str(args, "remote_path", name)?;
             let local = req_str(args, "local_path", name)?;
-            let cap = args
-                .get("max_bytes")
-                .and_then(Value::as_u64)
-                .unwrap_or(SFTP_TRANSFER_DEFAULT_CAP)
-                .clamp(1, SFTP_TRANSFER_MAX);
-            // 预检远端大小（跟随软链接取真实大小），超限直接拒绝，不落半截文件
+            // 预检远端存在性与大小（入队需要 bytes_total；缺失/超限在入队前报错）
             let meta = ctx.client().stat(remote).await.map_err(|e| e.to_string())?;
-            if meta.size > cap {
-                return Err(format!(
-                    "远端文件 {} 字节超过上限 {cap}（更大请用 UI 传输队列）",
-                    meta.size
-                ));
+            if meta.kind == core_sftp::EntryKind::Dir {
+                return Err(format!("远端路径是目录（目录下载请用 UI）：{remote}"));
             }
-            let mut src = ctx
-                .client()
-                .open_read(remote)
-                .await
-                .map_err(|e| e.to_string())?;
-            let mut dst = tokio::fs::File::create(local)
-                .await
-                .map_err(|e| format!("本地文件创建失败 {local}: {e}"))?;
-            let n = tokio::io::copy(&mut src, &mut dst)
-                .await
-                .map_err(|e| format!("下载中断（本地文件可能不完整）: {e}"))?;
-            dst.shutdown().await.map_err(|e| e.to_string())?;
+            let id = ctx
+                .queue()
+                .enqueue_download(
+                    remote.to_string(),
+                    PathBuf::from(local),
+                    meta.size,
+                    OnExists::Overwrite,
+                )
+                .await;
             mcp_audit(
                 st,
                 &sid,
                 "mcp_sftp_download",
-                &json!({ "remote": remote, "local": local, "bytes": n }),
+                &json!({ "remote": remote, "local": local, "bytes": meta.size, "transferId": id }),
             )
             .await;
-            Ok(json!({ "ok": true, "remote": remote, "local": local, "bytes": n }).to_string())
+            wait_transfer(&ctx, &id, args).await
+        }
+        "sftp_transfer_list" => {
+            let (_sid, ctx) = sftp_ctx(st, args, name).await?;
+            let items: Vec<Value> = ctx
+                .queue()
+                .list()
+                .iter()
+                .map(crate::sftp::transfer_to_json)
+                .collect();
+            Ok(json!({ "transfers": items }).to_string())
         }
         other => Err(format!("未知工具：{other}")),
+    }
+}
+
+/// 入队后按需同步等待终态（wait_seconds 缺省 0 = 立即返回排队态）。
+/// 等待在服务端轮询完成，不往模型上下文塞进度；超时未完结返回当前态（可再用
+/// sftp_transfer_list 轮询）。
+async fn wait_transfer(
+    ctx: &Arc<crate::sftp::SftpCtx>,
+    id: &str,
+    args: &Value,
+) -> Result<String, String> {
+    let wait = args
+        .get("wait_seconds")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .min(600);
+    let deadline = Instant::now() + Duration::from_secs(wait);
+    loop {
+        let t = ctx
+            .queue()
+            .list()
+            .into_iter()
+            .find(|t| t.id == id)
+            .ok_or_else(|| format!("传输 {id} 不存在"))?;
+        if t.state.is_terminal() || Instant::now() >= deadline {
+            return Ok(crate::sftp::transfer_to_json(&t).to_string());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
@@ -1193,6 +1247,7 @@ mod tests {
             "sftp_chmod",
             "sftp_upload",
             "sftp_download",
+            "sftp_transfer_list",
         ] {
             assert!(p.allows(name), "默认应放行 {name}");
         }
@@ -1214,6 +1269,7 @@ mod tests {
         assert!(!p.allows("sftp_delete"));
         assert!(!p.allows("sftp_upload"));
         assert!(!p.allows("sftp_download"));
+        assert!(!p.allows("sftp_transfer_list"));
         // 未知名不被权限闸拦截（走「未知工具」分支）
         assert!(p.allows("sftp_nope"));
     }
@@ -1241,7 +1297,7 @@ mod tests {
         }
         let all = tools_list(&McpPerms::default());
         let names = names_of(&all);
-        assert_eq!(names.len(), 13);
+        assert_eq!(names.len(), 14);
         assert!(names.contains(&"sftp_upload"));
         assert!(names.contains(&"sftp_download"));
 
@@ -1255,6 +1311,7 @@ mod tests {
         assert!(!names.contains(&"ssh_exec"));
         assert!(!names.contains(&"sftp_upload"));
         assert!(!names.contains(&"sftp_download"));
+        assert!(!names.contains(&"sftp_transfer_list"));
         assert_eq!(names.len(), 10);
     }
 }

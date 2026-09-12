@@ -46,6 +46,7 @@ fn sample(id: &str, name: &str) -> SessionRecord {
         color: None,
         encoding: "utf-8".into(),
         su_user: None,
+        mcp_perms: std::collections::HashMap::new(),
         tags: vec!["prod".into(), "web".into()],
         jump_chain: vec![],
         command: None,

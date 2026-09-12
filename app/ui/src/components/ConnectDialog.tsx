@@ -15,7 +15,7 @@ import { useT, type MsgKey } from '../i18n';
 import type { AuthSpec, SessionRecord, TunnelDef } from '../term/types';
 
 type AuthKind = AuthSpec['type'];
-type EditorTab = 'basic' | 'auth' | 'tunnels';
+type EditorTab = 'basic' | 'auth' | 'tunnels' | 'mcp';
 /** 终端编码选项（encoding_rs 标签；utf-8 = 直通不转码） */
 const ENCODING_OPTIONS = [
   ['utf-8', 'dialogs.encodingUtf8'],
@@ -30,7 +30,17 @@ const TAB_LABEL: Record<EditorTab, MsgKey> = {
   basic: 'dialogs.tabBasic',
   auth: 'dialogs.tabAuth',
   tunnels: 'dialogs.tabTunnels',
+  mcp: 'dialogs.tabMcp',
 };
+
+/** MCP 权限分组（与后端 tool_group_key 键名一致；标签复用设置页文案） */
+const MCP_PERM_GROUPS = [
+  ['list_sessions', 'dialogs.mcpAllowListSessions'],
+  ['ssh_exec', 'dialogs.mcpAllowSshExec'],
+  ['sftp_read', 'dialogs.mcpAllowSftpRead'],
+  ['sftp_write', 'dialogs.mcpAllowSftpWrite'],
+  ['sftp_transfer', 'dialogs.mcpAllowSftpTransfer'],
+] as const;
 /** session_test_connect 请求（Rust TestConnectRequest，serde camelCase） */
 interface TestConnectRequest {
   sessionId?: string;
@@ -123,6 +133,8 @@ function ConnectForm({
   const [password, setPassword] = useState('');
   // su 二级登录：目标用户名 + 密码（密码仅存保险库 kind=suPassword，不回读表单）
   const [suUser, setSuUser] = useState(initial?.suUser ?? '');
+  // MCP 工具权限覆盖：稀疏映射，键缺席 = 跟随全局（设置 → MCP 工具权限）
+  const [mcpPerms, setMcpPerms] = useState<Record<string, boolean>>(initial?.mcpPerms ?? {});
   const [suPassword, setSuPassword] = useState('');
   const [keyPath, setKeyPath] = useState(initial?.keyPath ?? '');
   const [passphrase, setPassphrase] = useState('');
@@ -247,6 +259,7 @@ function ConnectForm({
         encoding,
         // su 二级登录：空 = 不启用；密码走 cred_set 进保险库
         suUser: suUser.trim() || null,
+        mcpPerms,
         tags: initial?.tags ?? [],
         createdAt: initial?.createdAt ?? '',
         updatedAt: '',
@@ -641,6 +654,39 @@ function ConnectForm({
               {t('dialogs.tunnelsNeedSave')}
             </p>
           ))}
+
+        {tab === 'mcp' && (
+          <div className="text-xs">
+            <p className="mb-2 text-neutral-500">{t('dialogs.mcpPermHint')}</p>
+            <div className="space-y-2">
+              {MCP_PERM_GROUPS.map(([group, labelKey]) => {
+                const v = mcpPerms[group];
+                return (
+                  <div key={group} className="flex items-center justify-between gap-3">
+                    <span className="text-neutral-300">{t(labelKey)}</span>
+                    <select
+                      className="w-32 rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
+                      value={v === undefined ? 'inherit' : v ? 'allow' : 'deny'}
+                      onChange={(e) => {
+                        const mode = e.target.value;
+                        // 跟随全局 = 键缺席（稀疏映射）；禁止动态 delete（lint）
+                        setMcpPerms((prev) => {
+                          const entries = Object.entries(prev).filter(([k]) => k !== group);
+                          if (mode !== 'inherit') entries.push([group, mode === 'allow']);
+                          return Object.fromEntries(entries);
+                        });
+                      }}
+                    >
+                      <option value="inherit">{t('dialogs.mcpPermInherit')}</option>
+                      <option value="allow">{t('dialogs.mcpPermAllow')}</option>
+                      <option value="deny">{t('dialogs.mcpPermDeny')}</option>
+                    </select>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {error && (
           <p aria-live="polite" className="text-xs text-red-400">

@@ -31,6 +31,8 @@ export interface SessionRecord {
   encoding?: string;
   /** 登录后切换用户（su）目标用户名；null/缺省/空 = 不切换。密码存保险库 kind=suPassword */
   suUser?: string | null;
+  /** MCP 工具权限覆盖（稀疏映射：分组名 → true允许/false禁止）；缺省/空 = 跟随全局设置 */
+  mcpPerms?: Record<string, boolean>;
   tags: string[];
   command?: string | null;
   createdAt: string;

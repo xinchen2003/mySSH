@@ -48,6 +48,11 @@ impl SftpCtx {
     pub(crate) fn client(&self) -> &Arc<SftpClient> {
         &self.client
     }
+
+    /// MCP 传输工具复用（与 UI 同一队列：进度进 UI 传输面板、终态落 transfers 表）
+    pub(crate) fn queue(&self) -> &Arc<TransferQueue> {
+        &self.queue
+    }
 }
 
 impl SftpManagerState {
@@ -510,7 +515,7 @@ fn persist_terminal(store: Arc<Store>, session_id: String) -> core_sftp::Progres
     })
 }
 
-fn transfer_to_json(t: &core_sftp::TransferInfo) -> Value {
+pub(crate) fn transfer_to_json(t: &core_sftp::TransferInfo) -> Value {
     json!({
         "id": t.id,
         "direction": match t.direction {

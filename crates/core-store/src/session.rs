@@ -95,6 +95,10 @@ pub struct SessionRecord {
     /// 登录后切换用户（su）的目标用户名；None/空 = 不切换。密码存 credentials(kind=su_password)
     #[serde(default)]
     pub su_user: Option<String>,
+    /// MCP 工具权限覆盖（稀疏映射，键 = 分组名 list_sessions/ssh_exec/sftp_read/
+    /// sftp_write/sftp_transfer）；缺省空 = 全部跟随全局 mcp.allow.* 设置
+    #[serde(default)]
+    pub mcp_perms: std::collections::HashMap<String, bool>,
     pub tags: Vec<String>,
     pub command: Option<String>,
     pub created_at: String,
@@ -105,8 +109,8 @@ pub struct SessionRepo {
     pool: SqlitePool,
 }
 
-const LIST_SQL: &str = "SELECT id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color,encoding,su_user FROM sessions ORDER BY group_path, name";
-const GET_SQL: &str = "SELECT id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color,encoding,su_user FROM sessions WHERE id = ?";
+const LIST_SQL: &str = "SELECT id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color,encoding,su_user,mcp_perms FROM sessions ORDER BY group_path, name";
+const GET_SQL: &str = "SELECT id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,tags,command,jump_chain,created_at,updated_at,color,encoding,su_user,mcp_perms FROM sessions WHERE id = ?";
 
 /// 终端编码缺省值（旧数据/旧导出兼容）
 fn default_encoding() -> String {
@@ -142,16 +146,19 @@ impl SessionRepo {
             serde_json::to_string(&rec.tags).map_err(|e| StoreError::Corrupt(e.to_string()))?;
         let jump_chain = serde_json::to_string(&rec.jump_chain)
             .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        let mcp_perms = serde_json::to_string(&rec.mcp_perms)
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?;
         sqlx::query(
-            "INSERT INTO sessions (id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,color,encoding,su_user,tags,command,jump_chain,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+            "INSERT INTO sessions (id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,color,encoding,su_user,tags,command,jump_chain,mcp_perms,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
              ON CONFLICT(id) DO UPDATE SET
                name=excluded.name, kind=excluded.kind, host=excluded.host, shell=excluded.shell, workdir=excluded.workdir, port=excluded.port,
                username=excluded.username, auth_type=excluded.auth_type,
                key_path=excluded.key_path, group_path=excluded.group_path,
                color=excluded.color, encoding=excluded.encoding, su_user=excluded.su_user,
                tags=excluded.tags, command=excluded.command,
-               jump_chain=excluded.jump_chain, updated_at=datetime('now')",
+               jump_chain=excluded.jump_chain, mcp_perms=excluded.mcp_perms,
+               updated_at=datetime('now')",
         )
         .bind(&rec.id)
         .bind(&rec.name)
@@ -170,6 +177,7 @@ impl SessionRepo {
         .bind(tags)
         .bind(&rec.command)
         .bind(jump_chain)
+        .bind(mcp_perms)
         .execute(&self.pool)
         .await
         .map_err(db)?;
@@ -318,6 +326,7 @@ fn validate_group_path(path: &str) -> Result<(), StoreError> {
 fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<SessionRecord, StoreError> {
     let tags_raw: String = row.get("tags");
     let jump_raw: String = row.get("jump_chain");
+    let mcp_perms_raw: String = row.get("mcp_perms");
     Ok(SessionRecord {
         id: row.get("id"),
         name: row.get("name"),
@@ -333,6 +342,8 @@ fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<SessionRecord, StoreEr
         color: row.get("color"),
         encoding: row.get("encoding"),
         su_user: row.get("su_user"),
+        mcp_perms: serde_json::from_str(&mcp_perms_raw)
+            .map_err(|e| StoreError::Corrupt(e.to_string()))?,
         tags: serde_json::from_str(&tags_raw).map_err(|e| StoreError::Corrupt(e.to_string()))?,
         jump_chain: serde_json::from_str(&jump_raw)
             .map_err(|e| StoreError::Corrupt(e.to_string()))?,

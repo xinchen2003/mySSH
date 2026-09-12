@@ -23,6 +23,12 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   'dialogs.tabBasic': 'Basic',
   'dialogs.tabAuth': 'Authentication',
   'dialogs.tabTunnels': 'Tunnels',
+  'dialogs.tabMcp': 'MCP Permissions',
+  'dialogs.mcpPermInherit': 'Inherit global',
+  'dialogs.mcpPermAllow': 'Allow',
+  'dialogs.mcpPermDeny': 'Deny',
+  'dialogs.mcpPermHint':
+    'Only affects AI client calls via MCP on this session; per-session overrides take precedence over global defaults (Settings → MCP → Tool permissions).',
   'dialogs.encodingUtf8': 'UTF-8 (Default)',
   'dialogs.encodingGbk': 'GBK (Simplified Chinese)',
   'dialogs.encodingGb18030': 'GB18030 (Simplified Chinese Superset)',
