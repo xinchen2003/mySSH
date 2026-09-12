@@ -2,7 +2,23 @@
 //! 与渲染解耦，vitest 直测。
 
 import type { TunnelDef, TunnelKind, TunnelStartMode } from '../term/types';
-import { tNow } from '../i18n';
+import { tNow, type MsgKey } from '../i18n';
+
+/** 隧道运行态 → i18n 键（TunnelPanel 与会话编辑器隧道页共用） */
+export const TUNNEL_STATUS_KEY: Record<string, MsgKey> = {
+  starting: 'panels.tunnelStarting',
+  listening: 'panels.tunnelListening',
+  reconnecting: 'panels.tunnelReconnecting',
+  stopped: 'panels.tunnelStopped',
+  failed: 'panels.tunnelFailed',
+};
+
+/** 隧道类型 → i18n 键 */
+export const TUNNEL_KIND_KEY: Record<string, MsgKey> = {
+  local: 'panels.tunnelKindLocal',
+  remote: 'panels.tunnelKindRemote',
+  dynamic: 'panels.tunnelKindDynamic',
+};
 
 /** 启动方式 ← 两个持久化布尔位。旧数据双真（自启+随会话）归并为「随服务器连接」：
  *  编辑保存后落为 with_session=1/autostart=0；未编辑的旧记录行为不变（后端仍按原位消费）。 */

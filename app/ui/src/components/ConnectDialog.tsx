@@ -4,7 +4,13 @@ import { useAppStore } from '../state/app-store';
 import { TunnelEditor } from './TunnelEditor';
 import { Dialog } from './Dialog';
 import { ConfirmDialog } from './ConfirmDialog';
-import { START_MODE_LABEL, startModeOf, tunnelDisplayName } from '../state/tunnel-utils';
+import {
+  START_MODE_LABEL,
+  TUNNEL_KIND_KEY,
+  TUNNEL_STATUS_KEY,
+  startModeOf,
+  tunnelDisplayName,
+} from '../state/tunnel-utils';
 import { useT, type MsgKey } from '../i18n';
 import type { AuthSpec, SessionRecord, TunnelDef } from '../term/types';
 
@@ -731,6 +737,11 @@ function SessionTunnelsTab({ sessionId }: { sessionId: string }) {
     }
   };
 
+  const kindLabel = (kind: string) => {
+    const k = TUNNEL_KIND_KEY[kind];
+    return k ? t(k) : kind;
+  };
+
   return (
     <div className="text-xs">
       <div className="mb-1 flex items-center justify-between">
@@ -748,65 +759,78 @@ function SessionTunnelsTab({ sessionId }: { sessionId: string }) {
         <ul>
           {defs.map((d) => {
             const rt = runtimeById.get(d.id);
+            const statusKey = rt ? TUNNEL_STATUS_KEY[rt.status] : undefined;
             return (
-              <li
-                key={d.id}
-                className="mb-1 flex items-center gap-2 rounded border border-neutral-800 px-2 py-1"
-              >
-                <span className="flex-1 truncate" title={rt?.lastError ?? undefined}>
-                  <span className="text-neutral-200">{tunnelDisplayName(d)}</span>
-                  <span className="ml-2 font-mono text-neutral-500">
+              <li key={d.id} className="mb-1 rounded border border-neutral-800 px-2 py-1.5">
+                {/* 第一行：名称在前（主体），类型徽标 + 状态，操作按钮右对齐 */}
+                <div className="flex items-center gap-2">
+                  <span
+                    className="min-w-0 flex-1 truncate font-medium text-neutral-200"
+                    title={tunnelDisplayName(d)}
+                  >
+                    {tunnelDisplayName(d)}
+                  </span>
+                  <span className="shrink-0 rounded bg-neutral-800 px-1.5 py-px text-neutral-400">
+                    {kindLabel(d.kind)}
+                  </span>
+                  <span
+                    className={`shrink-0 ${
+                      rt
+                        ? rt.status === 'listening'
+                          ? 'text-green-400'
+                          : rt.status === 'failed'
+                            ? 'text-red-400'
+                            : 'text-yellow-400'
+                        : 'text-neutral-600'
+                    }`}
+                    title={rt?.lastError ?? undefined}
+                  >
+                    {rt ? (statusKey ? t(statusKey) : rt.status) : t('dialogs.notRunning')}
+                  </span>
+                  {rt ? (
+                    <button
+                      className="shrink-0 rounded px-1 text-neutral-500 hover:text-red-400"
+                      onClick={() => void stopTunnel(d.id)}
+                    >
+                      {t('dialogs.stop')}
+                    </button>
+                  ) : (
+                    <button
+                      className="shrink-0 rounded px-1 text-neutral-500 hover:text-green-400"
+                      onClick={() => void startDef(d)}
+                    >
+                      {t('dialogs.start')}
+                    </button>
+                  )}
+                  <button
+                    className="shrink-0 rounded px-1 text-neutral-500 hover:text-neutral-200"
+                    onClick={() => setEditor({ def: d })}
+                  >
+                    {t('dialogs.edit')}
+                  </button>
+                  <button
+                    className="shrink-0 rounded px-1 text-neutral-500 hover:text-neutral-200"
+                    onClick={() => void duplicateTunnel(d)}
+                  >
+                    {t('dialogs.duplicate')}
+                  </button>
+                  <button
+                    className="shrink-0 rounded px-1 text-neutral-500 hover:text-red-400"
+                    onClick={() => setPendingDelete(d)}
+                  >
+                    {t('dialogs.delete')}
+                  </button>
+                </div>
+                {/* 第二行：地址映射全显（可换行不截断）+ 启动方式 */}
+                <div className="mt-0.5 flex items-baseline gap-2">
+                  <span className="min-w-0 flex-1 font-mono break-all text-neutral-400">
                     {d.bindHost}:{d.bindPort}
                     {d.targetHost ? ` → ${d.targetHost}:${d.targetPort}` : ''}
                   </span>
-                </span>
-                <span className="text-neutral-500">{START_MODE_LABEL[startModeOf(d)]}</span>
-                <span
-                  className={
-                    rt
-                      ? rt.status === 'listening'
-                        ? 'text-green-400'
-                        : rt.status === 'failed'
-                          ? 'text-red-400'
-                          : 'text-yellow-400'
-                      : 'text-neutral-600'
-                  }
-                >
-                  {rt ? rt.status : t('dialogs.notRunning')}
-                </span>
-                {rt ? (
-                  <button
-                    className="rounded px-1 text-neutral-500 hover:text-red-400"
-                    onClick={() => void stopTunnel(d.id)}
-                  >
-                    {t('dialogs.stop')}
-                  </button>
-                ) : (
-                  <button
-                    className="rounded px-1 text-neutral-500 hover:text-green-400"
-                    onClick={() => void startDef(d)}
-                  >
-                    {t('dialogs.start')}
-                  </button>
-                )}
-                <button
-                  className="rounded px-1 text-neutral-500 hover:text-neutral-200"
-                  onClick={() => setEditor({ def: d })}
-                >
-                  {t('dialogs.edit')}
-                </button>
-                <button
-                  className="rounded px-1 text-neutral-500 hover:text-neutral-200"
-                  onClick={() => void duplicateTunnel(d)}
-                >
-                  {t('dialogs.duplicate')}
-                </button>
-                <button
-                  className="rounded px-1 text-neutral-500 hover:text-red-400"
-                  onClick={() => setPendingDelete(d)}
-                >
-                  {t('dialogs.delete')}
-                </button>
+                  <span className="shrink-0 text-neutral-600">
+                    {START_MODE_LABEL[startModeOf(d)]}
+                  </span>
+                </div>
               </li>
             );
           })}

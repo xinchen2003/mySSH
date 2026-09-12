@@ -2,23 +2,16 @@ import { useEffect, useState } from 'react';
 import { useAppStore } from '../state/app-store';
 import { TunnelEditor } from './TunnelEditor';
 import { ConfirmDialog } from './ConfirmDialog';
-import { START_MODE_LABEL, fmtRate, startModeOf, tunnelDisplayName } from '../state/tunnel-utils';
+import {
+  START_MODE_LABEL,
+  TUNNEL_KIND_KEY,
+  TUNNEL_STATUS_KEY,
+  fmtRate,
+  startModeOf,
+  tunnelDisplayName,
+} from '../state/tunnel-utils';
 import type { TunnelDef, TunnelInfo } from '../term/types';
-import { useT, type MsgKey } from '../i18n';
-
-const STATUS_KEY: Record<string, MsgKey> = {
-  starting: 'panels.tunnelStarting',
-  listening: 'panels.tunnelListening',
-  reconnecting: 'panels.tunnelReconnecting',
-  stopped: 'panels.tunnelStopped',
-  failed: 'panels.tunnelFailed',
-};
-
-const KIND_KEY: Record<string, MsgKey> = {
-  local: 'panels.tunnelKindLocal',
-  remote: 'panels.tunnelKindRemote',
-  dynamic: 'panels.tunnelKindDynamic',
-};
+import { useT } from '../i18n';
 
 /**
  * 全局隧道中心（§9.1）：按服务器分组的定义 × 1Hz 运行态合并视图。
@@ -52,11 +45,11 @@ export function TunnelPanel() {
 
   const runtimeById = new Map<string, TunnelInfo>(tunnels.map((t) => [t.tunnelId, t]));
   const statusLabel = (status: string) => {
-    const k = STATUS_KEY[status];
+    const k = TUNNEL_STATUS_KEY[status];
     return k ? t(k) : status;
   };
   const kindLabel = (kind: string) => {
-    const k = KIND_KEY[kind];
+    const k = TUNNEL_KIND_KEY[kind];
     return k ? t(k) : kind;
   };
   const defIds = new Set(tunnelDefs.map((d) => d.id));
