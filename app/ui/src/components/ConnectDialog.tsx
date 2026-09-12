@@ -9,7 +9,7 @@ import { useT, type MsgKey } from '../i18n';
 import type { AuthSpec, SessionRecord, TunnelDef } from '../term/types';
 
 type AuthKind = AuthSpec['type'];
-type EditorTab = 'basic' | 'auth' | 'jump' | 'tunnels';
+type EditorTab = 'basic' | 'auth' | 'tunnels';
 /** 终端编码选项（encoding_rs 标签；utf-8 = 直通不转码） */
 const ENCODING_OPTIONS = [
   ['utf-8', 'dialogs.encodingUtf8'],
@@ -23,7 +23,6 @@ const ENCODING_OPTIONS = [
 const TAB_LABEL: Record<EditorTab, MsgKey> = {
   basic: 'dialogs.tabBasic',
   auth: 'dialogs.tabAuth',
-  jump: 'dialogs.tabJump',
   tunnels: 'dialogs.tabTunnels',
 };
 /** session_test_connect 请求（Rust TestConnectRequest，serde camelCase） */
@@ -119,7 +118,6 @@ function ConnectForm({
   // su 二级登录：目标用户名 + 密码（密码仅存保险库 kind=suPassword，不回读表单）
   const [suUser, setSuUser] = useState(initial?.suUser ?? '');
   const [suPassword, setSuPassword] = useState('');
-  const [jumpChain, setJumpChain] = useState<string[]>(initial?.jumpChain ?? []);
   const [keyPath, setKeyPath] = useState(initial?.keyPath ?? '');
   const [passphrase, setPassphrase] = useState('');
   // 本对话框是完整编辑器，默认落库（一次性连接走 QuickConnectDialog）；默认保存后名称/颜色设置可见
@@ -159,7 +157,8 @@ function ConnectForm({
         if (keyPath.trim()) req.keyPath = keyPath.trim();
         if (passphrase) req.passphrase = passphrase;
       }
-      if (jumpChain.length > 0) req.jumpChain = jumpChain;
+      // 跳板链不再可编辑：测试沿用档案既有链（编辑时），新建无链
+      if (initial && initial.jumpChain.length > 0) req.jumpChain = initial.jumpChain;
       const r = await invoke<TestConnectResult>('session_test_connect', { req });
       setTest(
         r.ok
@@ -234,7 +233,8 @@ function ConnectForm({
               ? 'keyboard-interactive'
               : kind,
         keyPath: kind === 'publicKey' ? keyPath.trim() : null,
-        jumpChain,
+        // 跳板链编辑入口已移除：保存时原样保留档案既有链（新建为空）
+        jumpChain: initial?.jumpChain ?? [],
         // 分组不再表单编辑：静默保留 preset（分组菜单新建）或原值
         groupPath: presetGroup ?? initial?.groupPath ?? '',
         color,
@@ -626,16 +626,6 @@ function ConnectForm({
             </div>
           </>
         )}
-        {tab === 'jump' &&
-          (save ? (
-            <JumpChainEditor
-              chain={jumpChain}
-              onChange={setJumpChain}
-              excludeId={initial?.id ?? null}
-            />
-          ) : (
-            <p className="py-6 text-center text-xs text-neutral-500">{t('dialogs.jumpNeedSave')}</p>
-          ))}
 
         {tab === 'tunnels' &&
           (initial ? (
@@ -851,56 +841,6 @@ function SessionTunnelsTab({ sessionId }: { sessionId: string }) {
             }`,
           })}
         </ConfirmDialog>
-      )}
-    </div>
-  );
-}
-
-/** 跳板链编辑：从已存会话中按序挑选（就近→最远）；排除自身与已选 */
-function JumpChainEditor({
-  chain,
-  onChange,
-  excludeId,
-}: {
-  chain: string[];
-  onChange: (chain: string[]) => void;
-  excludeId: string | null;
-}) {
-  const sessions = useAppStore((s) => s.sessions);
-  const candidates = sessions.filter(
-    (s) => s.id !== excludeId && !chain.includes(s.id) && s.kind !== 'local',
-  );
-  const nameOf = (id: string) => sessions.find((s) => s.id === id)?.name ?? id;
-  const t = useT();
-
-  return (
-    <div className="mt-1 rounded border border-neutral-800 p-2">
-      <div className="mb-1 text-xs text-neutral-400">{t('dialogs.jumpChainLabel')}</div>
-      {chain.map((id, i) => (
-        <div key={id} className="mb-1 flex items-center gap-2 text-xs">
-          <span className="text-neutral-500">{i + 1}.</span>
-          <span className="flex-1 truncate">{nameOf(id)}</span>
-          <button
-            className="text-neutral-500 hover:text-red-400"
-            onClick={() => onChange(chain.filter((x) => x !== id))}
-          >
-            {t('dialogs.remove')}
-          </button>
-        </div>
-      ))}
-      {candidates.length > 0 && (
-        <select
-          className="w-full rounded border border-neutral-700 bg-neutral-800 px-1.5 py-1 text-xs"
-          value=""
-          onChange={(e) => e.target.value && onChange([...chain, e.target.value])}
-        >
-          <option value="">{t('dialogs.addJump')}</option>
-          {candidates.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}（{s.username}@{s.host}:{s.port}）
-            </option>
-          ))}
-        </select>
       )}
     </div>
   );

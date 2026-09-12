@@ -64,8 +64,6 @@ export function TunnelPanel() {
 
   // 按服务器分组（保持会话列表顺序；孤儿定义的会话已删 → 末组）
   const grouped = new Map<string, TunnelDef[]>();
-  // 隧道是 SSH 能力：新建默认目标排除本地会话
-  const sshSessions = sessions.filter((s) => s.kind !== 'local');
   for (const d of tunnelDefs) {
     const list = grouped.get(d.sessionId) ?? [];
     list.push(d);
@@ -108,15 +106,6 @@ export function TunnelPanel() {
       <div className="mb-2 flex items-center gap-3 border-b border-neutral-800 pb-2 text-neutral-400">
         <span className="truncate">{t('panels.tunnelHeaderNote')}</span>
         <span className="flex-1" />
-        <button
-          className="shrink-0 rounded border border-neutral-700 px-2 py-0.5 text-neutral-300 hover:bg-neutral-800 focus-visible:ring-1 focus-visible:ring-neutral-500 disabled:opacity-40"
-          disabled={sshSessions.length === 0}
-          onClick={() =>
-            sshSessions.length > 0 && setEditor({ sessionId: sshSessions[0].id, def: null })
-          }
-        >
-          ＋ {t('panels.newTunnel')}
-        </button>
       </div>
 
       {orderedGroups.length === 0 && adhoc.length === 0 && (
@@ -126,7 +115,17 @@ export function TunnelPanel() {
       {orderedGroups.map(({ sid, defs }) => {
         return (
           <div key={sid} className="mb-2">
-            <div className="mt-1 mb-0.5 font-semibold text-neutral-300">{sessionLabel(sid)}</div>
+            <div className="mt-1 mb-0.5 flex items-center font-semibold text-neutral-300">
+              <span className="truncate">{sessionLabel(sid)}</span>
+              <button
+                className="ml-2 shrink-0 rounded px-1 text-neutral-500 hover:text-neutral-200"
+                title={t('panels.newTunnel')}
+                aria-label={t('panels.newTunnel')}
+                onClick={() => setEditor({ sessionId: sid, def: null })}
+              >
+                ＋
+              </button>
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse whitespace-nowrap">
                 <thead className="border-b border-neutral-800 text-neutral-500">

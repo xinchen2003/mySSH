@@ -22,7 +22,6 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   // ConnectDialog
   'dialogs.tabBasic': 'Basic',
   'dialogs.tabAuth': 'Authentication',
-  'dialogs.tabJump': 'Jump Chain',
   'dialogs.tabTunnels': 'Tunnels',
   'dialogs.encodingUtf8': 'UTF-8 (Default)',
   'dialogs.encodingGbk': 'GBK (Simplified Chinese)',
@@ -63,7 +62,6 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   'dialogs.suUserPlaceholder': 'e.g. root (empty = no switch)',
   'dialogs.suPassword': 'Target user password',
   'dialogs.suPasswordPlaceholder': 'Empty = type manually after su',
-  'dialogs.jumpNeedSave': 'Check "Save Session" to configure the jump chain',
   'dialogs.tunnelsNeedSave':
     'Save the session to configure tunnels here; tunnels are bound to this server',
   'dialogs.testing': 'Testing…',
@@ -86,10 +84,6 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   'dialogs.tunnelDeleted': 'Tunnel deleted',
   'dialogs.tunnelDeleteFailed': 'Failed to delete: {error}',
   'dialogs.deleteTunnelBody': '{spec}. Running instances will also be stopped.',
-
-  // ConnectDialog jump chain
-  'dialogs.jumpChainLabel': 'Jump Chain (ProxyJump, Nearest → Farthest)',
-  'dialogs.addJump': '+ Add Jump Host…',
 
   // QuickConnectDialog
   'dialogs.quickConnectTitle': 'Quick Connect',

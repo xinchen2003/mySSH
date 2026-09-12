@@ -20,7 +20,6 @@ export const zhDialogs = {
   // ConnectDialog
   'dialogs.tabBasic': '基本信息',
   'dialogs.tabAuth': '认证',
-  'dialogs.tabJump': '跳板链',
   'dialogs.tabTunnels': '隧道',
   'dialogs.encodingUtf8': 'UTF-8（默认）',
   'dialogs.encodingGbk': 'GBK（简体中文）',
@@ -60,7 +59,6 @@ export const zhDialogs = {
   'dialogs.suUserPlaceholder': '如 root（留空 = 不切换）',
   'dialogs.suPassword': '目标用户密码',
   'dialogs.suPasswordPlaceholder': '留空 = su 后手动输入',
-  'dialogs.jumpNeedSave': '勾选「保存会话」后可配置跳板链',
   'dialogs.tunnelsNeedSave': '保存会话后可在此配置隧道；隧道绑定到该服务器',
   'dialogs.testing': '测试中…',
   'dialogs.testConnect': '测试连接',
@@ -82,10 +80,6 @@ export const zhDialogs = {
   'dialogs.tunnelDeleted': '隧道已删除',
   'dialogs.tunnelDeleteFailed': '删除失败: {error}',
   'dialogs.deleteTunnelBody': '{spec}。运行中的实例将同时停止。',
-
-  // ConnectDialog 跳板链
-  'dialogs.jumpChainLabel': '跳板链（ProxyJump，就近→最远）',
-  'dialogs.addJump': '+ 添加跳板…',
 
   // QuickConnectDialog
   'dialogs.quickConnectTitle': '快速连接',

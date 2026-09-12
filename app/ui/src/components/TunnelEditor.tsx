@@ -50,8 +50,6 @@ export function TunnelEditor({
   const notify = useAppStore((s) => s.notify);
   const t = useT();
   const sessions = useAppStore((s) => s.sessions);
-  /** 隧道是 SSH 能力：绑定候选排除本地会话 */
-  const sshSessions = sessions.filter((x) => x.kind !== 'local');
 
   const [draft, setDraft] = useState<TunnelDraft>(() =>
     initial
@@ -68,6 +66,8 @@ export function TunnelEditor({
           startMode: 'withSession',
         },
   );
+  /** 绑定服务器（只读）：隧道归属于会话，新建=当前会话，编辑=原归属，不可改绑 */
+  const bound = sessions.find((x) => x.id === draft.sessionId);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<PortCheck | null>(null);
   const [pendingRestart, setPendingRestart] = useState<TunnelDef | null>(null);
@@ -163,24 +163,15 @@ export function TunnelEditor({
       <h2 className="mb-3 text-base font-semibold text-neutral-100">
         {initial ? t('dialogs.editTunnel') : t('dialogs.newTunnel')}
       </h2>
-      {/* 绑定服务器：始终可见可选——隧道面板新建时默认绑第一台 SSH 服务器，
-          不显示会造成静默绑错（批次二十四修复） */}
-      <label className="mb-2 block">
-        <span className="mb-0.5 block text-xs text-neutral-400">{t('dialogs.tunnelServer')}</span>
-        <select
-          className={input}
-          value={draft.sessionId}
-          onChange={(e) => patch({ sessionId: e.target.value })}
-          aria-label={t('dialogs.tunnelServer')}
-        >
-          {sshSessions.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.groupPath ? `${s.groupPath} / ${s.name}` : s.name}（{s.username}@{s.host}:{s.port}
-              ）
-            </option>
-          ))}
-        </select>
-      </label>
+      {/* 绑定服务器（只读）：隧道归属于会话——从会话编辑器/分组头进入时归属已知，不可改绑 */}
+      <p className="mb-2 text-xs text-neutral-400">
+        {t('dialogs.tunnelServer')}：
+        <span className="text-neutral-200">
+          {bound
+            ? `${bound.groupPath ? `${bound.groupPath} / ` : ''}${bound.name}（${bound.username}@${bound.host}:${bound.port}）`
+            : t('panels.sessionDeleted', { id: draft.sessionId })}
+        </span>
+      </p>
 
       <label className="mb-2 block">
         <span className="mb-0.5 block text-xs text-neutral-400">{t('dialogs.templateLabel')}</span>
