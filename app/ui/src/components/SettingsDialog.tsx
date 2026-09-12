@@ -387,6 +387,28 @@ export function SettingsDialog() {
               {t('dialogs.mcpTokenRegen')}
             </button>
           </span>
+          <span>{t('dialogs.mcpToolPerms')}</span>
+          <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            {/* 分组开关落 mcp.allow.*，缺省视为允许；setMcp 写完触发 mcp_restart 热生效 */}
+            {(
+              [
+                ['mcp.allow.list_sessions', 'dialogs.mcpAllowListSessions'],
+                ['mcp.allow.ssh_exec', 'dialogs.mcpAllowSshExec'],
+                ['mcp.allow.sftp_read', 'dialogs.mcpAllowSftpRead'],
+                ['mcp.allow.sftp_write', 'dialogs.mcpAllowSftpWrite'],
+                ['mcp.allow.sftp_transfer', 'dialogs.mcpAllowSftpTransfer'],
+              ] as const
+            ).map(([key, labelKey]) => (
+              <label key={key} className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={settings[key] !== false}
+                  onChange={(e) => void setMcp(key, e.target.checked)}
+                />
+                {t(labelKey)}
+              </label>
+            ))}
+          </span>
           {mcpToken && (
             <>
               <span>{t('dialogs.mcpCopyConfig')}</span>

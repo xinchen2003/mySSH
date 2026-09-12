@@ -113,6 +113,12 @@ export const zhDialogs = {
   'dialogs.mcpTokenPlaceholder': '留空 = 不鉴权（不推荐）',
   'dialogs.mcpCopyConfig': '一键复制配置',
   'dialogs.mcpConfigCopied': '{agent} 配置已复制',
+  'dialogs.mcpToolPerms': '工具权限',
+  'dialogs.mcpAllowListSessions': 'list_sessions（列会话档案）',
+  'dialogs.mcpAllowSshExec': 'ssh_exec（远程执行命令）',
+  'dialogs.mcpAllowSftpRead': 'SFTP 读取（列目录/读文件）',
+  'dialogs.mcpAllowSftpWrite': 'SFTP 写入（写/删/改远端）',
+  'dialogs.mcpAllowSftpTransfer': 'SFTP 上传/下载（读写本地文件）',
   'dialogs.mcpHint':
     'AI 客户端（如 Claude Code）接入：POST http://127.0.0.1:<端口>/mcp，请求头 Authorization: Bearer <令牌>。勾选启用后自动生成令牌；仅监听本机回环。',
   'dialogs.terminal': '终端',

@@ -117,6 +117,12 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   'dialogs.mcpTokenPlaceholder': 'Empty = no auth (not recommended)',
   'dialogs.mcpCopyConfig': 'Copy config for',
   'dialogs.mcpConfigCopied': '{agent} config copied',
+  'dialogs.mcpToolPerms': 'Tool permissions',
+  'dialogs.mcpAllowListSessions': 'list_sessions (list saved sessions)',
+  'dialogs.mcpAllowSshExec': 'ssh_exec (run remote commands)',
+  'dialogs.mcpAllowSftpRead': 'SFTP read (list/read remote)',
+  'dialogs.mcpAllowSftpWrite': 'SFTP write (write/delete remote)',
+  'dialogs.mcpAllowSftpTransfer': 'SFTP upload/download (touches local files)',
   'dialogs.mcpHint':
     'For AI clients (e.g. Claude Code): POST http://127.0.0.1:<port>/mcp with header "Authorization: Bearer <token>". A token is generated when first enabled; listens on loopback only.',
   'dialogs.terminal': 'Terminal',

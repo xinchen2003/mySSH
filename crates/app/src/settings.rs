@@ -34,7 +34,7 @@ pub async fn settings_set(
         || key.len() > 64
         || !key
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_')
     {
         return Err("非法设置键".into());
     }
