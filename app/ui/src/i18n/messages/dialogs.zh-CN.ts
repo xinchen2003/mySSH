@@ -64,6 +64,8 @@ export const zhDialogs = {
   'dialogs.suUserPlaceholder': '如 root（留空 = 不切换）',
   'dialogs.suPassword': '目标用户密码',
   'dialogs.suPasswordPlaceholder': '留空 = su 后手动输入',
+  'dialogs.loginMacro': '登录宏（每行一条，连接后自动执行）',
+  'dialogs.loginMacroPlaceholder': 'sudo -i\ncd /data/app\ntail -f logs/app.log',
   'dialogs.tunnelsNeedSave': '保存会话后可在此配置隧道；隧道绑定到该服务器',
   'dialogs.testing': '测试中…',
   'dialogs.testConnect': '测试连接',

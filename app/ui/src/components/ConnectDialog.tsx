@@ -135,6 +135,8 @@ function ConnectForm({
   // MCP 工具权限覆盖：稀疏映射，键缺席 = 跟随全局（设置 → MCP 工具权限）
   const [mcpPerms, setMcpPerms] = useState<Record<string, boolean>>(initial?.mcpPerms ?? {});
   const [suPassword, setSuPassword] = useState('');
+  // 登录宏：进 shell 后逐行自动执行（多行文本；仅边综 trim 判空，正文原样存）
+  const [loginMacro, setLoginMacro] = useState(initial?.loginMacro ?? '');
   const [keyPath, setKeyPath] = useState(initial?.keyPath ?? '');
   const [passphrase, setPassphrase] = useState('');
   // 本对话框是完整编辑器，默认落库（一次性连接走 QuickConnectDialog）；默认保存后名称/颜色设置可见
@@ -258,6 +260,7 @@ function ConnectForm({
         encoding,
         // su 二级登录：空 = 不启用；密码走 cred_set 进保险库
         suUser: suUser.trim() || null,
+        loginMacro: loginMacro.trim() ? loginMacro : null,
         mcpPerms,
         tags: initial?.tags ?? [],
         createdAt: initial?.createdAt ?? '',
@@ -624,6 +627,20 @@ function ConnectForm({
                 </div>
               </>
             )}
+            {/* 登录宏：进 shell 后逐行自动执行（SSH/本地通用；
+                su 手输密码时后端跳过并 toast 告知） */}
+            <label className="mt-2 block">
+              <span className="mb-0.5 block text-xs text-neutral-400">
+                {t('dialogs.loginMacro')}
+              </span>
+              <textarea
+                className={`${input} h-20 font-mono`}
+                value={loginMacro}
+                spellCheck={false}
+                placeholder={t('dialogs.loginMacroPlaceholder')}
+                onChange={(e) => setLoginMacro(e.target.value)}
+              />
+            </label>
             {/* 终端编码：仅 SSH 会话可选；本地 ConPTY 协议面恒为 UTF-8，转码会出乱码 */}
             {sessKind === 'ssh' && (
               <label>

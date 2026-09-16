@@ -10,6 +10,8 @@ export const zhState = {
   'state.sessionDuplicatedWithTunnels':
     '已复制为「{name}」（含 {count} 条端口转发，未启动）（凭据不随档案复制）',
   'state.duplicateSessionFailed': '复制服务器失败: {error}',
+  'state.macroSkipped':
+    '已配置 su 手动输入密码，登录宏无法确定执行时机，本次已跳过（在保险库为该会话保存 su 密码可启用）',
   'state.favorited': '已收藏',
   'state.unfavorited': '已取消收藏',
   'state.sessionDeleted': '已删除服务器「{name}」',

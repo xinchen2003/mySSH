@@ -46,6 +46,7 @@ fn sample(id: &str, name: &str) -> SessionRecord {
         color: None,
         encoding: "utf-8".into(),
         su_user: None,
+        login_macro: None,
         mcp_perms: std::collections::HashMap::new(),
         tags: vec!["prod".into(), "web".into()],
         jump_chain: vec![],
@@ -72,17 +73,24 @@ async fn session_crud_and_list() {
     let mut changed = sample("s1", "生产 Web-02");
     changed.port = 2222;
     changed.color = Some("#e5484d".into());
+    changed.login_macro = Some("cd /data/app\ntail -f logs/app.log".into());
     let rec = store.sessions().upsert(&changed).await.expect("update");
     assert_eq!(rec.name, "生产 Web-02");
     assert_eq!(rec.port, 2222);
     assert_eq!(rec.color.as_deref(), Some("#e5484d"), "color 落库往返");
-    // color=None 覆盖即清空（列透传，无残留）
+    assert_eq!(
+        rec.login_macro.as_deref(),
+        Some("cd /data/app\ntail -f logs/app.log"),
+        "login_macro 落库往返"
+    );
+    // color/login_macro=None 覆盖即清空（列透传，无残留）
     let rec = store
         .sessions()
         .upsert(&sample("s1", "生产 Web-02"))
         .await
         .expect("update2");
     assert_eq!(rec.color, None);
+    assert_eq!(rec.login_macro, None);
 
     store
         .sessions()

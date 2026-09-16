@@ -31,6 +31,8 @@ export interface SessionRecord {
   encoding?: string;
   /** 登录后切换用户（su）目标用户名；null/缺省/空 = 不切换。密码存保险库 kind=suPassword */
   suUser?: string | null;
+  /** 登录宏：进 shell 后逐行自动执行的命令序列；null/缺省 = 不执行 */
+  loginMacro?: string | null;
   /** MCP 工具权限覆盖（稀疏映射：分组名 → true允许/false禁止）；缺省/空 = 跟随全局设置 */
   mcpPerms?: Record<string, boolean>;
   tags: string[];
@@ -194,8 +196,20 @@ export interface SessionStateFrame {
   shell?: string;
 }
 
+/** 登录宏被后端跳过的告知帧（v1 唯一 reason：su 手输密码，应答时机不可知） */
+export interface MacroSkippedFrame {
+  v: 1;
+  type: 'macro_skipped';
+  tabId: string;
+  reason: 'suManualPassword';
+}
+
 export type TermEvent =
-  HostKeyPromptFrame | KiChallengeFrame | SessionStateFrame | SessionTunnelsFrame;
+  | HostKeyPromptFrame
+  | KiChallengeFrame
+  | SessionStateFrame
+  | SessionTunnelsFrame
+  | MacroSkippedFrame;
 
 /** §9.6 随会话隧道启动结果（连接成功后由 start_session_tunnels 推入同通道） */
 export interface SessionTunnelsFrame {

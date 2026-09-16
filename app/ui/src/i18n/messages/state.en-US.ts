@@ -12,6 +12,8 @@ export const enState: Record<keyof typeof zhState, string> = {
   'state.sessionDuplicatedWithTunnels':
     'Duplicated as "{name}" ({count} port forwards included, not started; credentials are not copied)',
   'state.duplicateSessionFailed': 'Failed to duplicate server: {error}',
+  'state.macroSkipped':
+    'Login macro skipped: su uses a manually typed password, so timing is unknown. Save the su password in the vault to enable it.',
   'state.favorited': 'Added to Favorites',
   'state.unfavorited': 'Removed from Favorites',
   'state.sessionDeleted': 'Server "{name}" deleted',

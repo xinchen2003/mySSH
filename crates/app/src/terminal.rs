@@ -82,6 +82,10 @@ pub struct TermOpenSpec {
     /// su 密码（内存经手即弃；档案路径由 resolve 从保险库读出）
     #[serde(default)]
     pub su_password: Option<String>,
+    /// 登录宏：进 shell 后自动逐行执行的命令（多行文本）；None/空 = 不执行。
+    /// 语义：无 su 即发；有 su 则密码应答后发；配 command 的会话不执行；重连重放
+    #[serde(default)]
+    pub login_macro: Option<String>,
 }
 
 fn default_encoding() -> String {
@@ -217,6 +221,45 @@ impl SuWatch {
     }
 }
 
+/// 登录宏待发状态：su 密码应答成功后一次性下发（take 后不复位）
+struct MacroPending {
+    lines: Vec<String>,
+    input_enc: Option<Arc<Mutex<crate::encoding::InputEncoder>>>,
+}
+
+/// 宏行间延时：覆盖 su/切换目录类命令的处理时延；shell 未就绪由 PTY 输入缓冲兜底
+const MACRO_LINE_DELAY: Duration = Duration::from_millis(300);
+
+/// 宏文本 → 执行行：trim + 丢空行；不支持注释/变量（v1 纯下发语义）
+fn macro_lines(raw: &str) -> Vec<String> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// 逐行下发登录宏：非 utf-8 会话经输入编码器转码；写失败（会话拆除）即停
+async fn send_macro(
+    lines: &[String],
+    writer: &Arc<AnyWriter>,
+    input_enc: Option<&Arc<Mutex<crate::encoding::InputEncoder>>>,
+) {
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            tokio::time::sleep(MACRO_LINE_DELAY).await;
+        }
+        let mut bytes = match input_enc {
+            Some(enc) => enc.lock().encode(line.as_bytes()),
+            None => line.as_bytes().to_vec(),
+        };
+        bytes.push(b'\r');
+        if writer.write(&bytes).await.is_err() {
+            return;
+        }
+    }
+}
+
 struct TermSession {
     /// 重连时整枚替换（sessions 锁内 swap）
     writer: Arc<AnyWriter>,
@@ -314,6 +357,8 @@ pub async fn term_open(
         crate::sessions::ResolvedTarget::Ssh(s) => s,
         crate::sessions::ResolvedTarget::Local(ls) => {
             // 本地会话：ConPTY 直连读循环；无 SSH 连接/hostkey/KI/随会话隧道
+            // 登录宏随 ls 携带；move 进闭包前先取引用
+            let ls_login_macro = ls.login_macro.clone();
             // ConPTY 协议面恒为 UTF-8（控制台代码页由 ConPTY 内部转译），
             // 任何转码都会把 UTF-8 流毁成乱码——忽略显式入参与档案值，恒直通
             let out_encoding = None;
@@ -324,6 +369,8 @@ pub async fn term_open(
             })
             .await
             .map_err(|e| format!("本地终端任务失败: {e}"))??;
+            // 本地会话登录宏：ls 被 move 进闭包前先解析行
+            let login_macro = macro_lines(ls_login_macro.as_deref().unwrap_or(""));
             let shell = pty.shell.clone();
             let credits = Arc::new(Semaphore::new(CREDIT_HIGH as usize));
             let outstanding = Arc::new(AtomicI64::new(0));
@@ -337,6 +384,9 @@ pub async fn term_open(
                 backend: Backend::Local,
                 // 本地会话无 su（Windows ConPTY 无此概念）
                 su: None,
+                login_macro,
+                // 本地 ConPTY 恒 UTF-8 直通（见开处注释）
+                input_enc: None,
                 writer: writer.clone(),
                 out_encoding,
                 data,
@@ -497,6 +547,8 @@ pub async fn term_open(
             command: spec.command.clone(),
         })),
         su,
+        login_macro: macro_lines(spec.login_macro.as_deref().unwrap_or("")),
+        input_enc: input_enc.clone(),
         writer: writer.clone(),
         out_encoding,
         data,
@@ -560,6 +612,10 @@ struct SuperviseCtx {
     backend: Backend,
     /// su 二级登录（批次二十二）：None = 不启用；重连后自动重放
     su: Option<SuConfig>,
+    /// 登录宏（已解析行）：每轮 shell（首连/重连）重放；空 = 无
+    login_macro: Vec<String>,
+    /// 输入转码器（宏文本非 utf-8 会话转码用；None = 直通）
+    input_enc: Option<Arc<Mutex<crate::encoding::InputEncoder>>>,
     /// 当前写半（重连即换）：su 命令与密码应答的写入通道
     writer: Arc<AnyWriter>,
     /// 输出转码（非 utf-8 会话）：读循环内建 Decoder，重连即重建
@@ -588,6 +644,42 @@ async fn supervise(mut ctx: SuperviseCtx) {
             }
             _ => None,
         };
+        // 登录宏（重连每轮重放，与 su 语义一致）：
+        // - 配 command 的会话不执行（command 取代登录 shell，无交互行可下发）；
+        // - 无 su：立即 spawn 逐行下发（PTY 输入缓冲保留到 shell 就绪）；
+        // - su + 保险库密码：宏传 read_loop，su 应答成功后下发；
+        // - su 手输密码：应答时机不可知，跳过并告知（fail-loud 不猜）
+        let mut macro_pending = None;
+        if !ctx.login_macro.is_empty() {
+            let commandless = match &ctx.backend {
+                Backend::Ssh(rc) => rc.command.is_none(),
+                Backend::Local => true,
+            };
+            if commandless {
+                match &ctx.su {
+                    None => {
+                        let lines = ctx.login_macro.clone();
+                        let enc = ctx.input_enc.clone();
+                        let w = ctx.writer.clone();
+                        tauri::async_runtime::spawn(async move {
+                            send_macro(&lines, &w, enc.as_ref()).await;
+                        });
+                    }
+                    Some(su) if su.password.is_none() => {
+                        let _ = ctx.events.send(json!({
+                            "v": 1, "type": "macro_skipped", "tabId": ctx.tab_id,
+                            "reason": "suManualPassword",
+                        }));
+                    }
+                    Some(_) => {
+                        macro_pending = Some(MacroPending {
+                            lines: ctx.login_macro.clone(),
+                            input_enc: ctx.input_enc.clone(),
+                        });
+                    }
+                }
+            }
+        }
         read_loop(
             &mut ctx.reader,
             &ctx.data,
@@ -596,6 +688,7 @@ async fn supervise(mut ctx: SuperviseCtx) {
             ctx.out_encoding,
             su_watch.as_mut(),
             &ctx.writer,
+            &mut macro_pending,
         )
         .await;
 
@@ -815,6 +908,8 @@ pub async fn ki_respond(
 /// 终端读取循环：8ms/256KB 聚合 + 信用背压（spike 验证形态）。
 /// 信用耗尽即停止 next_data() → russh 不再确认窗口 → 服务端停发，内存不堆积。
 /// EOF/Close 时冲净残余即返回——断线语义与重连由 supervise() 负责。
+// 参数仅内部装配，非公开 API；clippy 参数数误伤豁免
+#[allow(clippy::too_many_arguments)]
 async fn read_loop(
     reader: &mut AnyReader,
     data_ch: &Channel<Response>,
@@ -824,6 +919,8 @@ async fn read_loop(
     // su 二级登录：一次性密码 expect（Some = 本轮 shell 武装中）
     mut su_watch: Option<&mut SuWatch>,
     writer: &Arc<AnyWriter>,
+    // 登录宏：su 密码应答成功后一次性下发（Some = 待发；owned——spawn 需 'static）
+    macro_pending: &mut Option<MacroPending>,
 ) {
     let mut agg: Vec<u8> = Vec::with_capacity(AGG_CAP);
     let mut flush_at = Instant::now() + AGG_WINDOW;
@@ -848,6 +945,14 @@ async fn read_loop(
                                         let mut buf = pw.as_bytes().to_vec();
                                         buf.push(b'\r');
                                         let _ = writer.write(&buf).await;
+                                    }
+                                    // 登录宏：su 应答成功即触发（spawn 不阻塞读循环；
+                                    // 密码答错时宏会落入原用户 shell——与手输等价，已知语义）
+                                    if let Some(m) = macro_pending.take() {
+                                        let w2 = writer.clone();
+                                        tauri::async_runtime::spawn(async move {
+                                            send_macro(&m.lines, &w2, m.input_enc.as_ref()).await;
+                                        });
                                     }
                                 }
                             } else if Instant::now() >= w.deadline {
@@ -935,5 +1040,19 @@ mod tests {
         assert!(!SuWatch::is_password_prompt(
             "普通命令输出，无任何提示词".as_bytes()
         ));
+    }
+
+    #[test]
+    fn macro_lines_trim_and_skip_empty() {
+        // 空/全空白 → 无宏
+        assert!(macro_lines("").is_empty());
+        assert!(macro_lines("  \n \n\r\n").is_empty());
+        // trim + 丢空行 + 保留序
+        assert_eq!(
+            macro_lines("  sudo -i \ncd /data/app\n\n tail -f logs/app.log \n"),
+            vec!["sudo -i", "cd /data/app", "tail -f logs/app.log"]
+        );
+        // 不做注释/变量解释：# 开头照发（v1 纯下发语义）
+        assert_eq!(macro_lines("# not a comment"), vec!["# not a comment"]);
     }
 }

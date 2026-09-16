@@ -272,6 +272,7 @@ export const useAppStore = create<AppStore>((set, get) => {
         set((s) => ({ pendingHostKeys: [...s.pendingHostKeys, ev] }));
       else if (ev.type === 'ki_challenge') set((s) => ({ pendingKis: [...s.pendingKis, ev] }));
       else if (ev.type === 'session_tunnels') get().notifySessionTunnels(ev.sessionId, ev.results);
+      else if (ev.type === 'macro_skipped') get().notify(tNow('state.macroSkipped'), 'warning');
       else {
         handleSessionState(set, tabId, id, ev);
         // 连接成功（含重连成功）→ 清掉该会话的「最近失败」记录

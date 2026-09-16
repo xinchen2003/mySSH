@@ -25,6 +25,8 @@ pub struct LocalShellSpec {
     pub workdir: Option<String>,
     /// 启动命令：在 shell 内执行后保持交互（cmd /k、powershell -NoExit -Command）
     pub command: Option<String>,
+    /// 登录宏：shell 起来后自动逐行执行；None/空 = 不执行（与 SSH 会话同语义）
+    pub login_macro: Option<String>,
     // 无 encoding 字段：ConPTY 协议面恒为 UTF-8，转码必乱码（terminal.rs 直通）
 }
 
@@ -299,6 +301,7 @@ mod tests {
                 shell: Some("cmd".into()),
                 workdir: None,
                 command: None,
+                login_macro: None,
             },
             80,
             24,

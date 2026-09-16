@@ -67,6 +67,8 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   'dialogs.suUserPlaceholder': 'e.g. root (empty = no switch)',
   'dialogs.suPassword': 'Target user password',
   'dialogs.suPasswordPlaceholder': 'Empty = type manually after su',
+  'dialogs.loginMacro': 'Login macro (one command per line, auto-run after login)',
+  'dialogs.loginMacroPlaceholder': 'sudo -i\ncd /data/app\ntail -f logs/app.log',
   'dialogs.tunnelsNeedSave':
     'Save the session to configure tunnels here; tunnels are bound to this server',
   'dialogs.testing': 'Testing…',
