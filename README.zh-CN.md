@@ -3,7 +3,7 @@
 [English](README.md) | 简体中文
 
 [![CI](https://github.com/xinchen2003/mySSH/actions/workflows/ci.yml/badge.svg)](https://github.com/xinchen2003/mySSH/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.3.1-blue)](https://github.com/xinchen2003/mySSH/releases)
+[![Version](https://img.shields.io/badge/version-0.3.2-blue)](https://github.com/xinchen2003/mySSH/releases)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)](https://github.com/xinchen2003/mySSH)
 
@@ -19,8 +19,8 @@
 
 ## 功能
 
-- **终端**：多标签 + 任意方向分屏、标签拖拽分离为独立窗口、断线自动重连；真彩色 / Unicode 宽字符 / 鼠标上报 / 括号粘贴 / 搜索 / 超链接；终端间输入广播（可按服务器过滤）
-- **会话管理**：嵌套分组树、右键移动到分组、标签、收藏、模糊搜索、命令面板（Ctrl+Shift+P）；密码 / 公钥（OpenSSH + .ppk）/ keyboard-interactive（2FA）/ agent 认证；多级跳板机；known_hosts 首连与密钥变更确认；su 二级登录（普通账号登入后自动切 root，密码存保险库、提示出现时自动应答一次）
+- **终端**：多标签 + 任意方向分屏、标签拖拽分离为独立窗口、断线自动重连；真彩色 / Unicode 宽字符 / 鼠标上报 / 括号粘贴 / 搜索 / 超链接；终端间输入广播（可按服务器过滤）；ZMODEM（rz/sz）与 trzsz 终端内文件传输
+- **会话管理**：嵌套分组树、右键移动到分组、标签、收藏、模糊搜索、命令面板（Ctrl+Shift+P）；密码 / 公钥（OpenSSH + .ppk）/ keyboard-interactive（2FA）/ agent 认证；多级跳板机；known_hosts 首连与密钥变更确认；登录宏（认证进 shell 后逐行自动执行命令）；su 二级登录（普通账号登入后自动切 root，密码存保险库、提示出现时自动应答一次）
 - **本地会话**：ConPTY 承载 PowerShell / pwsh / CMD，与 SSH 会话并列；自定义启动目录与启动命令（如连接即拉起 AI agent CLI）
 - **隧道**：本地 / 远程 / 动态 SOCKS5 转发，开机自启、随会话建立、断线自动恢复；独立 SSH 连接与交互终端隔离
 - **SFTP**：双栏文件管理器、双向拖拽（含 OS 文件/文件夹直接拖入）、队列化传输（并发控制 / 断点续传 / 失败重试）、跨会话传输历史、远程文件直编（保存自动回传）、跟随终端当前目录（OSC 7）

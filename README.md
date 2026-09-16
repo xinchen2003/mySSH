@@ -3,7 +3,7 @@
 English | [简体中文](README.zh-CN.md)
 
 [![CI](https://github.com/xinchen2003/mySSH/actions/workflows/ci.yml/badge.svg)](https://github.com/xinchen2003/mySSH/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.3.1-blue)](https://github.com/xinchen2003/mySSH/releases)
+[![Version](https://img.shields.io/badge/version-0.3.2-blue)](https://github.com/xinchen2003/mySSH/releases)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)](https://github.com/xinchen2003/mySSH)
 
@@ -19,8 +19,8 @@ No login, no cloud dependency, credentials never leave your machine. Built with 
 
 ## Features
 
-- **Terminal**: tabs, split panes in any direction, drag tabs out into separate windows, auto-reconnect; true color / wide Unicode / mouse reporting / bracketed paste / search / hyperlinks; optional input broadcasting across terminals (filterable by server)
-- **Sessions**: nested group tree, move-to-group context menu, tags, favorites, fuzzy search, command palette (Ctrl+Shift+P); password / public-key (OpenSSH & .ppk) / keyboard-interactive (2FA) / agent auth; multi-hop ProxyJump; known_hosts confirmation on first connect and key change; optional su second-login — sign in as a regular user and auto-switch to another account (e.g. root), password answered once at the prompt
+- **Terminal**: tabs, split panes in any direction, drag tabs out into separate windows, auto-reconnect; true color / wide Unicode / mouse reporting / bracketed paste / search / hyperlinks; optional input broadcasting across terminals (filterable by server); in-terminal file transfer via ZMODEM (rz/sz) and trzsz
+- **Sessions**: nested group tree, move-to-group context menu, tags, favorites, fuzzy search, command palette (Ctrl+Shift+P); password / public-key (OpenSSH & .ppk) / keyboard-interactive (2FA) / agent auth; multi-hop ProxyJump; known_hosts confirmation on first connect and key change; login macros — run commands line-by-line automatically after reaching the shell; optional su second-login — sign in as a regular user and auto-switch to another account (e.g. root), password answered once at the prompt
 - **Local sessions**: native Windows shells (PowerShell / pwsh / CMD) via ConPTY alongside SSH sessions — custom startup directory and startup command (e.g. launch an AI agent CLI on connect); shares tabs, splits, detached windows and input broadcasting
 - **Tunnels**: local / remote / dynamic SOCKS5 forwarding, auto-start, auto-recover on disconnect; dedicated SSH connection isolated from interactive terminals
 - **SFTP**: dual-pane file manager, bidirectional drag & drop (including OS files and folders), queued transfers (concurrency control, resume, retry), cross-session transfer history, remote file editing (auto-upload on save), follows the terminal's working directory (OSC 7)
