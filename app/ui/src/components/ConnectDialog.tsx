@@ -15,7 +15,7 @@ import { useT, type MsgKey } from '../i18n';
 import type { AuthSpec, SessionRecord, TunnelDef } from '../term/types';
 
 type AuthKind = AuthSpec['type'];
-type EditorTab = 'basic' | 'auth' | 'tunnels' | 'mcp';
+type EditorTab = 'basic' | 'tunnels' | 'mcp';
 /** 终端编码选项（encoding_rs 标签；utf-8 = 直通不转码） */
 const ENCODING_OPTIONS = [
   ['utf-8', 'dialogs.encodingUtf8'],
@@ -28,7 +28,6 @@ const ENCODING_OPTIONS = [
 
 const TAB_LABEL: Record<EditorTab, MsgKey> = {
   basic: 'dialogs.tabBasic',
-  auth: 'dialogs.tabAuth',
   tunnels: 'dialogs.tabTunnels',
   mcp: 'dialogs.tabMcp',
 };
@@ -299,7 +298,7 @@ function ConnectForm({
       onClose={close}
       closeOnBackdrop={false}
       backdropClass="z-10"
-      panelClass="w-[26rem] rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
+      panelClass="w-[32rem] rounded-lg border border-neutral-700 bg-neutral-900 p-4 text-sm text-neutral-200 shadow-xl"
     >
       <h2 className="mb-2 text-base font-semibold">
         {initial
@@ -524,6 +523,107 @@ function ConnectForm({
                 </label>
               </>
             )}
+            {/* 认证并入基本信息页签（仅 SSH）：顶部细分隔线分组 */}
+            {sessKind === 'ssh' && (
+              <>
+                <div className="mt-1 border-t border-neutral-800" />
+                <label>
+                  <span className="mb-0.5 block text-xs text-neutral-400">
+                    {t('dialogs.authMethod')}
+                  </span>
+                  <select
+                    className={input}
+                    value={kind}
+                    onChange={(e) => setKind(e.target.value as AuthKind)}
+                  >
+                    <option value="password">{t('dialogs.password')}</option>
+                    <option value="publicKey">{t('dialogs.authPublicKey')}</option>
+                    <option value="keyboardInteractive">{t('dialogs.authKi')}</option>
+                    <option value="agent">ssh-agent / Pageant</option>
+                  </select>
+                </label>
+                {kind === 'password' && (
+                  <label>
+                    <span className="mb-0.5 block text-xs text-neutral-400">
+                      {initial ? t('dialogs.passwordLabelEdit') : t('dialogs.password')}
+                    </span>
+                    <input
+                      className={input}
+                      type="password"
+                      value={password}
+                      autoComplete={initial ? 'current-password' : 'new-password'}
+                      spellCheck={false}
+                      onChange={(e) => setPassword(e.target.value)}
+                    />
+                  </label>
+                )}
+                {kind === 'publicKey' && (
+                  <>
+                    <label>
+                      <span className="mb-0.5 block text-xs text-neutral-400">
+                        {t('dialogs.keyPath')}
+                      </span>
+                      <input
+                        className={input}
+                        value={keyPath}
+                        autoComplete="off"
+                        spellCheck={false}
+                        onChange={(e) => setKeyPath(e.target.value)}
+                        placeholder={t('dialogs.keyPathPlaceholder')}
+                      />
+                    </label>
+                    <label>
+                      <span className="mb-0.5 block text-xs text-neutral-400">
+                        {t('dialogs.passphraseLabel')}
+                      </span>
+                      <input
+                        className={input}
+                        type="password"
+                        value={passphrase}
+                        spellCheck={false}
+                        onChange={(e) => setPassphrase(e.target.value)}
+                      />
+                    </label>
+                  </>
+                )}
+                {/* su 二级登录（批次二十二）：用普通用户登入后自动 su 到目标用户（如 root）。
+                    密码仅存保险库；留空密码 = su 后手输 */}
+                <div className="mt-2 border-t border-neutral-800 pt-2">
+                  <span className="mb-1 block text-xs font-medium text-neutral-300">
+                    {t('dialogs.suSection')}
+                  </span>
+                  <div className="flex gap-2">
+                    <label className="flex-1">
+                      <span className="mb-0.5 block text-xs text-neutral-400">
+                        {t('dialogs.suUser')}
+                      </span>
+                      <input
+                        className={input}
+                        value={suUser}
+                        autoComplete="off"
+                        spellCheck={false}
+                        placeholder={t('dialogs.suUserPlaceholder')}
+                        onChange={(e) => setSuUser(e.target.value)}
+                      />
+                    </label>
+                    <label className="flex-1">
+                      <span className="mb-0.5 block text-xs text-neutral-400">
+                        {t('dialogs.suPassword')}
+                      </span>
+                      <input
+                        className={input}
+                        type="password"
+                        value={suPassword}
+                        autoComplete="new-password"
+                        spellCheck={false}
+                        placeholder={t('dialogs.suPasswordPlaceholder')}
+                        onChange={(e) => setSuPassword(e.target.value)}
+                      />
+                    </label>
+                  </div>
+                </div>
+              </>
+            )}
             {/* 终端编码：仅 SSH 会话可选；本地 ConPTY 协议面恒为 UTF-8，转码会出乱码 */}
             {sessKind === 'ssh' && (
               <label>
@@ -543,106 +643,6 @@ function ConnectForm({
                 </select>
               </label>
             )}
-          </>
-        )}
-
-        {tab === 'auth' && (
-          <>
-            <label>
-              <span className="mb-0.5 block text-xs text-neutral-400">
-                {t('dialogs.authMethod')}
-              </span>
-              <select
-                className={input}
-                value={kind}
-                onChange={(e) => setKind(e.target.value as AuthKind)}
-              >
-                <option value="password">{t('dialogs.password')}</option>
-                <option value="publicKey">{t('dialogs.authPublicKey')}</option>
-                <option value="keyboardInteractive">{t('dialogs.authKi')}</option>
-                <option value="agent">ssh-agent / Pageant</option>
-              </select>
-            </label>
-            {kind === 'password' && (
-              <label>
-                <span className="mb-0.5 block text-xs text-neutral-400">
-                  {initial ? t('dialogs.passwordLabelEdit') : t('dialogs.password')}
-                </span>
-                <input
-                  className={input}
-                  type="password"
-                  value={password}
-                  autoComplete={initial ? 'current-password' : 'new-password'}
-                  spellCheck={false}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-              </label>
-            )}
-            {kind === 'publicKey' && (
-              <>
-                <label>
-                  <span className="mb-0.5 block text-xs text-neutral-400">
-                    {t('dialogs.keyPath')}
-                  </span>
-                  <input
-                    className={input}
-                    value={keyPath}
-                    autoComplete="off"
-                    spellCheck={false}
-                    onChange={(e) => setKeyPath(e.target.value)}
-                    placeholder={t('dialogs.keyPathPlaceholder')}
-                  />
-                </label>
-                <label>
-                  <span className="mb-0.5 block text-xs text-neutral-400">
-                    {t('dialogs.passphraseLabel')}
-                  </span>
-                  <input
-                    className={input}
-                    type="password"
-                    value={passphrase}
-                    spellCheck={false}
-                    onChange={(e) => setPassphrase(e.target.value)}
-                  />
-                </label>
-              </>
-            )}
-            {/* su 二级登录（批次二十二）：用普通用户登入后自动 su 到目标用户（如 root）。
-                密码仅存保险库；留空密码 = su 后手输 */}
-            <div className="mt-2 border-t border-neutral-800 pt-2">
-              <span className="mb-1 block text-xs font-medium text-neutral-300">
-                {t('dialogs.suSection')}
-              </span>
-              <div className="flex gap-2">
-                <label className="flex-1">
-                  <span className="mb-0.5 block text-xs text-neutral-400">
-                    {t('dialogs.suUser')}
-                  </span>
-                  <input
-                    className={input}
-                    value={suUser}
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder={t('dialogs.suUserPlaceholder')}
-                    onChange={(e) => setSuUser(e.target.value)}
-                  />
-                </label>
-                <label className="flex-1">
-                  <span className="mb-0.5 block text-xs text-neutral-400">
-                    {t('dialogs.suPassword')}
-                  </span>
-                  <input
-                    className={input}
-                    type="password"
-                    value={suPassword}
-                    autoComplete="new-password"
-                    spellCheck={false}
-                    placeholder={t('dialogs.suPasswordPlaceholder')}
-                    onChange={(e) => setSuPassword(e.target.value)}
-                  />
-                </label>
-              </div>
-            </div>
           </>
         )}
 
@@ -714,7 +714,11 @@ function ConnectForm({
             </span>
           )}
           {test.phase === 'err' && (
-            <span aria-live="polite" className="truncate text-xs text-red-400" title={test.message}>
+            <span
+              aria-live="polite"
+              className="text-xs break-all text-red-400"
+              title={test.message}
+            >
               ✗ {test.message}
             </span>
           )}

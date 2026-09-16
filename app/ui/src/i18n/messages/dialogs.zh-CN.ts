@@ -19,7 +19,6 @@ export const zhDialogs = {
 
   // ConnectDialog
   'dialogs.tabBasic': '基本信息',
-  'dialogs.tabAuth': '认证',
   'dialogs.tabTunnels': '隧道',
   'dialogs.tabMcp': 'MCP 权限',
   'dialogs.mcpPermInherit': '跟随全局',

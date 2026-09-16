@@ -21,7 +21,6 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
 
   // ConnectDialog
   'dialogs.tabBasic': 'Basic',
-  'dialogs.tabAuth': 'Authentication',
   'dialogs.tabTunnels': 'Tunnels',
   'dialogs.tabMcp': 'MCP Permissions',
   'dialogs.mcpPermInherit': 'Inherit global',
