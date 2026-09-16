@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 [![CI](https://github.com/xinchen2003/mySSH/actions/workflows/ci.yml/badge.svg)](https://github.com/xinchen2003/mySSH/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-0.3.1-blue)](https://github.com/xinchen2003/mySSH/releases)
-[![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)](https://github.com/xinchen2003/mySSH)
 
 **A local-first SSH client for Windows with a built-in MCP server — hand your servers to AI agents, on your terms.**
@@ -142,4 +142,4 @@ app/ui/         Frontend (React + xterm)
 
 ## License
 
-[Apache License 2.0](LICENSE)
+[MIT License](LICENSE)

@@ -37,6 +37,8 @@ const enc = new TextEncoder();
 interface ZSession {
   type?: string;
   on(ev: string, cb: (arg: unknown) => void): void;
+  /** 收方向必须显式 start()：发送 ZRINIT 并武装 offer 等待；缺它 sz 死等 */
+  start?(): unknown;
   close(): void;
   abort?(): void;
 }
@@ -67,6 +69,9 @@ export async function createTransferFilter(opts: {
   const { term, writeBytes, notify } = opts;
   // 本帧经解析后应写到终端的净荷；to_terminal 链同步回调收集
   let pieces: Uint8Array[] = [];
+  /** 本帧刚确认了新 ZMODEM 会话：zmodem.js 会把初始 ZRQINIT/ZRINIT 头
+      原样透传到终端（其官方注释称“本来就该上屏”），需手动剥掉尾部帧头 */
+  let justDetected = false;
   // ZMODEM 会话活动标记；trzsz 活动由 filter 自查
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let zsession: any = null;
@@ -106,10 +111,13 @@ export async function createTransferFilter(opts: {
     zs.on('session_end', () => {
       zsession = null;
     });
+    justDetected = true;
     if (zs.type === 'receive') {
-      // 远端 sz：收文件，逐 offer 接收 → 保存对话框 → transfer_save_file
+      // 远端 sz：收文件，逐 offer 接收 → 保存对话框 → transfer_save_file。
+      // 必须 start()：sz 发 ZRQINIT 后死等接收方 ZRINIT，不发则永远等不到 offer
       notify(tNow('state.zmodemIncoming'), 'info');
       zs.on('offer', (o) => void receiveOffer(o as ZmodemOffer));
+      zs.start?.();
     } else {
       // 远端 rz：弹文件选择 → Browser.send_files 驱动发送
       void sendFlow(zs);
@@ -179,6 +187,15 @@ export async function createTransferFilter(opts: {
         done();
         return;
       }
+      if (justDetected) {
+        // 确认会话的那帧会夹带初始帧头上屏（zmodem.js 设计如此）——剥掉
+        justDetected = false;
+        pieces = stripTrailingZmodemHeader(pieces);
+        if (pieces.length === 0) {
+          done();
+          return;
+        }
+      }
       if (zsession !== null || trzsz.isTransferringFiles()) {
         // 传输期间 trzsz 进度条等净荷：直写终端，不经 xterm 写回调链
         for (const p of pieces) term.write(p);
@@ -212,6 +229,41 @@ export function bytesToB64(bytes: Uint8Array): string {
     bin += String.fromCharCode(...bytes.subarray(i, i + step));
   }
   return btoa(bin);
+}
+
+/** 剥掉净荷尾部的 ZMODEM 初始帧头（**<CAN>B + 14 hex + CR [0x8a] [XON]）。
+ * 哨兵在确认会话的那帧里把头字节一并透传；对上屏无意义且形如乱码。 */
+export function stripTrailingZmodemHeader(pieces: Uint8Array[]): Uint8Array[] {
+  const total = pieces.reduce((n, p) => n + p.length, 0);
+  const joined = new Uint8Array(total);
+  let off = 0;
+  for (const p of pieces) {
+    joined.set(p, off);
+    off += p.length;
+  }
+  // 匹配尾部帧头：2A 2A 18 42 + 14 个 hex ASCII + 0D (+8A) (+11)
+  let i = joined.length - 1;
+  if (i >= 0 && joined[i] === 0x11) i--; // XON
+  if (i >= 0 && joined[i] === 0x8a) i--;
+  if (i < 0 || joined[i] !== 0x0d) return pieces; // CR
+  const hexEnd = i; // 14 个 hex 在 CR 之前
+  const hexStart = hexEnd - 14;
+  if (hexStart < 3) return pieces;
+  for (let j = hexStart; j < hexEnd; j++) {
+    const c = joined[j];
+    const isHex = (c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66) || (c >= 0x41 && c <= 0x46);
+    if (!isHex) return pieces;
+  }
+  if (
+    joined[hexStart - 1] !== 0x42 || // 'B'
+    joined[hexStart - 2] !== 0x18 || // CAN
+    joined[hexStart - 3] !== 0x2a || // '*'
+    joined[hexStart - 4] !== 0x2a // '*'
+  ) {
+    return pieces;
+  }
+  const cut = joined.subarray(0, hexStart - 4);
+  return cut.length ? [cut] : [];
 }
 
 /** 原生文件选择（WebView2 支持 <input type=file>；不依赖 FS Access API） */
