@@ -50,9 +50,9 @@ export const DEFAULT_TERMINAL: TerminalSettings = {
   scrollback: 10_000,
 };
 
-/** 右键菜单外观固定值（px；图标较早期版本放大一倍） */
+/** 右键菜单外观固定值（px）：图标与字号近等大，视觉协调（批次三十五由 28 收至 13） */
 export const MENU_FONT = 12;
-export const MENU_ICON = 28;
+export const MENU_ICON = 13;
 
 const num = (v: unknown, dflt: number, min: number, max: number): number =>
   typeof v === 'number' && v >= min && v <= max ? v : dflt;

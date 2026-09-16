@@ -27,12 +27,15 @@ function MenuButton({
   it,
   itemId,
   active,
+  reserveIcon,
   onHover,
   onClick,
 }: {
   it: MenuEntry;
   itemId: string;
   active: boolean;
+  /** 同菜单有任意图标时，无图标项也占位对齐标签 */
+  reserveIcon: boolean;
   onHover: () => void;
   onClick: () => void;
 }) {
@@ -43,14 +46,15 @@ function MenuButton({
       aria-disabled={it.disabled || undefined}
       aria-haspopup={it.children ? 'menu' : undefined}
       disabled={it.disabled}
-      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left ${
-        it.danger ? 'text-red-400 hover:bg-neutral-800' : 'text-neutral-200 hover:bg-neutral-800'
-      } ${active ? 'bg-neutral-800' : ''} ${it.disabled ? 'opacity-40' : ''}`}
+      className={`myssh-menu-item flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left ${
+        it.danger ? 'text-red-400' : 'text-neutral-200'
+      } ${it.disabled ? 'opacity-40' : ''}`}
+      data-active={active ? '1' : undefined}
       style={{ fontSize: 'var(--myssh-menu-font, 12px)' }}
       onMouseEnter={onHover}
       onClick={onClick}
     >
-      {it.icon !== undefined && (
+      {(it.icon !== undefined || reserveIcon) && (
         <span
           aria-hidden
           className="shrink-0 text-center text-neutral-400"
@@ -66,7 +70,7 @@ function MenuButton({
       )}
       <span className="min-w-0 flex-1 truncate">{it.label}</span>
       {it.children && (
-        <span aria-hidden className="shrink-0 text-neutral-500">
+        <span aria-hidden className="shrink-0 text-[10px] text-neutral-500">
           ▸
         </span>
       )}
@@ -102,6 +106,8 @@ export function ContextMenu({
   const [subActive, setSubActive] = useState(-1);
   /** 子菜单弹出位置（测量后写入；forIdx 匹配当前展开项才生效，否则隐藏避免闪跳） */
   const [subPos, setSubPos] = useState<{ forIdx: number; sx: number; sy: number } | null>(null);
+  /** 同层任意项带图标 → 无图标项占位对齐 */
+  const mainHasIcon = items.some((it) => it !== 'separator' && it.icon !== undefined);
   const subItems = subOpen !== null ? (items[subOpen] as MenuEntry).children : undefined;
   const subActionable = subItems ? actionableOf(subItems) : [];
 
@@ -240,7 +246,7 @@ export function ContextMenu({
       role="menu"
       tabIndex={-1}
       aria-activedescendant={active >= 0 ? `myssh-menu-item-${active}` : undefined}
-      className="fixed z-50 min-w-40 rounded outline-none border border-neutral-700 bg-neutral-900 py-1 shadow-xl"
+      className="myssh-menu-glass myssh-menu-pop fixed z-50 min-w-44 rounded-lg p-1 outline-none"
       style={{ left: pos.x, top: pos.y }}
     >
       {items.map((it, i) =>
@@ -252,6 +258,7 @@ export function ContextMenu({
               it={it}
               itemId={`myssh-menu-item-${i}`}
               active={i === active}
+              reserveIcon={mainHasIcon}
               onHover={() => {
                 if (it.disabled) return;
                 setActive(i);
@@ -270,7 +277,7 @@ export function ContextMenu({
               <div
                 ref={subRef}
                 role="menu"
-                className="z-50 min-w-36 rounded border border-neutral-700 bg-neutral-900 py-1 shadow-xl"
+                className="myssh-menu-glass z-50 min-w-40 rounded-lg p-1"
                 style={
                   subPos && subPos.forIdx === i
                     ? { position: 'fixed', left: subPos.sx, top: subPos.sy }
@@ -286,6 +293,9 @@ export function ContextMenu({
                       it={sub}
                       itemId={`myssh-subitem-${j}`}
                       active={j === subActive}
+                      reserveIcon={
+                        subItems?.some((s) => s !== 'separator' && s.icon !== undefined) ?? false
+                      }
                       onHover={() => !sub.disabled && setSubActive(j)}
                       onClick={() => runSub(j)}
                     />

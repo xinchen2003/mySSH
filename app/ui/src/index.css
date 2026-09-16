@@ -60,6 +60,51 @@ html[data-ui='light'] .hover\:bg-neutral-800:hover {
 html[data-ui='light'] .hover\:text-neutral-100:hover {
   color: #1c1917;
 }
+/* ---------- 右键菜单毛玻璃（批次三十五） ----------
+   半透明底 + backdrop 模糊 + 柔和投影；亮档换白底浅影。
+   只写标准 backdrop-filter：本应用仅跑 Chromium WebView2（Chromium 早已去
+   -webkit 别名），且 Lightning CSS 压缩会把「标准+前缀」双声明错误合并成
+   仅 -webkit- 版，现代内核反而不识别——只留标准声明规避。 */
+.myssh-menu-glass {
+  background-color: rgb(23 23 23 / 0.92);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid rgb(255 255 255 / 0.08);
+  box-shadow:
+    0 12px 32px rgb(0 0 0 / 0.45),
+    0 2px 8px rgb(0 0 0 / 0.3);
+}
+html[data-ui='light'] .myssh-menu-glass {
+  background-color: rgb(255 255 255 / 0.95);
+  box-shadow:
+    0 12px 32px rgb(0 0 0 / 0.12),
+    0 2px 8px rgb(0 0 0 / 0.08);
+}
+/* 菜单项 hover/active 用白 10% 叠层；亮档转黑 6% */
+html[data-ui='light'] .myssh-menu-item:hover,
+html[data-ui='light'] .myssh-menu-item[data-active='1'] {
+  background-color: rgb(0 0 0 / 0.06);
+}
+.myssh-menu-item:hover,
+.myssh-menu-item[data-active='1'] {
+  background-color: rgb(255 255 255 / 0.1);
+}
+.myssh-menu-item:disabled:hover {
+  background-color: transparent;
+}
+@keyframes myssh-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.myssh-menu-pop {
+  animation: myssh-menu-in 0.12s ease-out;
+  transform-origin: top left;
+}
 /* ---------- 传输动效（批次十 1） ----------
    进行中：条纹滚动；新任务行：滑入淡入；到达终态：整行底色闪烁一次。
    全部纯 CSS 动画，不引入 JS 定时器驱动。 */
@@ -148,6 +193,7 @@ html[data-term-bg='1'] .myssh-term-host .xterm-scrollable-element {
   .myssh-flash-done,
   .myssh-flash-fail,
   .myssh-progress-running,
+  .myssh-menu-pop,
   .animate-pulse {
     animation: none;
   }
