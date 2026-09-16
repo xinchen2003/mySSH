@@ -2,6 +2,8 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import type { Terminal } from '@xterm/xterm';
 import { createStreamChannel } from '../ipc/stream';
 import { StreamConsumer } from '../terminal/stream-consumer';
+import { bytesToB64, createTransferFilter, type TransferFilter } from './file-transfer';
+import type { NotificationLevel } from '../state/app-store';
 import type { ConnectTarget, SessionStateFrame, TermEvent } from './types';
 
 /**
@@ -25,8 +27,17 @@ export class TerminalSession {
   private disposers: { dispose(): void }[] = [];
   /** 广播输入旁路钩子（11）：onData 直发后同步触发；未开链的输入不触发 */
   inputHook: ((data: string) => void) | null = null;
+  /** 终端内文件传输（ZMODEM/trzsz）：仅 UTF-8 会话挂载；GBK 会话为 null */
+  private transfer: TransferFilter | null = null;
+  /** 传输结果 toast 透传（app-store notify）；缺省丢弃 */
+  private readonly notify: (msg: string, level?: NotificationLevel) => void;
 
-  constructor(readonly onEvent: (ev: TermEvent) => void) {}
+  constructor(
+    readonly onEvent: (ev: TermEvent) => void,
+    notify?: (msg: string, level?: NotificationLevel) => void,
+  ) {
+    this.notify = notify ?? (() => undefined);
+  }
 
   async attach(
     term: Terminal,
@@ -37,9 +48,21 @@ export class TerminalSession {
     // 原位重连幂等：同一 xterm 实例重复 attach 时，先释放上一轮输入订阅与消费器，
     // 否则 onData/onResize 会注册两次导致输入重复发送
     this.detachInput();
-    // 消费器必须先于 term_open 就绪：shell banner 可能紧随返回抵达
+    // 消费器必须先于 term_open 就绪：shell banner 可能紧随返回抵达。
+    // 文件传输过滤器插在消费器与 xterm 之间（仅 UTF-8：GBK 转码会毁二进制协议帧）
+    const isUtf8 =
+      target.kind === 'spec'
+        ? !target.spec.encoding || target.spec.encoding === 'utf-8'
+        : !target.encoding || target.encoding === 'utf-8';
+    this.transfer = isUtf8
+      ? await createTransferFilter({
+          term,
+          writeBytes: (b) => this.writeBytes(b),
+          notify: this.notify,
+        })
+      : null;
     this.consumer = new StreamConsumer(
-      (chunk, cb) => term.write(chunk, cb),
+      (chunk, cb) => (this.transfer ? this.transfer.onOutput(chunk, cb) : term.write(chunk, cb)),
       (bytes) => {
         if (this.tabId) void invoke('term_credit', { tabId: this.tabId, bytes });
       },
@@ -84,12 +107,20 @@ export class TerminalSession {
     if (term.cols !== openedCols || term.rows !== openedRows)
       void invoke('term_resize', { tabId: res.tabId, cols: term.cols, rows: term.rows });
 
-    // 输入零聚合直发（规格书输入路径预算）；广播钩子在同窗口同步扇出
+    // 输入零聚合直发（规格书输入路径预算）；广播钩子在同窗口同步扇出。
+    // 传输期间输入交协议处理（^C 中断 trzsz；ZMODEM 期间丢弃防污染）
     this.disposers.push(
       term.onData((s) => {
         if (!this.tabId) return;
+        if (this.transfer?.transferring) {
+          this.transfer.processInput(s);
+          return;
+        }
         this.write(s);
         this.inputHook?.(s);
+      }),
+      term.onBinary((s) => {
+        if (this.transfer?.transferring) this.transfer.processBinary(s);
       }),
       term.onResize(({ cols, rows }) => {
         if (this.tabId) void invoke('term_resize', { tabId: this.tabId, cols, rows });
@@ -112,10 +143,21 @@ export class TerminalSession {
     });
   }
 
+  /** 协议二进制写入（ZMODEM/trzsz 帧）：b64 → term_input_raw，不经输入编码器 */
+  writeBytes(bytes: Uint8Array): void {
+    if (!this.tabId) return;
+    void invoke('term_input_raw', {
+      tabId: this.tabId,
+      b64: bytesToB64(bytes),
+    });
+  }
+
   /** 释放输入/resize 订阅与消费器（OSC 7 handler 重注册即覆盖，无需释放） */
   private detachInput(): void {
     for (const d of this.disposers) d.dispose();
     this.disposers = [];
+    this.transfer?.dispose();
+    this.transfer = null;
     this.consumer?.dispose();
     this.consumer = null;
   }

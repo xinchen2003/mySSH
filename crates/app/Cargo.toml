@@ -38,5 +38,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-updater = "2.10.1"
+tauri-plugin-dialog = "2"
 portable-pty = "0.9"
 encoding_rs = "0.8"

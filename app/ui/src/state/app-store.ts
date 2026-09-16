@@ -284,7 +284,7 @@ export const useAppStore = create<AppStore>((set, get) => {
         }
       }
     };
-    const session = new TerminalSession(onEvent);
+    const session = new TerminalSession(onEvent, (m, l) => get().notify(m, l));
     // 广播输入（11）：输入帧旁路钩子，开关状态在触发时读取
     session.inputHook = (data) => {
       if (get().broadcastEnabled) broadcastInput(tabId, id, data);

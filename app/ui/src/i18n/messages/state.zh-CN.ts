@@ -12,6 +12,12 @@ export const zhState = {
   'state.duplicateSessionFailed': '复制服务器失败: {error}',
   'state.macroSkipped':
     '已配置 su 手动输入密码，登录宏无法确定执行时机，本次已跳过（在保险库为该会话保存 su 密码可启用）',
+  'state.zmodemIncoming': '检测到 ZMODEM 文件接收（sz），请在保存对话框选择位置',
+  'state.zmodemSaved': '已保存 {name}',
+  'state.zmodemSaveFailed': 'ZMODEM 保存失败: {error}',
+  'state.zmodemSent': '已发送 {name}',
+  'state.zmodemSendFailed': 'ZMODEM 发送失败: {error}',
+  'state.zmodemError': 'ZMODEM 协议异常: {error}',
   'state.favorited': '已收藏',
   'state.unfavorited': '已取消收藏',
   'state.sessionDeleted': '已删除服务器「{name}」',

@@ -14,6 +14,12 @@ export const enState: Record<keyof typeof zhState, string> = {
   'state.duplicateSessionFailed': 'Failed to duplicate server: {error}',
   'state.macroSkipped':
     'Login macro skipped: su uses a manually typed password, so timing is unknown. Save the su password in the vault to enable it.',
+  'state.zmodemIncoming': 'ZMODEM receive detected (sz); choose a location in the save dialog',
+  'state.zmodemSaved': 'Saved {name}',
+  'state.zmodemSaveFailed': 'ZMODEM save failed: {error}',
+  'state.zmodemSent': 'Sent {name}',
+  'state.zmodemSendFailed': 'ZMODEM send failed: {error}',
+  'state.zmodemError': 'ZMODEM protocol error: {error}',
   'state.favorited': 'Added to Favorites',
   'state.unfavorited': 'Removed from Favorites',
   'state.sessionDeleted': 'Server "{name}" deleted',

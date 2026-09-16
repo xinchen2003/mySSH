@@ -160,6 +160,18 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
     Ok(())
 }
 
+/// 终端内传输（ZMODEM sz / trzsz tsz）落盘：保存对话框（dialog 插件）选定路径，
+/// 整体写入。信任级别与 SFTP 本地栏一致——用户显式选择的路径，不做白名单。
+/// 大文件整体内存中转（前端 spool + b64），v1 已知限制：zmodem 场景通常为中小文件。
+#[tauri::command]
+pub async fn transfer_save_file(path: String, b64: String) -> Result<(), String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.as_bytes())
+        .map_err(|e| format!("b64 解码失败: {e}"))?;
+    std::fs::write(&path, &bytes).map_err(|e| io_humanize(&e))
+}
+
 /// 桌面路径（SFTP 本地栏快捷位「桌面」）。
 /// 不新增目录 crate：Windows 用 %USERPROFILE%\Desktop，类 Unix 用 $HOME/Desktop，校验存在。
 #[tauri::command]

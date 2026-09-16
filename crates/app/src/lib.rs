@@ -56,6 +56,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(TerminalManager::default()))
         .manage(session_state.clone())
         .manage(tunnel_mgr_state.clone())
@@ -83,6 +84,7 @@ pub fn run() {
             app_version,
             terminal::term_open,
             terminal::term_input,
+            terminal::term_input_raw,
             terminal::term_credit,
             terminal::term_resize,
             terminal::term_close,
@@ -98,6 +100,7 @@ pub fn run() {
             files::open_in_explorer,
             files::local_copy,
             files::local_desktop_path,
+            files::transfer_save_file,
             sessions::session_list,
             sessions::session_upsert,
             sessions::session_delete,

@@ -11,6 +11,7 @@
     "updater:allow-download-and-install",
     "core:webview:allow-create-webview-window",
     "core:window:allow-close",
-    "core:window:allow-destroy"
+    "core:window:allow-destroy",
+    "dialog:allow-save"
   ]
 }

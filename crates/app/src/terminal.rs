@@ -779,6 +779,28 @@ async fn reconnect(ctx: &SuperviseCtx) -> Option<(PtyReader, PtyWriter)> {
     }
 }
 
+/// 终端内文件传输（ZMODEM/trzsz）协议帧写入：二进制直发，不经过输入编码器
+/// （协议字节非 UTF-8 文本，转码必坏）；b64 载荷避免 JSON 字节数组逐字节膨胀。
+#[tauri::command]
+pub async fn term_input_raw(
+    tab_id: String,
+    b64: String,
+    state: tauri::State<'_, Arc<TerminalManager>>,
+) -> Result<(), String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.as_bytes())
+        .map_err(|e| format!("b64 解码失败: {e}"))?;
+    let writer = {
+        let sessions = state.sessions.lock();
+        sessions.get(&tab_id).map(|s| s.writer.clone())
+    };
+    match writer {
+        Some(w) => w.write(&bytes).await.map_err(|e| e.to_string()),
+        None => Err(format!("unknown tab {tab_id}")),
+    }
+}
+
 #[tauri::command]
 pub async fn term_input(
     tab_id: String,
