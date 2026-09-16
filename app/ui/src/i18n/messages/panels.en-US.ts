@@ -205,10 +205,12 @@ export const enPanels: Record<keyof typeof zhPanels, string> = {
   'panels.tunnelKindDynamic': 'SOCKS5 -D',
   'panels.tunnelNotRunning': 'Not running',
   'panels.tunnelHeaderNote':
-    'Grouped by server · edits apply on save (restart required while running)',
+    'Tunnels of the active session · edits apply on save (restart required while running)',
   'panels.newTunnel': 'New Tunnel',
   'panels.noTunnels':
     'No tunnels yet. Click "New Tunnel" above, or add one on the Tunnels tab of the server editor.',
+  'panels.tunnelNoActiveSession':
+    'The active tab is not a saved session; tunnels bind to sessions — save the session profile in the editor first.',
   'panels.sessionDeleted': '(session deleted: {id})',
   'panels.colType': 'Type',
   'panels.colAddress': 'Address',

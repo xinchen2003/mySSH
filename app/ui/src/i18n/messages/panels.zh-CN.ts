@@ -197,9 +197,11 @@ export const zhPanels = {
   'panels.tunnelKindRemote': '远程 -R',
   'panels.tunnelKindDynamic': 'SOCKS5 -D',
   'panels.tunnelNotRunning': '未运行',
-  'panels.tunnelHeaderNote': '按服务器分组 · 编辑即生效（运行中需重启）',
+  'panels.tunnelHeaderNote': '当前会话的隧道 · 编辑即生效（运行中需重启）',
   'panels.newTunnel': '新建隧道',
   'panels.noTunnels': '还没有隧道。点「＋ 新建隧道」，或在服务器编辑器的「隧道」页添加。',
+  'panels.tunnelNoActiveSession':
+    '当前页签未关联已保存的会话；隧道需绑定会话，请先在会话编辑器中保存档案。',
   'panels.sessionDeleted': '（会话已删除 {id}）',
   'panels.colType': '类型',
   'panels.colAddress': '地址',

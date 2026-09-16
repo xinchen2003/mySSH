@@ -194,4 +194,5 @@ export const zhChrome = {
   'chrome.dockClose': '关闭面板',
   'chrome.dockLocalSftp': '本地会话无需 SFTP——文件就在本机，终端里直接操作即可',
   'chrome.dockLocalMetrics': '本地会话无远程主机可监控',
+  'chrome.dockLocalTunnel': '本地会话无远程主机可转发',
 } as const;

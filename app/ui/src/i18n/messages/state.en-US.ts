@@ -5,6 +5,7 @@ export const enState: Record<keyof typeof zhState, string> = {
   // —— Server/profile action notifications (app-store) ——
   'state.localNoSftp': 'Local sessions do not support SFTP',
   'state.localNoMetrics': 'Local sessions do not support server monitoring',
+  'state.localNoTunnels': 'Local sessions do not support tunnels',
   'state.copyName': '{name} Copy',
   'state.copyNameN': '{name} Copy {n}',
   'state.sessionDuplicated': 'Duplicated as "{name}" (credentials are not copied)',

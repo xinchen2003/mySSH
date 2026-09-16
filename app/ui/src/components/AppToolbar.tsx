@@ -63,6 +63,7 @@ export function AppToolbar() {
         label={t('chrome.tunnelsLabel')}
         tooltip={t('chrome.tipTunnels', { kb: kb('tunnels') })}
         active={dockTab === 'tunnel'}
+        disabled={!isRemote}
         onClick={() => toggleDock('tunnel')}
       >
         ⇄

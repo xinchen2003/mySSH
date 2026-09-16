@@ -205,4 +205,5 @@ export const enChrome: Record<keyof typeof zhChrome, string> = {
   'chrome.dockLocalSftp':
     'Local sessions need no SFTP — files are on this machine; use the terminal directly',
   'chrome.dockLocalMetrics': 'No remote host to monitor in a local session',
+  'chrome.dockLocalTunnel': 'No remote host to forward in a local session',
 };

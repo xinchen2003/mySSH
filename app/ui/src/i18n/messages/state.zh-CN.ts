@@ -3,6 +3,7 @@ export const zhState = {
   // —— 服务器/档案操作通知（app-store） ——
   'state.localNoSftp': '本地会话不支持 SFTP',
   'state.localNoMetrics': '本地会话不支持服务器监控',
+  'state.localNoTunnels': '本地会话不支持隧道',
   'state.copyName': '{name} 副本',
   'state.copyNameN': '{name} 副本 {n}',
   'state.sessionDuplicated': '已复制为「{name}」（凭据不随档案复制）',

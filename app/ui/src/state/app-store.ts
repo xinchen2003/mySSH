@@ -338,9 +338,17 @@ export const useAppStore = create<AppStore>((set, get) => {
     openDock: (tab) => {
       // 防线：本地会话无 SSH 通道，任何调用路径（含漏检入口）都不许打开
       const active = get().tabs.find((t) => t.id === get().activeId);
-      if ((tab === 'sftp' || tab === 'metrics') && active && isLocalTarget(active.target)) {
+      if (
+        (tab === 'sftp' || tab === 'metrics' || tab === 'tunnel') &&
+        active &&
+        isLocalTarget(active.target)
+      ) {
         get().notify(
-          tab === 'sftp' ? tNow('state.localNoSftp') : tNow('state.localNoMetrics'),
+          tab === 'sftp'
+            ? tNow('state.localNoSftp')
+            : tab === 'metrics'
+              ? tNow('state.localNoMetrics')
+              : tNow('state.localNoTunnels'),
           'warning',
         );
         return;

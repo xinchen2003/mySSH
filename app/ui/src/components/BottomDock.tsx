@@ -36,9 +36,9 @@ export function BottomDock() {
   if (!dockTab || !activeId) return null;
 
   const activeTab = tabs.find((t) => t.id === activeId);
-  // 本地会话：SFTP/监控 tab 禁用；dock 已停在此页签时内容区给占位提示
+  // 本地会话：SFTP/监控/隧道 tab 禁用；dock 已停在此页签时内容区给占位提示
   const isLocal = activeTab ? isLocalTarget(activeTab.target) : false;
-  const sshOnly = dockTab === 'sftp' || dockTab === 'metrics';
+  const sshOnly = dockTab === 'sftp' || dockTab === 'metrics' || dockTab === 'tunnel';
 
   const bindings = keymapFromSettings(settings);
   const kb = (id?: string) => (id && bindings[id] ? t('chrome.kbHint', { key: bindings[id] }) : '');
@@ -57,7 +57,8 @@ export function BottomDock() {
       >
         {DOCK_TABS.map((tab) => {
           const label = t(tab.labelKey);
-          const disabled = (tab.id === 'sftp' || tab.id === 'metrics') && isLocal;
+          const disabled =
+            (tab.id === 'sftp' || tab.id === 'metrics' || tab.id === 'tunnel') && isLocal;
           const active = dockTab === tab.id;
           return (
             <button
@@ -98,7 +99,11 @@ export function BottomDock() {
       <div className="min-h-0 flex-1">
         {sshOnly && isLocal ? (
           <div className="px-3 py-2 text-xs text-neutral-500">
-            {dockTab === 'sftp' ? t('chrome.dockLocalSftp') : t('chrome.dockLocalMetrics')}
+            {dockTab === 'sftp'
+              ? t('chrome.dockLocalSftp')
+              : dockTab === 'metrics'
+                ? t('chrome.dockLocalMetrics')
+                : t('chrome.dockLocalTunnel')}
           </div>
         ) : dockTab === 'sftp' ? (
           <SftpPanel tabId={activeId} />
