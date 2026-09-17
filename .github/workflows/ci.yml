@@ -14,6 +14,13 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # tauri.conf.json 的 frontendDist 指向 app/ui/dist，cargo 编译 app 前必须先产出前端
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/ui/package-lock.json
+      - run: npm ci --prefix app/ui && npm run build --prefix app/ui
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy

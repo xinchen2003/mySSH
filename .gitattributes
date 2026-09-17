@@ -1,0 +1,3 @@
+# 全仓文本文件统一 LF：本地与 CI（windows 默认 autocrlf=true）行为一致，
+# 避免 prettier --check 在 CI 因 CRLF 全量报错。
+* text=auto eol=lf
