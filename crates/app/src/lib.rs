@@ -6,6 +6,7 @@ mod files;
 mod local_pty;
 mod logging;
 mod mcp;
+mod mcp_terminal;
 mod monitor;
 mod sessions;
 mod settings;
@@ -52,6 +53,7 @@ pub fn run() {
     let sftp_state = sftp::SftpManagerState::new();
     let monitor_state = monitor::MonitorState::new();
     let mcp_manager = mcp::McpManager::new();
+    let mcp_terms = mcp_terminal::McpTerminalState::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -63,6 +65,7 @@ pub fn run() {
         .manage(sftp_state.clone())
         .manage(monitor_state)
         .manage(mcp_manager.clone())
+        .manage(mcp_terms.clone())
         .setup(move |app| {
             // 开机自启隧道：store 已就绪，后台拉起（失败仅日志，监督器自持重连）
             let mgr = tunnel_mgr_state.mgr.clone();
@@ -73,8 +76,9 @@ pub fn run() {
             // MCP 服务端：按 mcp.enabled/port/token 设置启动（绑定失败仅日志）
             let store = session_state.store.clone();
             let sftp = sftp_state.clone();
+            let terms = mcp_terms.clone();
             tauri::async_runtime::spawn(async move {
-                crate::mcp::boot_from_settings(mcp_manager, store, sftp).await;
+                crate::mcp::boot_from_settings(mcp_manager, store, sftp, terms).await;
             });
             let _ = app;
             Ok(())

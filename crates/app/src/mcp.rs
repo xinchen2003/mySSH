@@ -3,14 +3,15 @@
 //! 传输为 MCP Streamable HTTP（2025-03-26 子集）：单端点 POST /mcp，
 //! 每次请求独立 JSON 响应（不开 SSE 流）；仅绑定 127.0.0.1。
 //! 工具面：list_sessions（列会话档案，不含凭据）、ssh_exec（一次性 Bulk
-//! 连接跑命令，收集 stdout/stderr/exit code）、sftp_*（home/list/stat/read/
+//! 连接跑命令，收集 stdout/stderr/exit code）、terminal_*（open/send/read/
+//! close 交互式有状态 shell，实现见 mcp_terminal.rs）、sftp_*（home/list/stat/read/
 //! write/mkdir/delete/rename/chmod，与 UI 共享 SFTP Bulk 连接池，写操作落
 //! audit 且 actor=mcp；upload/download 入队 UI 同款 TransferQueue 后台执行，
 //! 进度用 transfer_list 轮询）。鉴权为 Bearer token
 //!（设置键 mcp.token，空 = 不鉴权；首次启用自动生成随机 token）。
 //! 工具分组权限由设置键 mcp.allow.{list_sessions,ssh_exec,sftp_read,
-//! sftp_write,sftp_transfer} 控制（缺省全开；tools/list 同步过滤，
-//! tools/call 命中禁用组返回 isError）。会话编辑器可逐组覆盖
+//! sftp_write,sftp_transfer} 控制（terminal_* 归入 ssh_exec 组；缺省全开；
+//! tools/list 同步过滤，tools/call 命中禁用组返回 isError）。会话编辑器可逐组覆盖
 //!（sessions.mcp_perms 稀疏映射），会话级覆盖优先于全局。
 //! 生命周期由 lib.rs 装配：setup 时按 mcp.enabled/mcp.port/mcp.token 启动，
 //! mcp_restart 命令供设置变更后重载。
@@ -59,7 +60,7 @@ struct McpConfig {
 }
 
 /// 工具分组权限（设置键 mcp.allow.*，缺省 = 允许：旧库无这些键时行为不变）。
-/// 粒度为分组而非单工具：14 个工具逐一切换噪音过大，读写分离已覆盖风险面。
+/// 粒度为分组而非单工具：18 个工具逐一切换噪音过大，读写分离已覆盖风险面。
 #[derive(Clone, Copy)]
 pub struct McpPerms {
     list_sessions: bool,
@@ -89,6 +90,10 @@ fn tool_group_key(name: &str) -> Option<&'static str> {
     match name {
         "list_sessions" => Some("list_sessions"),
         "ssh_exec" => Some("ssh_exec"),
+        "terminal_open" => Some("ssh_exec"),
+        "terminal_send" => Some("ssh_exec"),
+        "terminal_read" => Some("ssh_exec"),
+        "terminal_close" => Some("ssh_exec"),
         "sftp_home" | "sftp_list" | "sftp_stat" | "sftp_read" => Some("sftp_read"),
         "sftp_write" | "sftp_mkdir" | "sftp_delete" | "sftp_rename" | "sftp_chmod" => {
             Some("sftp_write")
@@ -234,6 +239,8 @@ struct McpInner {
     task: Option<tauri::async_runtime::JoinHandle<()>>,
     port: u16,
     token: String,
+    /// 交互式终端注册表（start 时挂入，stop 清场）
+    terms: Option<Arc<crate::mcp_terminal::McpTerminalState>>,
 }
 
 impl McpManager {
@@ -246,6 +253,7 @@ impl McpManager {
         self: &Arc<Self>,
         store: Arc<Store>,
         sftp: Arc<crate::sftp::SftpManagerState>,
+        terms: Arc<crate::mcp_terminal::McpTerminalState>,
         port: u16,
         token: String,
         perms: McpPerms,
@@ -254,6 +262,7 @@ impl McpManager {
         let state = Arc::new(ServerState {
             store,
             sftp,
+            terms: terms.clone(),
             token: token.clone(),
             perms,
         });
@@ -287,17 +296,22 @@ impl McpManager {
         inner.task = Some(task);
         inner.port = port;
         inner.token = token;
+        inner.terms = Some(terms);
         tracing::info!(port, "MCP 服务已启动（127.0.0.1）");
         Ok(())
     }
 
     /// 停止服务：先发 shutdown 信号走优雅退出，超过 STOP_GRACE 则 abort
     pub async fn stop(&self) {
-        let (tx, task) = {
+        let (tx, task, terms) = {
             let mut inner = self.inner.lock();
             inner.port = 0;
-            (inner.shutdown.take(), inner.task.take())
+            (inner.shutdown.take(), inner.task.take(), inner.terms.take())
         };
+        // 交互式终端清场：关通道 + abort 读任务，不留孤儿 Bulk 连接
+        if let Some(terms) = terms {
+            terms.close_all().await;
+        }
         if let Some(tx) = tx {
             let _ = tx.send(true);
         }
@@ -305,7 +319,7 @@ impl McpManager {
             match tokio::time::timeout(STOP_GRACE, &mut task).await {
                 Ok(_) => tracing::info!("MCP 服务已停止"),
                 Err(_) => {
-                    // 有挂起连接拖住优雅退出时直接 abort（无状态服务，安全）
+                    // 有挂起连接拖住优雅退出时直接 abort（终端已清场，其余请求无状态）
                     task.abort();
                     tracing::warn!("MCP 服务优雅退出超时，强制结束");
                 }
@@ -330,6 +344,7 @@ pub async fn boot_from_settings(
     mgr: Arc<McpManager>,
     store: Arc<Store>,
     sftp: Arc<crate::sftp::SftpManagerState>,
+    terms: Arc<crate::mcp_terminal::McpTerminalState>,
 ) {
     let cfg = match read_mcp_config(&store).await {
         Ok(c) => c,
@@ -342,7 +357,10 @@ pub async fn boot_from_settings(
         return;
     }
     let token = ensure_token(&store, cfg.token).await;
-    if let Err(e) = mgr.start(store, sftp, cfg.port, token, cfg.perms).await {
+    if let Err(e) = mgr
+        .start(store, sftp, terms, cfg.port, token, cfg.perms)
+        .await
+    {
         tracing::error!(error = %e, "MCP 服务启动失败");
     }
 }
@@ -351,6 +369,7 @@ pub async fn restart_from_settings(
     mgr: &Arc<McpManager>,
     store: Arc<Store>,
     sftp: Arc<crate::sftp::SftpManagerState>,
+    terms: Arc<crate::mcp_terminal::McpTerminalState>,
 ) -> Result<Value, String> {
     mgr.stop().await;
     let cfg = read_mcp_config(&store).await?;
@@ -358,7 +377,8 @@ pub async fn restart_from_settings(
         let token = ensure_token(&store, cfg.token).await;
         // 绑定失败直接回报前端，同时把 token 记入状态便于排查
         mgr.inner.lock().token = token.clone();
-        mgr.start(store, sftp, cfg.port, token, cfg.perms).await?;
+        mgr.start(store, sftp, terms, cfg.port, token, cfg.perms)
+            .await?;
     }
     Ok(mgr.status())
 }
@@ -373,8 +393,15 @@ pub async fn mcp_restart(
     state: tauri::State<'_, Arc<McpManager>>,
     sessions: tauri::State<'_, Arc<crate::sessions::SessionManagerState>>,
     sftp: tauri::State<'_, Arc<crate::sftp::SftpManagerState>>,
+    terms: tauri::State<'_, Arc<crate::mcp_terminal::McpTerminalState>>,
 ) -> Result<Value, String> {
-    restart_from_settings(&state, sessions.store.clone(), sftp.inner().clone()).await
+    restart_from_settings(
+        &state,
+        sessions.store.clone(),
+        sftp.inner().clone(),
+        terms.inner().clone(),
+    )
+    .await
 }
 
 /// HTTP 服务共享状态
@@ -382,6 +409,8 @@ struct ServerState {
     store: Arc<Store>,
     /// SFTP 连接池（与 UI 共享；agent 高频小操作复用 Bulk 连接，不反复握手）
     sftp: Arc<crate::sftp::SftpManagerState>,
+    /// 交互式终端注册表（terminal_* 工具；stop 时 close_all 清场）
+    terms: Arc<crate::mcp_terminal::McpTerminalState>,
     token: String,
     /// 工具分组权限（启动时快照；改设置后 mcp_restart 生效）
     perms: McpPerms,
@@ -559,6 +588,58 @@ fn tools_list(perms: &McpPerms) -> Value {
                         }
                     },
                     "required": ["session_id", "command"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "terminal_open",
+                "description": "在已保存的 SSH 会话上打开交互式终端（有状态 shell：cd、进 mysql、激活 venv 等状态跨调用保持），返回 terminalId。独立 Bulk 连接，xterm 120x32。仅 SSH 会话；本地会话与 keyboard-interactive 认证会被拒绝。输出用 terminal_read 轮询，用完用 terminal_close 释放。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string", "description": "会话档案 id（list_sessions 返回的 id）" }
+                    },
+                    "required": ["session_id"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "terminal_send",
+                "description": "向 terminal_open 打开的终端写入 UTF-8 文本（命令、交互应答等）。换行需自行包含在 data 中（\\n），或置 append_newline=true 末尾自动补一个（模拟回车）。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "terminalId": { "type": "string", "description": "terminal_open 返回的终端 id" },
+                        "data": { "type": "string", "description": "要写入的 UTF-8 文本" },
+                        "append_newline": { "type": "boolean", "default": false, "description": "末尾追加 \\n" }
+                    },
+                    "required": ["terminalId", "data"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "terminal_read",
+                "description": "读取终端输出。offset 游标模型：返回 offset 之后的输出与 nextOffset（下次传入继续读；首次传 0）。输出缓冲为 1MiB 环形，超界丢最旧；offset 早于可用起点时 truncated=true 并从最早可用处返回。wait_seconds>0 时服务端长轮询（最长 600s）直到有新输出或终端关闭。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "terminalId": { "type": "string" },
+                        "offset": { "type": "integer", "minimum": 0, "description": "上次返回的 nextOffset；首次传 0" },
+                        "wait_seconds": { "type": "integer", "minimum": 0, "maximum": 600, "default": 0 }
+                    },
+                    "required": ["terminalId", "offset"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "terminal_close",
+                "description": "关闭终端：断通道、终止读任务、释放连接（落审计）",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "terminalId": { "type": "string" }
+                    },
+                    "required": ["terminalId"],
                     "additionalProperties": false
                 }
             },
@@ -763,6 +844,13 @@ async fn call_tool(st: &ServerState, name: &str, args: &Value) -> Value {
             Ok(text) => ok_content(text),
             Err(e) => err_content(e),
         },
+        // 交互式终端工具族（有状态 shell；实现见 mcp_terminal.rs）
+        n if n.starts_with("terminal_") => {
+            match crate::mcp_terminal::terminal_tool(&st.store, &st.terms, n, args).await {
+                Ok(text) => ok_content(text),
+                Err(e) => err_content(e),
+            }
+        }
         // SFTP 工具族：30s 超时兜底，错误走 isError 内容
         n if n.starts_with("sftp_") => match sftp_tool(st, n, args).await {
             Ok(text) => ok_content(text),
@@ -1248,6 +1336,10 @@ mod tests {
             "sftp_upload",
             "sftp_download",
             "sftp_transfer_list",
+            "terminal_open",
+            "terminal_send",
+            "terminal_read",
+            "terminal_close",
         ] {
             assert!(p.allows(name), "默认应放行 {name}");
         }
@@ -1270,6 +1362,11 @@ mod tests {
         assert!(!p.allows("sftp_upload"));
         assert!(!p.allows("sftp_download"));
         assert!(!p.allows("sftp_transfer_list"));
+        // terminal_* 归入 ssh_exec 组
+        assert!(!p.allows("terminal_open"));
+        assert!(!p.allows("terminal_send"));
+        assert!(!p.allows("terminal_read"));
+        assert!(!p.allows("terminal_close"));
         // 未知名不被权限闸拦截（走「未知工具」分支）
         assert!(p.allows("sftp_nope"));
     }
@@ -1297,9 +1394,13 @@ mod tests {
         }
         let all = tools_list(&McpPerms::default());
         let names = names_of(&all);
-        assert_eq!(names.len(), 14);
+        assert_eq!(names.len(), 18);
         assert!(names.contains(&"sftp_upload"));
         assert!(names.contains(&"sftp_download"));
+        assert!(names.contains(&"terminal_open"));
+        assert!(names.contains(&"terminal_send"));
+        assert!(names.contains(&"terminal_read"));
+        assert!(names.contains(&"terminal_close"));
 
         let p = McpPerms {
             ssh_exec: false,
@@ -1312,6 +1413,11 @@ mod tests {
         assert!(!names.contains(&"sftp_upload"));
         assert!(!names.contains(&"sftp_download"));
         assert!(!names.contains(&"sftp_transfer_list"));
+        // terminal_* 随 ssh_exec 组一起被过滤
+        assert!(!names.contains(&"terminal_open"));
+        assert!(!names.contains(&"terminal_send"));
+        assert!(!names.contains(&"terminal_read"));
+        assert!(!names.contains(&"terminal_close"));
         assert_eq!(names.len(), 10);
     }
 }
