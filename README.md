@@ -26,7 +26,7 @@ No login, no cloud dependency, credentials never leave your machine. Built with 
 - **SFTP**: dual-pane file manager, bidirectional drag & drop (including OS files and folders), queued transfers (concurrency control, resume, retry), cross-session transfer history, remote file editing (auto-upload on save), follows the terminal's working directory (OSC 7)
 - **Monitoring**: live CPU / memory / disk / network charts on an isolated channel, silently degrades on failure
 - **Export**: plaintext or passphrase-encrypted (Argon2id + AES-256-GCM) config packages
-- **Themes**: multiple color schemes (dark / light / Nord and more), custom terminal background image with adjustable opacity
+- **Themes**: 8 built-in schemes (One Dark / Solarized / Nord / Midnight / GitHub / Eye-care Green / Warm), visual custom theme editor (no JSON hand-editing), custom terminal background image with adjustable opacity
 - **i18n**: Simplified Chinese / English UI, switchable in Settings
 - **Terminal encoding**: per-session remote encoding (UTF-8 / GBK / GB18030 / Big5 / Shift_JIS / EUC-KR), streaming transcode with zero-copy passthrough for UTF-8
 
