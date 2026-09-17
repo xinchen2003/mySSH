@@ -219,6 +219,11 @@ export function CommandPalette() {
         input: { placeholder: t('chrome.importPathPh') },
         run: (p) => importConfigFile(p ?? ''),
       },
+      {
+        id: 'a-imp-ssh-config',
+        label: t('chrome.actImportSshConfig'),
+        run: () => useAppStore.getState().toggleSshImport(),
+      },
     ],
     [openConnect, toggleSidebar, exportConfig, importConfigFile, t],
   );

@@ -215,4 +215,23 @@ export const zhDialogs = {
   'dialogs.restartLaterNote': '配置已保存，将在隧道下次启动时生效',
   'dialogs.restartTunnelBody':
     '隧道「{name}」当前正在运行，新配置已保存。 立即重启将中断该隧道上的现有连接。',
+
+  // SshConfigImportDialog
+  'dialogs.sshImportTitle': '从 ssh_config 导入',
+  'dialogs.sshImportColAlias': '别名',
+  'dialogs.sshImportColAddress': '地址',
+  'dialogs.sshImportColAuth': '认证',
+  'dialogs.sshImportColJump': '跳板',
+  'dialogs.sshImportColStatus': '状态',
+  'dialogs.sshImportConflict': '冲突',
+  'dialogs.sshImportConflictHint': '与现有会话重名，导入后将出现同名会话',
+  'dialogs.sshImportSkipped': '跳过',
+  'dialogs.sshImportSelectAll': '全选',
+  'dialogs.sshImportSelectNone': '全不选',
+  'dialogs.sshImportSubmit': '导入 {count} 项',
+  'dialogs.sshImportLoading': '正在解析 ssh_config…',
+  'dialogs.sshImportEmpty': '未解析到任何 Host 条目',
+  'dialogs.sshImportPreviewFailed': '读取 ssh_config 失败: {error}',
+  'dialogs.sshImportDone': '已导入 {imported} 项，跳过 {skipped} 项',
+  'dialogs.sshImportFailed': 'ssh_config 导入失败: {error}',
 } as const;

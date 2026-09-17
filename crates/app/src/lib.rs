@@ -4,6 +4,7 @@
 mod audit;
 mod encoding;
 mod files;
+mod import;
 mod local_pty;
 mod logging;
 mod mcp;
@@ -118,6 +119,8 @@ pub fn run() {
             sessions::session_test_connect,
             sessions::config_export,
             sessions::config_import,
+            import::ssh_config_preview,
+            import::ssh_config_import,
             tunnels::tunnel_start,
             tunnels::tunnel_stop,
             tunnels::tunnel_list,

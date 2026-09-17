@@ -28,6 +28,7 @@ import { paneIds } from './term/layout';
 import { StatusBar } from './components/StatusBar';
 import { EmptyState } from './components/EmptyState';
 import { QuickConnectDialog } from './components/QuickConnectDialog';
+import { SshConfigImportDialog } from './components/SshConfigImportDialog';
 import { useT } from './i18n';
 
 export function App() {
@@ -251,6 +252,7 @@ export function App() {
       <TransferIndicator />
       <ConnectDialog />
       <QuickConnectDialog />
+      <SshConfigImportDialog />
       <HostKeyDialog />
       <KiDialog />
       {paletteOpen && <CommandPalette />}

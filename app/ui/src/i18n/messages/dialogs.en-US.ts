@@ -226,4 +226,24 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   'dialogs.restartLaterNote': 'Configuration saved; takes effect the next time the tunnel starts',
   'dialogs.restartTunnelBody':
     'Tunnel "{name}" is currently running and the new configuration has been saved. Restarting now will interrupt existing connections on this tunnel.',
+
+  // SshConfigImportDialog
+  'dialogs.sshImportTitle': 'Import from ssh_config',
+  'dialogs.sshImportColAlias': 'Alias',
+  'dialogs.sshImportColAddress': 'Address',
+  'dialogs.sshImportColAuth': 'Auth',
+  'dialogs.sshImportColJump': 'Jump',
+  'dialogs.sshImportColStatus': 'Status',
+  'dialogs.sshImportConflict': 'Conflict',
+  'dialogs.sshImportConflictHint':
+    'Name already used by an existing session; importing creates a duplicate',
+  'dialogs.sshImportSkipped': 'Skipped',
+  'dialogs.sshImportSelectAll': 'Select All',
+  'dialogs.sshImportSelectNone': 'Select None',
+  'dialogs.sshImportSubmit': 'Import {count}',
+  'dialogs.sshImportLoading': 'Parsing ssh_config…',
+  'dialogs.sshImportEmpty': 'No Host entries found',
+  'dialogs.sshImportPreviewFailed': 'Failed to read ssh_config: {error}',
+  'dialogs.sshImportDone': 'Imported {imported}, skipped {skipped}',
+  'dialogs.sshImportFailed': 'ssh_config import failed: {error}',
 };

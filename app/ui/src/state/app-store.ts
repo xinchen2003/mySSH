@@ -44,6 +44,23 @@ export interface Notice {
   action?: { label: string; actionId: string; arg?: string };
 }
 
+/** ssh_config 解析条目（core-store SshConfigEntry 的 camelCase 镜像） */
+export interface SshConfigEntry {
+  alias: string;
+  hostname: string;
+  port: number;
+  user: string;
+  identityFile: string | null;
+  proxyJump: string | null;
+  /** 非空 = 解析器判定不可导入，内容即原因 */
+  skipped: string | null;
+}
+
+/** 预览条目 = 解析结果 + 与现有会话的重名标注 */
+export interface SshConfigPreviewEntry extends SshConfigEntry {
+  conflict: boolean;
+}
+
 /** 各级别自动消失时长（ms）；null = 常驻手动关闭 */
 const NOTICE_TTL: Record<NotificationLevel, number | null> = {
   success: 3000,
@@ -133,6 +150,9 @@ interface AppStore {
   /** 快速连接对话框（12.5 空态；不保存档案的临时连接） */
   quickConnectOpen: boolean;
   toggleQuickConnect(): void;
+  /** ssh_config 批量导入预览弹窗 */
+  sshImportOpen: boolean;
+  toggleSshImport(): void;
   /** 断开单个 pane（12.4 命令面板「断开当前连接」；终态 closed，终端内容保留） */
   disconnectPane(tabId: string, paneId: string): void;
   /** 待确认删除的会话档案（删除会级联清凭据，必须确认） */
@@ -160,6 +180,8 @@ interface AppStore {
   /** 导入/导出（错误也走 notices） */
   exportConfig(encrypted: boolean, passphrase?: string): Promise<void>;
   importConfigFile(path: string, passphrase?: string): Promise<void>;
+  /** ssh_config 批量导入勾选的条目；成功返回 true（弹窗据此关闭），错误走 notices */
+  importSshConfig(entries: SshConfigEntry[]): Promise<boolean>;
   connect(spec: TermOpenSpec): void;
   connectBySession(sessionId: string, title: string): void;
   /** 连接语义：已有该会话标签则激活，否则新标签 */
@@ -542,6 +564,8 @@ export const useAppStore = create<AppStore>((set, get) => {
     toggleBroadcast: () => set((s) => ({ broadcastEnabled: !s.broadcastEnabled })),
     quickConnectOpen: false,
     toggleQuickConnect: () => set((s) => ({ quickConnectOpen: !s.quickConnectOpen })),
+    sshImportOpen: false,
+    toggleSshImport: () => set((s) => ({ sshImportOpen: !s.sshImportOpen })),
     bellTabs: [],
     markBell: (tabId) =>
       set((s) => (s.bellTabs.includes(tabId) ? {} : { bellTabs: [...s.bellTabs, tabId] })),
@@ -712,6 +736,26 @@ export const useAppStore = create<AppStore>((set, get) => {
         );
       } catch (e) {
         get().notify(tNow('state.importFailed', { error: String(e) }), 'error');
+      }
+    },
+
+    importSshConfig: async (entries) => {
+      try {
+        const r = await invoke<{ imported: number; skipped: number; warnings: string[] }>(
+          'ssh_config_import',
+          { entries },
+        );
+        await get().loadSessions();
+        const base = tNow('dialogs.sshImportDone', { imported: r.imported, skipped: r.skipped });
+        if (r.warnings.length > 0) {
+          get().notify(`${base}: ${r.warnings.join('; ')}`, 'warning');
+        } else {
+          get().notify(base, 'success');
+        }
+        return true;
+      } catch (e) {
+        get().notify(tNow('dialogs.sshImportFailed', { error: String(e) }), 'error');
+        return false;
       }
     },
 

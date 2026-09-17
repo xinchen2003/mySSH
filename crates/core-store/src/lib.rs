@@ -14,6 +14,7 @@ mod error;
 pub mod export;
 mod session;
 mod settings;
+mod ssh_config;
 mod transfer;
 mod tunnel;
 
@@ -28,6 +29,7 @@ pub use error::StoreError;
 pub use export::{export_encrypted, export_plain, import_config, ConfigImportOutcome};
 pub use session::{AuthType, SessionKind, SessionRecord, SessionRepo};
 pub use settings::SettingsRepo;
+pub use ssh_config::{parse_ssh_config, SshConfigEntry};
 pub use transfer::{TransferRecord, TransferRepo};
 pub use tunnel::{TunnelRecord, TunnelRepo};
 
