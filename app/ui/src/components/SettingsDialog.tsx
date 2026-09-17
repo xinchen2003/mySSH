@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+import type { MsgKey } from '../i18n';
 import { useAppStore } from '../state/app-store';
 import { invoke } from '@tauri-apps/api/core';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
@@ -69,6 +71,26 @@ function mcpConfigOpencode(port: number, token: string): string {
   );
 }
 
+/** 审计记录（后端 audit_query 的 DTO 镜像，camelCase） */
+interface AuditRow {
+  id: number;
+  ts: string;
+  actor: string;
+  sessionId: string | null;
+  action: string;
+  detail: unknown;
+}
+interface AuditPage {
+  records: AuditRow[];
+  nextCursor: number | null;
+}
+
+const ACTOR_BADGE: Record<string, { cls: string; labelKey: MsgKey }> = {
+  gui: { cls: 'bg-neutral-700 text-neutral-300', labelKey: 'dialogs.auditActorGui' },
+  mcp: { cls: 'bg-blue-900/60 text-blue-300', labelKey: 'dialogs.auditActorMcp' },
+  cli: { cls: 'bg-purple-900/60 text-purple-300', labelKey: 'dialogs.auditActorCli' },
+};
+
 export function SettingsDialog() {
   const settings = useAppStore((s) => s.settings);
   const setSetting = useAppStore((s) => s.setSetting);
@@ -112,6 +134,58 @@ export function SettingsDialog() {
   const fonts = installedFonts();
   const currentFont = fonts.find((f) => term.fontFamily.includes(f)) ?? term.fontFamily;
   const fontOptions = fonts.includes(currentFont) ? fonts : [currentFont, ...fonts];
+
+  // AI 审计（修改清单 C1）：弹窗打开即加载第一页；过滤是客户端对已加载页做的
+  const sessions = useAppStore((s) => s.sessions);
+  const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
+  const [auditNext, setAuditNext] = useState<number | null>(null);
+  const [auditLoading, setAuditLoading] = useState(true);
+  const [auditActor, setAuditActor] = useState('');
+  const [auditAction, setAuditAction] = useState('');
+  // 「加载更多」：onClick 先置 loading 再调用；追加到已加载记录尾部
+  const loadMoreAudit = async (cursor: number) => {
+    try {
+      const page = await invoke<AuditPage>('audit_query', { cursor, limit: 50 });
+      setAuditRows((prev) => [...prev, ...page.records]);
+      setAuditNext(page.nextCursor);
+    } catch {
+      // 查询失败不阻断设置面板；保留已加载数据
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+  // 弹窗打开（挂载）即拉第一页；setState 只在 Promise 回调里（react-hooks/set-state-in-effect）
+  useEffect(() => {
+    invoke<AuditPage>('audit_query', { cursor: null, limit: 50 })
+      .then((page) => {
+        setAuditRows(page.records);
+        setAuditNext(page.nextCursor);
+      })
+      .catch(() => undefined) // 查询失败不阻断设置面板
+      .finally(() => setAuditLoading(false));
+  }, []);
+  const auditFiltered = auditRows.filter(
+    (r) =>
+      (auditActor === '' || r.actor === auditActor) &&
+      (auditAction === '' || r.action.toLowerCase().includes(auditAction.toLowerCase())),
+  );
+  const sessionName = (id: string | null) => {
+    if (id === null) return '-';
+    return sessions.find((s) => s.id === id)?.name ?? id.slice(0, 8);
+  };
+  /** 导出已加载记录为 JSON 文件（文件名带本地时间戳） */
+  const exportAudit = () => {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const d = new Date();
+    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    const blob = new Blob([JSON.stringify(auditRows, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `myssh-audit-${stamp}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <Dialog
@@ -439,6 +513,92 @@ export function SettingsDialog() {
           )}
         </div>
         <p className="mt-1.5 text-neutral-600">{t('dialogs.mcpHint')}</p>
+      </section>
+
+      <section className="mb-4">
+        <h3 className="mb-1.5 font-semibold text-neutral-200">{t('dialogs.auditSection')}</h3>
+        <div className="mb-2 flex items-center gap-2">
+          <select
+            className={inputCls}
+            aria-label={t('dialogs.auditColActor')}
+            value={auditActor}
+            onChange={(e) => setAuditActor(e.target.value)}
+          >
+            <option value="">{t('dialogs.auditActorAll')}</option>
+            <option value="gui">{t('dialogs.auditActorGui')}</option>
+            <option value="mcp">{t('dialogs.auditActorMcp')}</option>
+            <option value="cli">{t('dialogs.auditActorCli')}</option>
+          </select>
+          <input
+            className={`${inputCls} min-w-0 flex-1`}
+            aria-label={t('dialogs.auditActionPlaceholder')}
+            placeholder={t('dialogs.auditActionPlaceholder')}
+            value={auditAction}
+            onChange={(e) => setAuditAction(e.target.value)}
+          />
+          <button
+            className="shrink-0 rounded bg-neutral-800 px-2 py-1 text-neutral-300 hover:bg-neutral-700 disabled:opacity-40"
+            disabled={auditRows.length === 0}
+            onClick={exportAudit}
+          >
+            {t('dialogs.auditExport')}
+          </button>
+        </div>
+        <table className="w-full table-fixed text-left">
+          <thead>
+            <tr className="text-neutral-500">
+              <th className="w-32 py-0.5 pr-2 font-normal">{t('dialogs.auditColTime')}</th>
+              <th className="w-14 py-0.5 pr-2 font-normal">{t('dialogs.auditColActor')}</th>
+              <th className="w-24 py-0.5 pr-2 font-normal">{t('dialogs.auditColSession')}</th>
+              <th className="w-28 py-0.5 pr-2 font-normal">{t('dialogs.auditColAction')}</th>
+              <th className="py-0.5 font-normal">{t('dialogs.auditColDetail')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {auditFiltered.map((r) => {
+              const detail = JSON.stringify(r.detail);
+              const badge = ACTOR_BADGE[r.actor];
+              return (
+                <tr key={r.id} className="border-t border-neutral-800/50">
+                  <td className="truncate py-0.5 pr-2 text-neutral-400">{r.ts}</td>
+                  <td className="py-0.5 pr-2">
+                    <span
+                      className={`rounded px-1.5 py-0.5 ${badge?.cls ?? 'bg-neutral-700 text-neutral-300'}`}
+                    >
+                      {badge ? t(badge.labelKey) : r.actor}
+                    </span>
+                  </td>
+                  <td className="truncate py-0.5 pr-2 text-neutral-400">
+                    {sessionName(r.sessionId)}
+                  </td>
+                  <td className="truncate py-0.5 pr-2">{r.action}</td>
+                  <td className="truncate py-0.5 font-mono text-neutral-500" title={detail}>
+                    {detail}
+                  </td>
+                </tr>
+              );
+            })}
+            {auditFiltered.length === 0 && (
+              <tr className="border-t border-neutral-800/50">
+                <td colSpan={5} className="py-2 text-center text-neutral-600">
+                  {auditLoading ? t('dialogs.auditLoading') : t('dialogs.auditEmpty')}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        {auditNext !== null && (
+          <button
+            className="mt-2 rounded bg-neutral-800 px-2 py-1 text-neutral-300 hover:bg-neutral-700 disabled:opacity-40"
+            disabled={auditLoading}
+            onClick={() => {
+              setAuditLoading(true);
+              void loadMoreAudit(auditNext);
+            }}
+          >
+            {auditLoading ? t('dialogs.auditLoading') : t('dialogs.auditLoadMore')}
+          </button>
+        )}
       </section>
 
       <section>

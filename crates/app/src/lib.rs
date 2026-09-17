@@ -1,6 +1,7 @@
 //! mySSH 应用后端。M0：壳 + 日志/panic；M1：终端会话（term_* 命令族）。
 //! 命令契约见 docs/design/03-ipc-contract.md（逐里程碑补齐）。
 
+mod audit;
 mod encoding;
 mod files;
 mod local_pty;
@@ -157,6 +158,7 @@ pub fn run() {
             settings::settings_set,
             settings::settings_delete,
             mcp::mcp_status,
+            audit::audit_query,
             mcp::mcp_restart,
         ])
         .run(tauri::generate_context!())
