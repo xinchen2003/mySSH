@@ -240,72 +240,74 @@ export function ContextMenu({
     };
   }, [actionable, active, run, onClose, subOpen, subActive, subActionable, items, openSub, runSub]);
 
+  // 子菜单必须与主菜单同级：.myssh-menu-glass 的 backdrop-filter 会让
+  // 后代 position:fixed 以主菜单为包含块（而非视口），嵌套渲染会整体偏移
   return (
-    <div
-      ref={ref}
-      role="menu"
-      tabIndex={-1}
-      aria-activedescendant={active >= 0 ? `myssh-menu-item-${active}` : undefined}
-      className="myssh-menu-glass myssh-menu-pop fixed z-50 min-w-44 rounded-lg p-1 outline-none"
-      style={{ left: pos.x, top: pos.y }}
-    >
-      {items.map((it, i) =>
-        it === 'separator' ? (
-          <div key={i} role="separator" className="my-1 border-t border-neutral-800" />
-        ) : (
-          <div key={i} className="relative">
-            <MenuButton
-              it={it}
-              itemId={`myssh-menu-item-${i}`}
-              active={i === active}
-              reserveIcon={mainHasIcon}
-              onHover={() => {
-                if (it.disabled) return;
-                setActive(i);
-                if (it.children) {
-                  if (subOpen !== i) {
-                    setSubOpen(i);
-                    setSubActive(actionableOf(it.children)[0]?.i ?? -1);
+    <>
+      <div
+        ref={ref}
+        role="menu"
+        tabIndex={-1}
+        aria-activedescendant={active >= 0 ? `myssh-menu-item-${active}` : undefined}
+        className="myssh-menu-glass myssh-menu-pop fixed z-50 min-w-44 rounded-lg p-1 outline-none"
+        style={{ left: pos.x, top: pos.y }}
+      >
+        {items.map((it, i) =>
+          it === 'separator' ? (
+            <div key={i} role="separator" className="my-1 border-t border-neutral-800" />
+          ) : (
+            <div key={i} className="relative">
+              <MenuButton
+                it={it}
+                itemId={`myssh-menu-item-${i}`}
+                active={i === active}
+                reserveIcon={mainHasIcon}
+                onHover={() => {
+                  if (it.disabled) return;
+                  setActive(i);
+                  if (it.children) {
+                    if (subOpen !== i) {
+                      setSubOpen(i);
+                      setSubActive(actionableOf(it.children)[0]?.i ?? -1);
+                    }
+                  } else if (subOpen !== null) {
+                    setSubOpen(null);
                   }
-                } else if (subOpen !== null) {
-                  setSubOpen(null);
-                }
-              }}
-              onClick={() => run(i)}
-            />
-            {it.children && subOpen === i && (
-              <div
-                ref={subRef}
-                role="menu"
-                className="myssh-menu-glass z-50 min-w-40 rounded-lg p-1"
-                style={
-                  subPos && subPos.forIdx === i
-                    ? { position: 'fixed', left: subPos.sx, top: subPos.sy }
-                    : { position: 'fixed', left: 0, top: 0, visibility: 'hidden' }
-                }
-              >
-                {it.children.map((sub, j) =>
-                  sub === 'separator' ? (
-                    <div key={j} role="separator" className="my-1 border-t border-neutral-800" />
-                  ) : (
-                    <MenuButton
-                      key={j}
-                      it={sub}
-                      itemId={`myssh-subitem-${j}`}
-                      active={j === subActive}
-                      reserveIcon={
-                        subItems?.some((s) => s !== 'separator' && s.icon !== undefined) ?? false
-                      }
-                      onHover={() => !sub.disabled && setSubActive(j)}
-                      onClick={() => runSub(j)}
-                    />
-                  ),
-                )}
-              </div>
-            )}
-          </div>
-        ),
+                }}
+                onClick={() => run(i)}
+              />
+            </div>
+          ),
+        )}
+      </div>
+      {subOpen !== null && subItems && (
+        <div
+          ref={subRef}
+          role="menu"
+          className="myssh-menu-glass z-50 min-w-40 rounded-lg p-1"
+          style={
+            subPos && subPos.forIdx === subOpen
+              ? { position: 'fixed', left: subPos.sx, top: subPos.sy }
+              : { position: 'fixed', left: 0, top: 0, visibility: 'hidden' }
+          }
+        >
+          {subItems.map((sub, j) =>
+            sub === 'separator' ? (
+              <div key={j} role="separator" className="my-1 border-t border-neutral-800" />
+            ) : (
+              <MenuButton
+                key={j}
+                it={sub}
+                itemId={`myssh-subitem-${j}`}
+                active={j === subActive}
+                reserveIcon={subItems.some((s) => s !== 'separator' && s.icon !== undefined)}
+                onHover={() => !sub.disabled && setSubActive(j)}
+                onClick={() => runSub(j)}
+              />
+            ),
+          )}
+        </div>
       )}
-    </div>
+    </>
   );
 }
