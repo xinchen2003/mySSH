@@ -1,5 +1,6 @@
 //! 主题系统（M5）：内置 One Dark / Solarized / Nord 深浅色 + 自定义 JSON。
-//! 主题 = xterm 调色板 + UI 明暗档（chrome 经 index.css 的 [data-ui] 覆盖层换肤）。
+//! 主题 = xterm 调色板 + UI 明暗档 + chrome 派生色（deriveChromeVars 由调色板算出
+//! 界面背景/文字/强调色刻度，经根节点 CSS 变量换肤；index.css 消费 --myssh-chrome-*）。
 //! 跟随系统：settings theme.followSystem=true 时按 prefers-color-scheme 在深浅默认间切换。
 
 import type { ITheme } from '@xterm/xterm';
@@ -262,4 +263,60 @@ export function resolveTheme(theme: string, customJson?: string): ThemeDef {
     }
   }
   return BUILTIN_THEMES.find((t) => t.id === id) ?? BUILTIN_THEMES[0];
+}
+
+// ---------- chrome 派生（整体换肤） ----------
+// 从 xterm 调色板推界面色：背景刻度由 background 向黑/白混合，文字刻度由
+// foreground 生成，强调色刻度由 blue 生成。内置与自定义主题走同一逻辑。
+
+/** 归一化为 #rrggbb；非法/缺省返回 null（自定义主题可能给 #rgb 或透明色） */
+function normHex(c: string | undefined): string | null {
+  if (!c) return null;
+  const m = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(c.trim());
+  if (!m) return null;
+  let h = m[1].toLowerCase();
+  if (h.length === 3)
+    h = h
+      .split('')
+      .map((x) => x + x)
+      .join('');
+  return `#${h}`;
+}
+
+/** a 向 b 混合 t（0-1，t=1 全为 b）；输入输出均为 #rrggbb */
+function mixHex(a: string, b: string, t: number): string {
+  const pa = parseInt(a.slice(1), 16);
+  const pb = parseInt(b.slice(1), 16);
+  const ch = (sa: number, sb: number): number => Math.round(sa + (sb - sa) * t);
+  const r = ch((pa >> 16) & 0xff, (pb >> 16) & 0xff);
+  const g = ch((pa >> 8) & 0xff, (pb >> 8) & 0xff);
+  const bl = ch(pa & 0xff, pb & 0xff);
+  return `#${((r << 16) | (g << 8) | bl).toString(16).padStart(6, '0')}`;
+}
+
+/** chrome CSS 变量名 → 色值。键与 index.css 的 --myssh-chrome-* 一一对应。 */
+export function deriveChromeVars(def: ThemeDef): Record<string, string> {
+  const bg = normHex(def.xterm.background) ?? (def.ui === 'light' ? '#ffffff' : '#000000');
+  const fg = normHex(def.xterm.foreground) ?? (def.ui === 'light' ? '#000000' : '#ffffff');
+  const accent = normHex(def.xterm.blue) ?? '#3b82f6';
+  const dark = def.ui === 'dark';
+  // 暗色：chrome 比终端更暗（终端是视觉焦点）；亮色：panel 比底色更亮（近白）。
+  const toward = dark ? '#000000' : '#ffffff';
+  const away = dark ? '#ffffff' : '#000000';
+  return {
+    '--myssh-chrome-body': mixHex(bg, toward, dark ? 0.55 : 0.05),
+    '--myssh-chrome-panel': mixHex(bg, toward, dark ? 0.4 : 0.5),
+    '--myssh-chrome-panel-2': mixHex(bg, toward, dark ? 0.2 : 0.08),
+    '--myssh-chrome-deep': mixHex(bg, toward, dark ? 0.7 : 0.1),
+    '--myssh-chrome-raised': mixHex(bg, away, dark ? 0.1 : 0.14),
+    '--myssh-chrome-border': mixHex(bg, away, dark ? 0.14 : 0.14),
+    '--myssh-chrome-hover': mixHex(bg, away, dark ? 0.06 : 0.06),
+    '--myssh-chrome-text': mixHex(fg, away, dark ? 0.35 : 0.55),
+    '--myssh-chrome-text-dim': dark ? fg : mixHex(fg, away, 0.2),
+    '--myssh-chrome-text-faint': mixHex(fg, bg, dark ? 0.45 : 0.35),
+    '--myssh-chrome-accent': accent,
+    '--myssh-chrome-accent-hover': mixHex(accent, away, dark ? 0.12 : 0.08),
+    '--myssh-chrome-accent-deep': mixHex(accent, dark ? toward : away, dark ? 0.3 : 0.15),
+    '--myssh-chrome-accent-text': mixHex(accent, away, dark ? 0.35 : 0.25),
+  };
 }

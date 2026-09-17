@@ -3,6 +3,31 @@
 
 :root {
   color-scheme: dark;
+  /* chrome 换肤变量：默认值 = 原暗档 neutral 刻度（JS 未跑时无回归）；
+     applyTheme 按主题 xterm 调色板派生后覆盖（deriveChromeVars）。 */
+  --myssh-chrome-body: #0b0e14;
+  --myssh-chrome-panel: #171717;
+  --myssh-chrome-panel-2: #262626;
+  --myssh-chrome-deep: #0a0a0a;
+  --myssh-chrome-raised: #404040;
+  --myssh-chrome-border: #404040;
+  --myssh-chrome-hover: #262626;
+  --myssh-chrome-text: #f5f5f5;
+  --myssh-chrome-text-dim: #bfbdb6;
+  --myssh-chrome-text-faint: #a3a3a3;
+  --myssh-chrome-accent: #2563eb;
+  --myssh-chrome-accent-hover: #3b82f6;
+  --myssh-chrome-accent-deep: #1d4ed8;
+  --myssh-chrome-accent-text: #93c5fd;
+  /* Tailwind 4 的 blue 工具类全部编译自 --color-blue-*（含 /透明度 与 hover
+     变体），此处改向主题强调色刻度，按钮/徽标/active 页签一键换肤。 */
+  --color-blue-300: var(--myssh-chrome-accent-text);
+  --color-blue-400: var(--myssh-chrome-accent-text);
+  --color-blue-500: var(--myssh-chrome-accent-hover);
+  --color-blue-600: var(--myssh-chrome-accent);
+  --color-blue-700: var(--myssh-chrome-accent-deep);
+  --color-blue-800: var(--myssh-chrome-accent-deep);
+  --color-blue-900: var(--myssh-chrome-accent-deep);
 }
 
 html,
@@ -19,46 +44,36 @@ body,
   font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
 }
 
-/* 亮色档（M5）：chrome 换肤覆盖层。终端自身由 xterm 调色板负责，这里只覆盖
-   UI 骨架用到的 neutral 刻度（组件零改动，覆盖范围刻意保守）。 */
+/* chrome 换肤（整体化）：UI 骨架的 neutral/blue 刻度全部经 Tailwind 4 主题变量
+   --color-* 改向 --myssh-chrome-*（含 hover:、/透明度 变体——工具类编译为 var()
+   引用，运行时解析）；applyTheme 按主题派生覆写根变量，组件零改动。
+   data-ui 仅保留 color-scheme（表单控件/滚动条明暗）。 */
 html[data-ui='light'] {
   color-scheme: light;
 }
-html[data-ui='light'] body,
-html[data-ui='light'] #root {
-  background: #f5f5f4;
-  color: #292524;
+body,
+#root {
+  background: var(--myssh-chrome-body);
+  color: var(--myssh-chrome-text-dim);
 }
-html[data-ui='light'] .bg-neutral-900 {
-  background-color: #ffffff;
+:root {
+  --color-neutral-50: var(--myssh-chrome-text);
+  --color-neutral-100: var(--myssh-chrome-text);
+  --color-neutral-200: var(--myssh-chrome-text);
+  --color-neutral-300: var(--myssh-chrome-text-dim);
+  --color-neutral-400: var(--myssh-chrome-text-faint);
+  --color-neutral-500: var(--myssh-chrome-text-faint);
+  --color-neutral-600: var(--myssh-chrome-border);
+  --color-neutral-700: var(--myssh-chrome-raised);
+  --color-neutral-800: var(--myssh-chrome-panel-2);
+  --color-neutral-850: var(--myssh-chrome-panel-2);
+  --color-neutral-900: var(--myssh-chrome-panel);
+  --color-neutral-950: var(--myssh-chrome-deep);
 }
-html[data-ui='light'] .bg-neutral-950,
-html[data-ui='light'] .bg-neutral-800 {
-  background-color: #e7e5e4;
-}
-html[data-ui='light'] .bg-neutral-700 {
-  background-color: #d6d3d1;
-}
-html[data-ui='light'] .text-neutral-100,
-html[data-ui='light'] .text-neutral-200 {
-  color: #1c1917;
-}
-html[data-ui='light'] .text-neutral-300 {
-  color: #44403c;
-}
-html[data-ui='light'] .text-neutral-400,
-html[data-ui='light'] .text-neutral-500 {
-  color: #78716c;
-}
-html[data-ui='light'] .border-neutral-700,
-html[data-ui='light'] .border-neutral-800 {
-  border-color: #d6d3d1;
-}
-html[data-ui='light'] .hover\:bg-neutral-800:hover {
-  background-color: #e7e5e4;
-}
-html[data-ui='light'] .hover\:text-neutral-100:hover {
-  color: #1c1917;
+/* 特例：警告徽标（黄底）上的 text-neutral-950 须恒近黑，不随 deep 变量
+   （亮档 deep 为浅色，重映射会破坏对比度） */
+.text-neutral-950 {
+  color: #0a0a0a;
 }
 /* ---------- 右键菜单毛玻璃（批次三十五） ----------
    半透明底 + backdrop 模糊 + 柔和投影；亮档换白底浅影。
@@ -66,27 +81,17 @@ html[data-ui='light'] .hover\:text-neutral-100:hover {
    -webkit 别名），且 Lightning CSS 压缩会把「标准+前缀」双声明错误合并成
    仅 -webkit- 版，现代内核反而不识别——只留标准声明规避。 */
 .myssh-menu-glass {
-  background-color: rgb(23 23 23 / 0.92);
+  /* 底色/描边/hover 叠层全部 color-mix 自主题变量，深浅档自动适配 */
+  background-color: color-mix(in srgb, var(--myssh-chrome-panel) 92%, transparent);
   backdrop-filter: blur(16px) saturate(1.4);
-  border: 1px solid rgb(255 255 255 / 0.08);
+  border: 1px solid color-mix(in srgb, var(--myssh-chrome-text) 10%, transparent);
   box-shadow:
     0 12px 32px rgb(0 0 0 / 0.45),
     0 2px 8px rgb(0 0 0 / 0.3);
 }
-html[data-ui='light'] .myssh-menu-glass {
-  background-color: rgb(255 255 255 / 0.95);
-  box-shadow:
-    0 12px 32px rgb(0 0 0 / 0.12),
-    0 2px 8px rgb(0 0 0 / 0.08);
-}
-/* 菜单项 hover/active 用白 10% 叠层；亮档转黑 6% */
-html[data-ui='light'] .myssh-menu-item:hover,
-html[data-ui='light'] .myssh-menu-item[data-active='1'] {
-  background-color: rgb(0 0 0 / 0.06);
-}
 .myssh-menu-item:hover,
 .myssh-menu-item[data-active='1'] {
-  background-color: rgb(255 255 255 / 0.1);
+  background-color: color-mix(in srgb, var(--myssh-chrome-text) 10%, transparent);
 }
 .myssh-menu-item:disabled:hover {
   background-color: transparent;

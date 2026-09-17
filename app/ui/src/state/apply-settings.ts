@@ -5,7 +5,7 @@
 import { fitRegistry, termRegistry, webglRegistry } from '../term/registry';
 import type { ITheme } from '@xterm/xterm';
 import { WebglAddon } from '@xterm/addon-webgl';
-import { resolveTheme, type ThemeDef } from '../term/themes';
+import { deriveChromeVars, resolveTheme, type ThemeDef } from '../term/themes';
 /** 背景图热更：CSS 变量写根节点，全部 pane 的背景层自动跟随。
  *  WebGL 画布不透明（实测）：有图时 dispose 已载 WebGL 回退内置渲染器；清图后重建恢复加速。 */
 export function applyTerminalBackground(settings: Record<string, unknown>): void {
@@ -67,7 +67,7 @@ export function readTerminalSettings(s: Record<string, unknown>): TerminalSettin
   };
 }
 
-/** 主题应用：root data-ui + 全终端调色板。返回生效主题 id（供面板显示）。 */
+/** 主题应用：root data-ui + chrome 派生变量 + 全终端调色板。返回生效主题 id（供面板显示）。 */
 export function applyTheme(settings: Record<string, unknown>): string {
   const def = resolveTheme(
     str(settings['theme'], 'one-dark'),
@@ -76,6 +76,8 @@ export function applyTheme(settings: Record<string, unknown>): string {
       : undefined,
   );
   document.documentElement.dataset.ui = def.ui;
+  const style = document.documentElement.style;
+  for (const [k, v] of Object.entries(deriveChromeVars(def))) style.setProperty(k, v);
   for (const term of termRegistry.values()) {
     term.options.theme = effectiveXtermTheme(settings, def);
   }

@@ -105,7 +105,7 @@ export const zhDialogs = {
   'dialogs.theme': '主题',
   'dialogs.themeCardSystem': '跟随系统',
   'dialogs.themeCardCustom': '自定义',
-  'dialogs.themeChromeNote': 'chrome 明暗档随主题 UI 字段切换',
+  'dialogs.themeChromeNote': '界面配色随主题整体派生（背景/文字/强调色）',
   // 设置弹窗左导航 / 主题卡片 / ThemeStudio 图形化编辑器
   'dialogs.navGeneral': '通用',
   'dialogs.navTerminal': '终端',

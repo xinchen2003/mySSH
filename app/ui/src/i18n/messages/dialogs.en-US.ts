@@ -109,7 +109,7 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   'dialogs.theme': 'Theme',
   'dialogs.themeCardSystem': 'Follow System',
   'dialogs.themeCardCustom': 'Custom',
-  'dialogs.themeChromeNote': 'Chrome light/dark follows the theme UI field',
+  'dialogs.themeChromeNote': 'Chrome colors derive from the theme (surfaces, text, accent)',
   // Settings dialog left nav / theme cards / ThemeStudio visual editor
   'dialogs.navGeneral': 'General',
   'dialogs.navTerminal': 'Terminal',
