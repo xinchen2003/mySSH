@@ -1,10 +1,8 @@
 //! mySSH 应用后端。M0：壳 + 日志/panic；M1：终端会话（term_* 命令族）。
 //! 命令契约见 docs/design/03-ipc-contract.md（逐里程碑补齐）。
 
-mod audit;
 mod encoding;
 mod files;
-mod import;
 mod local_pty;
 mod logging;
 mod mcp;
@@ -119,8 +117,6 @@ pub fn run() {
             sessions::session_test_connect,
             sessions::config_export,
             sessions::config_import,
-            import::ssh_config_preview,
-            import::ssh_config_import,
             tunnels::tunnel_start,
             tunnels::tunnel_stop,
             tunnels::tunnel_list,
@@ -161,7 +157,6 @@ pub fn run() {
             settings::settings_set,
             settings::settings_delete,
             mcp::mcp_status,
-            audit::audit_query,
             mcp::mcp_restart,
         ])
         .run(tauri::generate_context!())

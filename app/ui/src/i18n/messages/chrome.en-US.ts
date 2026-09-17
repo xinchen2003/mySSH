@@ -96,7 +96,6 @@ export const enChrome: Record<keyof typeof zhChrome, string> = {
   'chrome.actExportPlain': 'Export Config (Plain, No Credentials)',
   'chrome.actExportEnc': 'Export Config (Encrypted, With Credentials)',
   'chrome.actImport': 'Import Config File (myssh-config-*.json)',
-  'chrome.actImportSshConfig': 'Import from ssh_config (~/.ssh/config)',
   'chrome.exportPassphrasePh': 'Export passphrase (required again on import)',
   'chrome.importPathPh': 'Full path to config file',
   'chrome.notServerTab': 'Current tab is not a saved server connection',

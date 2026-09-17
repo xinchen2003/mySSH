@@ -91,7 +91,6 @@ export const zhChrome = {
   'chrome.actExportPlain': '导出配置（明文，不含凭据）',
   'chrome.actExportEnc': '导出配置（加密，含凭据）',
   'chrome.actImport': '导入配置文件（myssh-config-*.json）',
-  'chrome.actImportSshConfig': '从 ssh_config 导入（~/.ssh/config）',
   'chrome.exportPassphrasePh': '导出口令（导入时需同一口令）',
   'chrome.importPathPh': '配置文件完整路径',
   'chrome.notServerTab': '当前标签不是服务器档案连接',
