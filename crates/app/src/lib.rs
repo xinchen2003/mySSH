@@ -73,6 +73,15 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 crate::tunnels::autostart_tunnels(mgr, store).await;
             });
+            // 审计保留策略：audit 表只增不减，启动时删 90 天前行（失败仅日志）
+            let store = session_state.store.clone();
+            tauri::async_runtime::spawn(async move {
+                match store.audit().prune_older_than(90).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(pruned = n, "审计保留策略：已清理 90 天前记录"),
+                    Err(e) => tracing::warn!(error = %e, "审计清理失败"),
+                }
+            });
             // MCP 服务端：按 mcp.enabled/port/token 设置启动（绑定失败仅日志）
             let store = session_state.store.clone();
             let sftp = sftp_state.clone();

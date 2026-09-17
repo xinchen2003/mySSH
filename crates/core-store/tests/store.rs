@@ -199,6 +199,39 @@ async fn audit_append_and_cursor_pagination() {
 }
 
 #[tokio::test]
+async fn audit_prune_older_than() {
+    let path = temp_db("auditprune");
+    let store = Store::open(&path).await.expect("open");
+    let audit = store.audit();
+    for i in 0..4 {
+        audit
+            .append(
+                Actor::Mcp,
+                Some("s1"),
+                "mcp_sftp_write",
+                &serde_json::json!({ "i": i }),
+            )
+            .await
+            .expect("append");
+    }
+    // 另开连接把前 2 行时间戳改到 120 天前（append 无自定义 ts 入口）
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}", path.display()))
+        .await
+        .expect("connect");
+    sqlx::query("UPDATE audit SET ts = datetime('now', '-120 days') WHERE id <= 2")
+        .execute(&pool)
+        .await
+        .expect("backdate");
+    pool.close().await;
+
+    let pruned = audit.prune_older_than(90).await.expect("prune");
+    assert_eq!(pruned, 2, "应删 2 行 120 天前的记录");
+    let (rest, _) = audit.query(None, 100).await.expect("query");
+    assert_eq!(rest.len(), 2, "新记录保留");
+    assert!(rest.iter().all(|r| r.detail["i"].as_i64() >= Some(2)));
+}
+
+#[tokio::test]
 async fn tunnel_defs_crud_and_jump_chain() {
     let path = temp_db("tunneldefs");
     let store = Store::open(&path).await.expect("open");

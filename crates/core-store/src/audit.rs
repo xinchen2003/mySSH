@@ -109,4 +109,14 @@ impl AuditRepo {
         };
         Ok((records, next_cursor))
     }
+    /// 保留策略：删除 ts 早于 days 天前的行（audit 只增不减，启动时调用防无限膨胀）。
+    /// ts 为 datetime('now') 文本格式，与 datetime('now', '-N days') 可直接比较
+    pub async fn prune_older_than(&self, days: u32) -> Result<u64, StoreError> {
+        let r = sqlx::query("DELETE FROM audit WHERE ts < datetime('now', ?)")
+            .bind(format!("-{days} days"))
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Query(e.to_string()))?;
+        Ok(r.rows_affected())
+    }
 }
