@@ -3,7 +3,7 @@
 English | [简体中文](README.zh-CN.md)
 
 [![CI](https://github.com/xinchen2003/mySSH/actions/workflows/ci.yml/badge.svg)](https://github.com/xinchen2003/mySSH/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.3.2-blue)](https://github.com/xinchen2003/mySSH/releases)
+[![Version](https://img.shields.io/badge/version-0.3.3-blue)](https://github.com/xinchen2003/mySSH/releases)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)](https://github.com/xinchen2003/mySSH)
 
@@ -26,7 +26,7 @@ No login, no cloud dependency, credentials never leave your machine. Built with 
 - **SFTP**: dual-pane file manager, bidirectional drag & drop (including OS files and folders), queued transfers (concurrency control, resume, retry), cross-session transfer history, remote file editing (auto-upload on save), follows the terminal's working directory (OSC 7)
 - **Monitoring**: live CPU / memory / disk / network charts on an isolated channel, silently degrades on failure
 - **Export**: plaintext or passphrase-encrypted (Argon2id + AES-256-GCM) config packages
-- **Themes**: 8 built-in schemes (One Dark / Solarized / Nord / Midnight / GitHub / Eye-care Green / Warm), visual custom theme editor (no JSON hand-editing), custom terminal background image with adjustable opacity
+- **Themes**: 8 built-in schemes (One Dark / Solarized / Nord / Midnight / GitHub / Eye-care Green / Warm) — the whole UI skin derives from the theme (surfaces, text, accent), not just the terminal palette; visual custom theme editor (no JSON hand-editing), custom terminal background image with adjustable opacity
 - **i18n**: Simplified Chinese / English UI, switchable in Settings
 - **Terminal encoding**: per-session remote encoding (UTF-8 / GBK / GB18030 / Big5 / Shift_JIS / EUC-KR), streaming transcode with zero-copy passthrough for UTF-8
 
@@ -34,7 +34,7 @@ No login, no cloud dependency, credentials never leave your machine. Built with 
 
 Built-in MCP server (Streamable HTTP, loopback-only + Bearer token); one-click agent config copy in Settings.
 
-**14 tools**:
+**18 tools**:
 
 | Tool | Description |
 | --- | --- |
@@ -44,6 +44,7 @@ Built-in MCP server (Streamable HTTP, loopback-only + Bearer token); one-click a
 | `sftp_write` / `sftp_mkdir` / `sftp_delete` / `sftp_rename` / `sftp_chmod` | Remote writes and meta ops (audited) |
 | `sftp_upload` / `sftp_download` | File transfer via the background transfer queue (shared with the UI transfer panel, **no size limit**; `wait_seconds` waits synchronously for completion) |
 | `sftp_transfer_list` | Poll transfer progress / state / errors |
+| `terminal_open` / `terminal_send` / `terminal_read` / `terminal_close` | Interactive terminals: open a live shell on a session, send input, read the screen buffer, close it — for REPLs, pagers and other stateful interactions `ssh_exec` can't drive (gated by the `ssh_exec` permission group) |
 
 **Permission model** (two layers, override wins):
 
