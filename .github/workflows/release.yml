@@ -26,13 +26,13 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: app/ui/package-lock.json
-      # beforeBuildCommand（tauri.conf.json）会跑前端 build，这里只需装依赖
       - run: npm ci --prefix app/ui
+      - run: npm run build --prefix app/ui
       - name: 构建并签名 NSIS/MSI 安装包
         working-directory: crates/app
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: npm --prefix ../../app/ui exec -- tauri build
+        run: ../../app/ui/node_modules/.bin/tauri build
       - name: 生成 SHA256 校验单
         shell: pwsh
         run: |

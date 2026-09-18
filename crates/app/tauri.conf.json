@@ -5,9 +5,7 @@
   "identifier": "dev.myssh.app",
   "build": {
     "frontendDist": "../../app/ui/dist",
-    "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm --prefix ../../app/ui run dev",
-    "beforeBuildCommand": "npm --prefix ../../app/ui run build"
+    "devUrl": "http://localhost:1420"
   },
   "app": {
     "windows": [
