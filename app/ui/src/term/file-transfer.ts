@@ -59,6 +59,74 @@ export interface TransferFilter {
   dispose(): void;
 }
 
+/** trzsz 触发行的两种字面头（tsz/trz 带 \x1b7\x07 前缀；防御性兼容裸头） */
+const TRIG_HEADS = ['\x1b7\x07::TRZSZ:TRANSFER:', '::TRZSZ:TRANSFER:'];
+const TRIG_TAIL = /^[SRD]?((:|\.)[0-9]*)*\r?$/;
+/** 暂存上限：触发行实测 ~50 字节，超限即非触发，放行 */
+const TRIG_MAX_HOLD = 128;
+
+/**
+ * trzsz 触发串跨块保险（真机验收发现）：
+ * TrzszFilter 的 detectAndHandleTrzsz 只在**单次喂入**的字节里一次性匹配
+ * `::TRZSZ:TRANSFER:…`，无跨块缓冲；WAN 上触发行被 TCP/聚合边界切开后，
+ * 传输永远不会启动（触发行原文直接上屏）。
+ *
+ * 规则：最后一个换行之后的行尾片段若是触发行的前缀（或触发行未完成形态），
+ * 暂存不转发，下一块拼回；否则立即放行——普通无换行行尾（如 shell 提示符）
+ * 不得滞留。flush 用于会话释放时兜底放行。
+ */
+export function createTrzszTriggerGuard(forward: (chunk: Uint8Array) => void): {
+  push(chunk: Uint8Array): void;
+  flush(): void;
+} {
+  let pending: Uint8Array | null = null;
+  const dec = new TextDecoder('latin1');
+
+  /** 行尾是否为触发前缀/未完成触发行 */
+  function isTriggerPartial(tail: Uint8Array): boolean {
+    if (tail.length === 0 || tail.length > TRIG_MAX_HOLD) return false;
+    const s = dec.decode(tail);
+    for (const head of TRIG_HEADS) {
+      if (head.startsWith(s)) return true; // 头是 tail 的前缀延展（tail 尚未到头长）
+      if (s.startsWith(head) && TRIG_TAIL.test(s.slice(head.length))) return true;
+    }
+    return false;
+  }
+
+  return {
+    push(chunk) {
+      let data = chunk;
+      if (pending) {
+        const merged = new Uint8Array(pending.length + chunk.length);
+        merged.set(pending);
+        merged.set(chunk, pending.length);
+        pending = null;
+        data = merged;
+      }
+      let lastNl = -1;
+      for (let i = data.length - 1; i >= 0; i--) {
+        if (data[i] === 0x0a) {
+          lastNl = i;
+          break;
+        }
+      }
+      const tail = data.subarray(lastNl + 1);
+      if (isTriggerPartial(tail)) {
+        const keep = tail.slice(); // 拷贝：避免小尾巴挂住大块聚合缓冲
+        if (tail.length < data.length) forward(data.subarray(0, data.length - tail.length));
+        pending = keep;
+        return;
+      }
+      forward(data);
+    },
+    flush() {
+      if (pending) {
+        forward(pending);
+        pending = null;
+      }
+    },
+  };
+}
 export async function createTransferFilter(opts: {
   term: Terminal;
   /** 协议输出（二进制）→ term_input_raw，不经输入编码器 */
@@ -91,8 +159,13 @@ export async function createTransferFilter(opts: {
   });
   term.onResize(({ cols }) => trzsz.setTerminalColumns(cols));
 
+  // zmodem.js 的 to_terminal 吐出的是裸 number[]（非 Uint8Array）——trzsz 的检测器
+  // 只认 string/ArrayBuffer/Uint8Array，裸数组会被静默跳过（真机验收发现的根因）；
+  // 守卫入口归一化，同时提供触发串跨块保险（见 createTrzszTriggerGuard）
+  const trzGuard = createTrzszTriggerGuard((b) => trzsz.processServerOutput(b));
   const sentry = new Zmodem.Sentry({
-    to_terminal: (bytes: Uint8Array) => trzsz.processServerOutput(bytes),
+    to_terminal: (bytes: number[] | Uint8Array) =>
+      trzGuard.push(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)),
     sender: (bytes: number[] | Uint8Array) => writeBytes(new Uint8Array(bytes)),
     on_detect: handleDetect,
     on_retract: () => {
@@ -216,7 +289,8 @@ export async function createTransferFilter(opts: {
       return zsession !== null || trzsz.isTransferringFiles();
     },
     dispose() {
-      /* trzsz/sentry 无显式释放面；引用断开即可 */
+      // 暂存的触发行残片放行，避免会话关闭吞掉尾部输出
+      trzGuard.flush();
     },
   };
 }

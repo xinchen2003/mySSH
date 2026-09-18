@@ -73,6 +73,23 @@ export class TerminalSession {
       this.onEvent(ev);
       if (ev.type === 'session_state') this.stateHook?.(ev);
     };
+    // 输入订阅必须先于 term_open 注册：连接建立可能耗时数秒（WAN 首连 + hostkey
+    // 确认），期间键入若无订阅会被 xterm 直接丢弃（竞态：键入丢失）。
+    // tabId 未赋值时 write 入队缓冲，开链后按序补发；广播钩子仅在开链后触发。
+    // 传输期间输入交协议处理（^C 中断 trzsz；ZMODEM 期间丢弃防污染）
+    this.disposers.push(
+      term.onData((s) => {
+        if (this.transfer?.transferring) {
+          this.transfer.processInput(s);
+          return;
+        }
+        this.write(s);
+        if (this.tabId) this.inputHook?.(s);
+      }),
+      term.onBinary((s) => {
+        if (this.transfer?.transferring) this.transfer.processBinary(s);
+      }),
+    );
 
     // term_open 可能耗时数秒（WAN 首连 + hostkey 确认），期间 fit 可能改尺寸；
     // 记下开链尺寸，连接建立后比对补发 resize（onResize 注册前的变更会丢）
@@ -107,21 +124,9 @@ export class TerminalSession {
     if (term.cols !== openedCols || term.rows !== openedRows)
       void invoke('term_resize', { tabId: res.tabId, cols: term.cols, rows: term.rows });
 
-    // 输入零聚合直发（规格书输入路径预算）；广播钩子在同窗口同步扇出。
-    // 传输期间输入交协议处理（^C 中断 trzsz；ZMODEM 期间丢弃防污染）
+    // resize 订阅在开链后注册：开链前的尺寸变更由上方 cols/rows 比对补发，
+    // 提前注册也只会因 tabId 未赋值而空转
     this.disposers.push(
-      term.onData((s) => {
-        if (!this.tabId) return;
-        if (this.transfer?.transferring) {
-          this.transfer.processInput(s);
-          return;
-        }
-        this.write(s);
-        this.inputHook?.(s);
-      }),
-      term.onBinary((s) => {
-        if (this.transfer?.transferring) this.transfer.processBinary(s);
-      }),
       term.onResize(({ cols, rows }) => {
         if (this.tabId) void invoke('term_resize', { tabId: this.tabId, cols, rows });
       }),

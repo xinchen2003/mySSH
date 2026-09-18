@@ -28,6 +28,7 @@ import { paneIds } from './term/layout';
 import { StatusBar } from './components/StatusBar';
 import { EmptyState } from './components/EmptyState';
 import { QuickConnectDialog } from './components/QuickConnectDialog';
+import { checkForUpdate, dismissUpdate, installUpdate, type UpdateInfo } from './state/updater';
 import { useT } from './i18n';
 
 export function App() {
@@ -83,6 +84,12 @@ export function App() {
   useEffect(() => {
     subscribeTunnels();
   }, [subscribeTunnels]);
+
+  // 启动静默检查更新（轴一 1.2）：发现新版本弹确认框；检查失败不打扰
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  useEffect(() => {
+    void checkForUpdate().then(setUpdateInfo);
+  }, []);
 
   // 全局快捷键（注册表驱动，M5）：xterm 焦点下 window keydown 仍可收到
   useEffect(() => {
@@ -326,6 +333,26 @@ export function App() {
         >
           <p className="mb-1">{t('chrome.quitGuardWarn', { live: closeGuardLive })}</p>
           <p className="text-red-300">{t('chrome.irreversible')}</p>
+        </ConfirmDialog>
+      )}
+      {/* 启动更新检查（轴一 1.2）：确认即下载安装并重启（活跃会话会断开，文案明示） */}
+      {updateInfo && (
+        <ConfirmDialog
+          title={t('chrome.updateTitle', { version: updateInfo.version })}
+          confirmLabel={t('chrome.updateNow')}
+          onCancel={() => {
+            void dismissUpdate();
+            setUpdateInfo(null);
+          }}
+          onConfirm={() => {
+            setUpdateInfo(null);
+            void installUpdate().catch((e) => {
+              useAppStore.getState().notify(t('chrome.updateFailed', { msg: String(e) }), 'error');
+            });
+          }}
+        >
+          <p className="mb-1">{t('chrome.updateBody')}</p>
+          {updateInfo.body && <p className="whitespace-pre-wrap">{updateInfo.body}</p>}
         </ConfirmDialog>
       )}
       <StatusBar />

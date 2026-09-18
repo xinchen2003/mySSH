@@ -3,7 +3,7 @@
 [English](README.md) | 简体中文
 
 [![CI](https://github.com/xinchen2003/mySSH/actions/workflows/ci.yml/badge.svg)](https://github.com/xinchen2003/mySSH/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.3.2-blue)](https://github.com/xinchen2003/mySSH/releases)
+[![Version](https://img.shields.io/badge/version-0.3.4-blue)](https://github.com/xinchen2003/mySSH/releases)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)](https://github.com/xinchen2003/mySSH)
 
@@ -29,12 +29,13 @@
 - **主题与外观**：8 套内置配色（One Dark / Solarized / Nord / 黑夜 / GitHub / 护眼绿 / 暖阳）、图形化自定义主题编辑器（告别手写 JSON）、自定义终端背景图与不透明度
 - **多语言**：简体中文 / English，设置中切换
 - **终端编码**：按会话配置（UTF-8 / GBK / GB18030 / Big5 / Shift_JIS / EUC-KR），流式转码，UTF-8 零拷贝直通
+- **自动更新**：启动时静默检查 GitHub Releases，发现新版本确认后自动下载安装并重启；一键导出诊断包（日志 + 系统信息打包 zip），提 issue 直接附上
 
 ## AI 自动化（MCP）
 
 内置 MCP 服务端（Streamable HTTP，仅监听 127.0.0.1 + Bearer 令牌），agent 配置在设置面板一键复制。
 
-**14 个工具**：
+**18 个工具**：
 
 | 工具 | 说明 |
 | --- | --- |

@@ -696,6 +696,9 @@ async fn supervise(mut ctx: SuperviseCtx) {
         if !ctx.mgr.sessions.lock().contains_key(&ctx.tab_id) {
             return;
         }
+        // 意外断开（用户关闭已在上方静默返回）：掉线定位证据链——读循环为何结束
+        // 由 core-ssh PtyReader 记 EOF/Close/传输终止，此处记会话级后续动作
+        tracing::info!(tab_id = %ctx.tab_id, "终端读循环结束（非用户关闭），进入重连判定");
 
         // 本地 PTY：进程退出即终态 closed——exit 是用户意图，不做自动重开
         if matches!(ctx.backend, Backend::Local) {
@@ -750,12 +753,14 @@ async fn reconnect(ctx: &SuperviseCtx) -> Option<(PtyReader, PtyWriter)> {
     loop {
         attempt += 1;
         if attempt > max_attempts {
+            tracing::warn!(tab_id = %ctx.tab_id, attempts = max_attempts, "重连次数耗尽，会话关闭");
             return None;
         }
         let _ = ctx.events.send(json!({
             "v": 1, "type": "session_state",
             "tabId": ctx.tab_id, "state": "reconnecting", "attempt": attempt,
         }));
+        tracing::info!(tab_id = %ctx.tab_id, attempt, "会话意外断开，准备重连");
         tokio::time::sleep(reconnect_backoff(attempt)).await;
         if !ctx.mgr.sessions.lock().contains_key(&ctx.tab_id) {
             return None;

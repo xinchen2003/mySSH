@@ -17,6 +17,7 @@ import {
   readTerminalSettings,
 } from '../state/apply-settings';
 import { keymapFromSettings, matchAction, matchCombo } from '../term/keymap';
+import { pasteNeedsConfirm } from '../term/paste';
 import type { SessionStateFrame } from '../term/types';
 import { SearchBar, type SearchOptions, type SearchResults } from '../components/SearchBar';
 import { ContextMenu, type MenuItem } from '../components/ContextMenu';
@@ -79,12 +80,12 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
   const [pasteConfirm, setPasteConfirm] = useState<{ text: string; lines: number } | null>(null);
   const t = useT();
 
-  /** 统一粘贴入口（快捷键/右键直贴/菜单项三路共用）：去除尾部单个换行后仍含换行 → 确认；
-   *  单行直贴。确认框默认焦点在「取消」（ConfirmDialog 语义），防误回车批量执行命令 */
+  /** 统一粘贴入口（快捷键/右键直贴/菜单项三路共用）：判定规则抽在 term/paste.ts
+   *  （含测试）；确认框默认焦点在「取消」（ConfirmDialog 语义），防误回车批量执行命令 */
   const confirmPaste = (text: string) => {
-    const stripped = text.replace(/\r?\n$/, '');
-    if (stripped.includes('\n')) {
-      setPasteConfirm({ text, lines: stripped.split('\n').length });
+    const need = pasteNeedsConfirm(text);
+    if (need) {
+      setPasteConfirm({ text, lines: need.lines });
       return;
     }
     termRegistry.get(pane.id)?.paste(text);

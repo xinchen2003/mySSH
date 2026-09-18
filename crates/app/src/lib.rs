@@ -1,6 +1,7 @@
 //! mySSH 应用后端。M0：壳 + 日志/panic；M1：终端会话（term_* 命令族）。
 //! 命令契约见 docs/design/03-ipc-contract.md（逐里程碑补齐）。
 
+mod diagnostics;
 mod encoding;
 mod files;
 mod local_pty;
@@ -58,6 +59,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(TerminalManager::default()))
         .manage(session_state.clone())
@@ -95,6 +97,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             log_frontend,
             app_version,
+            diagnostics::export_diagnostics,
             terminal::term_open,
             terminal::term_input,
             terminal::term_input_raw,

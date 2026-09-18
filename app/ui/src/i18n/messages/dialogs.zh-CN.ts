@@ -142,6 +142,11 @@ export const zhDialogs = {
   'dialogs.mcpAllowSshExec': 'ssh_exec（远程执行命令）',
   'dialogs.mcpAllowSftpRead': 'SFTP 读取（列目录/读文件）',
   'dialogs.mcpAllowSftpWrite': 'SFTP 写入（写/删/改远端）',
+  'dialogs.diagSection': '诊断',
+  'dialogs.diagExport': '导出诊断包',
+  'dialogs.diagHint': '打包日志与系统信息为 zip；日志可能含主机地址与用户名，发送前请自行审阅。',
+  'dialogs.diagExported': '诊断包已导出：{path}',
+  'dialogs.diagFailed': '诊断包导出失败：{msg}',
   'dialogs.mcpAllowSftpTransfer': 'SFTP 上传/下载（读写本地文件）',
   'dialogs.mcpHint':
     'AI 客户端（如 Claude Code）接入：POST http://127.0.0.1:<端口>/mcp，请求头 Authorization: Bearer <令牌>。勾选启用后自动生成令牌；仅监听本机回环。',

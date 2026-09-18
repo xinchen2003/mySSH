@@ -42,7 +42,20 @@ impl PtyReader {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
                     return Some(data);
                 }
-                None | Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => return None,
+                // 区分终态来源：传输层终止（网络断开/keepalive 超时）是掉线定位的关键证据，
+                // EOF/Close 多为对端 shell 正常退出——分开记级
+                None => {
+                    tracing::warn!("SSH 通道传输层终止（连接中断）");
+                    return None;
+                }
+                Some(ChannelMsg::Eof) => {
+                    tracing::debug!("SSH 通道 EOF");
+                    return None;
+                }
+                Some(ChannelMsg::Close) => {
+                    tracing::info!("SSH 通道收到 Close（对端关闭）");
+                    return None;
+                }
                 Some(_) => continue,
             }
         }

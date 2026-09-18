@@ -2,6 +2,7 @@
 name = "core-sftp"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [lints]
 workspace = true
@@ -20,3 +21,4 @@ serde_json.workspace = true
 rand = "0.10.2"
 russh.workspace = true
 tokio.workspace = true
+zeroize = "1"

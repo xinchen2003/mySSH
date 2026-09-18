@@ -38,7 +38,9 @@ export function SearchBar({
     `rounded px-1 text-xs ${on ? 'bg-blue-700 text-white' : 'text-neutral-400 hover:text-neutral-100'}`;
 
   return (
-    <div className="absolute top-1 right-3 z-10 flex items-center gap-1 rounded border border-neutral-700 bg-neutral-900/95 px-2 py-1 shadow-lg">
+    // right-10：避开 PaneFrame 右上角悬浮的 pane 关闭 ×（right-1 top-1，宽约 26px），
+    // 否则搜索条自身的关闭钮与之几乎重合
+    <div className="absolute top-1 right-10 z-10 flex items-center gap-1 rounded border border-neutral-700 bg-neutral-900/95 px-2 py-1 shadow-lg">
       <input
         ref={inputRef}
         className="w-48 rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-200 outline-none focus-visible:ring-1 focus-visible:ring-neutral-500"

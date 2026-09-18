@@ -53,6 +53,10 @@ export const zhChrome = {
   'chrome.menuCloseRight': '关闭右侧',
   'chrome.menuCloseAll': '关闭全部',
   'chrome.bellTitle': '终端响铃',
+  'chrome.updateTitle': '发现新版本 v{version}',
+  'chrome.updateBody': '确认后将下载并安装新版本，随后自动重启；重启会断开所有活跃会话。',
+  'chrome.updateNow': '更新并重启',
+  'chrome.updateFailed': '更新下载或安装失败：{msg}',
   'chrome.closeTabAria': '关闭标签',
   'chrome.newConnection': '新建',
   // ---- StatusBar ----

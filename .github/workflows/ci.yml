@@ -96,3 +96,63 @@ jobs:
           name: spike-results
           path: spike/results/*.json
           retention-days: 30
+
+  e2e-linux:
+    # 轴一 1.3：真机 OpenSSH 容器 E2E——连接/键入回显、SFTP 回环、known_hosts、su 密码应答
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 构建并启动 OpenSSH 容器
+        run: |
+          docker build -t myssh-e2e-sshd .github/e2e/sshd
+          docker run -d --name sshd -p 2222:2222 myssh-e2e-sshd
+          for i in $(seq 1 30); do
+            if timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/2222 && head -c 4 <&3 | grep -q SSH'; then
+              echo "sshd ready"; break
+            fi
+            sleep 1
+          done
+      - name: 运行真机 E2E
+        env:
+          MYSSH_E2E_HOST: 127.0.0.1
+          MYSSH_E2E_PORT: "2222"
+          MYSSH_E2E_USER: tester
+          MYSSH_E2E_PASSWORD: e2e-pass
+          MYSSH_E2E_SU_PASSWORD: e2e-root
+        run: cargo test -p core-ssh -p core-sftp --test e2e_sshd -- --nocapture
+
+  e2e-windows-mcp:
+    # MCP HTTP 面真机往返（ssh_exec / terminal_*）。vault 为 DPAPI → 必须 Windows；
+    # MCP host key fail-closed → 预先用 ssh-keyscan 学入本机 sshd 密钥
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/ui/package-lock.json
+      - run: npm ci --prefix app/ui && npm run build --prefix app/ui
+      - name: 启用 OpenSSH Server 与测试账号
+        shell: pwsh
+        run: |
+          Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+          Set-Service sshd -StartupType Automatic
+          Start-Service sshd
+          net user tester "E2e-Pass-123!" /add /expires:never
+      - name: 预学习本机 sshd 主机密钥
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\myssh" | Out-Null
+          ssh-keyscan -t ed25519,ecdsa,rsa 127.0.0.1 | Out-File -Encoding ascii -Append "$env:LOCALAPPDATA\myssh\known_hosts"
+      - name: 运行 MCP E2E
+        env:
+          MYSSH_E2E_HOST: 127.0.0.1
+          MYSSH_E2E_PORT: "22"
+          MYSSH_E2E_USER: tester
+          MYSSH_E2E_PASSWORD: E2e-Pass-123!
+        run: cargo test -p app e2e_ -- --nocapture

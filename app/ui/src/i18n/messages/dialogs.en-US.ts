@@ -141,6 +141,12 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
   'dialogs.mcpTokenPlaceholder': 'Empty = no auth (not recommended)',
   'dialogs.mcpCopyConfig': 'Copy config for',
   'dialogs.mcpConfigCopied': '{agent} config copied',
+  'dialogs.diagSection': 'Diagnostics',
+  'dialogs.diagExport': 'Export Diagnostics',
+  'dialogs.diagHint':
+    'Bundles logs and system info into a zip; logs may contain host addresses and usernames — review before sharing.',
+  'dialogs.diagExported': 'Diagnostics exported: {path}',
+  'dialogs.diagFailed': 'Diagnostics export failed: {msg}',
   'dialogs.mcpToolPerms': 'Tool permissions',
   'dialogs.mcpAllowListSessions': 'list_sessions (list saved sessions)',
   'dialogs.mcpAllowSshExec': 'ssh_exec (run remote commands)',

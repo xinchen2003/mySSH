@@ -58,6 +58,11 @@ export const enChrome: Record<keyof typeof zhChrome, string> = {
   'chrome.menuCloseRight': 'Close to the Right',
   'chrome.menuCloseAll': 'Close All',
   'chrome.bellTitle': 'Terminal Bell',
+  'chrome.updateTitle': 'Update Available: v{version}',
+  'chrome.updateBody':
+    'The new version will be downloaded and installed, then the app restarts; all active sessions will be disconnected.',
+  'chrome.updateNow': 'Update & Restart',
+  'chrome.updateFailed': 'Update download or install failed: {msg}',
   'chrome.closeTabAria': 'Close Tab',
   'chrome.newConnection': 'New',
   // ---- StatusBar ----

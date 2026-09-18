@@ -1316,6 +1316,8 @@ async fn wait_transfer(
 
 #[cfg(test)]
 mod tests {
+    // 测试代码豁免 unwrap/expect（工作区红线仅约束非测试代码）
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -1419,5 +1421,195 @@ mod tests {
         assert!(!names.contains(&"terminal_read"));
         assert!(!names.contains(&"terminal_close"));
         assert_eq!(names.len(), 10);
+    }
+
+    // ---- 轴一 1.3：MCP HTTP 面 E2E（真服务 + 真 JSON-RPC 往返） ----
+
+    /// 起一台真实 MCP 服务（临时库 + 空闲端口）；调用方负责 mgr.stop()
+    async fn boot_mcp(store: Arc<Store>) -> (Arc<McpManager>, String) {
+        let mgr = McpManager::new();
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        mgr.start(
+            store,
+            crate::sftp::SftpManagerState::new(),
+            crate::mcp_terminal::McpTerminalState::new(),
+            port,
+            String::new(), // 测试不启用 token
+            McpPerms::default(),
+        )
+        .await
+        .expect("MCP 服务启动失败");
+        (mgr, format!("http://127.0.0.1:{port}/mcp"))
+    }
+
+    async fn rpc(url: &str, method: &str, params: Value) -> Value {
+        let resp = reqwest::Client::new()
+            .post(url)
+            .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
+            .send()
+            .await
+            .expect("HTTP 请求失败");
+        assert_eq!(resp.status(), 200, "HTTP 状态异常");
+        let v: Value = resp.json().await.expect("响应非 JSON");
+        if let Some(err) = v.get("error") {
+            panic!("RPC {method} 返回错误: {err}");
+        }
+        v["result"].clone()
+    }
+
+    /// tools/call 的文本载荷与 isError 标志
+    async fn call_text(url: &str, name: &str, args: Value) -> (String, bool) {
+        let r = rpc(
+            url,
+            "tools/call",
+            json!({ "name": name, "arguments": args }),
+        )
+        .await;
+        (
+            r["content"][0]["text"].as_str().unwrap_or("").to_string(),
+            r["isError"].as_bool().unwrap_or(false),
+        )
+    }
+
+    #[tokio::test]
+    async fn e2e_http_initialize_and_tools_list() {
+        let dir = std::env::temp_dir().join(format!("myssh-mcp-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Arc::new(Store::open(&dir.join("t.db")).await.expect("开库失败"));
+        let (mgr, url) = boot_mcp(store).await;
+
+        let init = rpc(&url, "initialize", json!({})).await;
+        assert_eq!(init["serverInfo"]["name"], "myssh");
+        let tools = rpc(&url, "tools/list", json!({})).await;
+        assert_eq!(tools["tools"].as_array().unwrap().len(), 18);
+
+        mgr.stop().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ssh_exec / terminal_* 真机往返（CI Windows + OpenSSH.Server；vault 为 DPAPI，
+    /// 仅 Windows 可跑）。目标主机密钥须已学入 %LOCALAPPDATA%/myssh/known_hosts
+    /// （MCP 面无弹窗通路，host key fail-closed）——CI 步骤用 ssh-keyscan 预置。
+    #[tokio::test]
+    async fn e2e_ssh_exec_and_terminal_roundtrip() {
+        let Ok(host) = std::env::var("MYSSH_E2E_HOST") else {
+            return;
+        };
+        let port: u16 = std::env::var("MYSSH_E2E_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(22);
+        let user = std::env::var("MYSSH_E2E_USER").unwrap_or_else(|_| "tester".into());
+        let password = std::env::var("MYSSH_E2E_PASSWORD").expect("MYSSH_E2E_PASSWORD 未设置");
+
+        let dir = std::env::temp_dir().join(format!("myssh-mcp-e2e-ssh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Arc::new(Store::open(&dir.join("t.db")).await.expect("开库失败"));
+        let rec = core_store::SessionRecord {
+            id: "e2e".into(),
+            name: "e2e".into(),
+            kind: core_store::SessionKind::Ssh,
+            host,
+            port,
+            user,
+            auth_type: core_store::AuthType::Password,
+            key_path: None,
+            shell: None,
+            workdir: None,
+            jump_chain: vec![],
+            group_path: String::new(),
+            color: None,
+            encoding: "utf-8".into(),
+            su_user: None,
+            login_macro: None,
+            mcp_perms: Default::default(),
+            tags: vec![],
+            command: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        store.sessions().upsert(&rec).await.unwrap();
+        store
+            .credentials()
+            .put(
+                "e2e",
+                core_store::CredentialKind::Password,
+                &core_store::Secret::new(password.into_bytes()),
+            )
+            .await
+            .unwrap();
+
+        let (mgr, url) = boot_mcp(store).await;
+
+        // ssh_exec 往返
+        let (text, is_err) = call_text(
+            &url,
+            "ssh_exec",
+            json!({ "session_id": "e2e", "command": "echo mcp-e2e-ok" }),
+        )
+        .await;
+        assert!(!is_err, "ssh_exec 报错: {text}");
+        assert!(
+            text.contains("mcp-e2e-ok"),
+            "ssh_exec 输出缺 marker: {text}"
+        );
+
+        // terminal_open → send → read → close 往返
+        let (text, is_err) = call_text(&url, "terminal_open", json!({ "session_id": "e2e" })).await;
+        assert!(!is_err, "terminal_open 报错: {text}");
+        let term_id = serde_json::from_str::<Value>(&text).unwrap()["terminalId"]
+            .as_str()
+            .expect("terminal_open 未返回 terminalId")
+            .to_string();
+
+        // 读首轮（banner/提示符）拿到 offset 游标
+        let (text, is_err) = call_text(
+            &url,
+            "terminal_read",
+            json!({ "terminalId": term_id, "offset": 0, "wait_seconds": 5 }),
+        )
+        .await;
+        assert!(!is_err, "terminal_read 报错: {text}");
+        let mut offset = serde_json::from_str::<Value>(&text).unwrap()["nextOffset"]
+            .as_u64()
+            .expect("terminal_read 未返回 nextOffset");
+
+        let (_, is_err) = call_text(
+            &url,
+            "terminal_send",
+            json!({ "terminalId": term_id, "data": "echo term-e2e-ok\r" }),
+        )
+        .await;
+        assert!(!is_err, "terminal_send 报错");
+
+        let mut echoed = String::new();
+        for _ in 0..10 {
+            let (text, is_err) = call_text(
+                &url,
+                "terminal_read",
+                json!({ "terminalId": term_id, "offset": offset, "wait_seconds": 5 }),
+            )
+            .await;
+            assert!(!is_err, "terminal_read 报错: {text}");
+            let snap = serde_json::from_str::<Value>(&text).unwrap();
+            offset = snap["nextOffset"].as_u64().unwrap();
+            echoed.push_str(snap["data"].as_str().unwrap_or(""));
+            if echoed.contains("term-e2e-ok") {
+                break;
+            }
+        }
+        assert!(
+            echoed.contains("term-e2e-ok"),
+            "终端输出缺 marker: {echoed:?}"
+        );
+
+        let (_, is_err) = call_text(&url, "terminal_close", json!({ "terminalId": term_id })).await;
+        assert!(!is_err, "terminal_close 报错");
+
+        mgr.stop().await;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
