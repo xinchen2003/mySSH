@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { listen } from '@tauri-apps/api/event';
@@ -184,6 +185,22 @@ function FilePane(p: PaneProps) {
     });
   }, [p.entries, filter, showHidden, sortKey, sortAsc]);
 
+  // 虚拟滚动（PR-10）：5 万项目录 DOM 有界。行高固定（text-xs + py-0.5 ≈ 21px），
+  // 方向键焦点跟随经 data-idx 查询（虚拟化后 DOM 兄弟关系不再等于列表相邻）。
+  const listRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: visible.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 21,
+    overscan: 30,
+  });
+  const focusRow = (i: number) => {
+    rowVirtualizer.scrollToIndex(i, { align: 'auto' });
+    requestAnimationFrame(() => {
+      listRef.current?.querySelector<HTMLElement>(`[data-idx="${i}"]`)?.focus();
+    });
+  };
+
   const sortBy = (key: 'name' | 'size' | 'mtime') => {
     if (sortKey === key) setSortAsc((v) => !v);
     else {
@@ -276,10 +293,13 @@ function FilePane(p: PaneProps) {
         )}
       </div>
       <div
+        ref={listRef}
         className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:ring-1 focus-visible:ring-neutral-500"
         tabIndex={0}
         onClick={(e) => {
-          if (e.target === e.currentTarget) p.onClearSel();
+          // 空白区（容器本身或占位内层）点击清空选择
+          if (e.target === e.currentTarget || (e.target as HTMLElement).dataset.vspace === '1')
+            p.onClearSel();
         }}
         onKeyDown={(e) => {
           if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
@@ -288,121 +308,133 @@ function FilePane(p: PaneProps) {
           }
         }}
       >
-        {visible.map((e) => (
-          <div
-            key={e.path}
-            role="option"
-            aria-selected={p.sel.has(e.path)}
-            // 大行数列表：屏外行跳过渲染（行高 py-0.5 + text-xs ≈ 20px）
-            style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 20px' }}
-            data-dir-row={e.kind === 'dir' ? e.path : undefined}
-            tabIndex={0}
-            draggable
-            onDragStart={(ev) =>
-              ev.dataTransfer.setData(
-                'application/x-myssh-entry',
-                JSON.stringify({
-                  side: p.side,
-                  paths: p.sel.has(e.path) ? [...p.sel] : [e.path],
-                }),
-              )
-            }
-            onDragOver={
-              e.kind === 'dir'
-                ? (ev) => {
-                    // 目录行可接收对面栏条目（落到该子目录）；OS 文件走原生事件，不进这里
-                    if (ev.dataTransfer.types.includes('application/x-myssh-entry')) {
-                      ev.preventDefault();
-                      ev.stopPropagation();
-                      setRowDrop(e.path);
-                    }
-                  }
-                : undefined
-            }
-            onDragLeave={
-              e.kind === 'dir' ? () => setRowDrop((d) => (d === e.path ? null : d)) : undefined
-            }
-            onDrop={
-              e.kind === 'dir'
-                ? (ev) => {
-                    const raw = ev.dataTransfer.getData('application/x-myssh-entry');
-                    // 非内部负载（OS 文件）不拦截：冒泡给栏位级 onDrop 统一处理
-                    if (!raw) return;
-                    ev.preventDefault();
-                    ev.stopPropagation();
-                    setRowDrop(null);
-                    p.onDropHover(false);
-                    const src = JSON.parse(raw) as { side: string; paths: string[] };
-                    if (src.side !== p.side) p.onDropEntriesInto(src.paths, e.path);
-                  }
-                : undefined
-            }
-            onClick={(ev) => p.onRowClick(e, ev)}
-            onDoubleClick={() => p.onOpen(e)}
-            onContextMenu={(ev) => {
-              ev.preventDefault();
-              p.onRowMenu(e, ev.clientX, ev.clientY);
-            }}
-            onKeyDown={(ev) => {
-              // 键盘导航（批次十一 3，风格对齐 Sidebar）：↑↓ 移选中且焦点跟随，
-              // Enter 打开/进目录，Backspace 回上级，Delete/F2 交父级确认/输入
-              if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
-                ev.preventDefault();
-                const i = visible.findIndex((x) => x.path === e.path);
-                const next = visible[i + (ev.key === 'ArrowDown' ? 1 : -1)];
-                if (next) {
-                  p.onArrowSelect(next);
-                  const sib = (
-                    ev.key === 'ArrowDown'
-                      ? ev.currentTarget.nextElementSibling
-                      : ev.currentTarget.previousElementSibling
-                  ) as HTMLElement | null;
-                  sib?.focus();
+        <div
+          data-vspace="1"
+          style={{ height: rowVirtualizer.getTotalSize(), position: 'relative' }}
+        >
+          {rowVirtualizer.getVirtualItems().map((vi) => {
+            const e = visible[vi.index];
+            return (
+              <div
+                key={e.path}
+                ref={rowVirtualizer.measureElement}
+                data-index={vi.index}
+                data-idx={vi.index}
+                role="option"
+                aria-selected={p.sel.has(e.path)}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${vi.start}px)`,
+                }}
+                data-dir-row={e.kind === 'dir' ? e.path : undefined}
+                tabIndex={0}
+                draggable
+                onDragStart={(ev) =>
+                  ev.dataTransfer.setData(
+                    'application/x-myssh-entry',
+                    JSON.stringify({
+                      side: p.side,
+                      paths: p.sel.has(e.path) ? [...p.sel] : [e.path],
+                    }),
+                  )
                 }
-                return;
-              }
-              if (ev.key === 'Enter') {
-                ev.preventDefault();
-                p.onOpen(e);
-                return;
-              }
-              if (ev.key === 'Backspace') {
-                ev.preventDefault();
-                p.onUp();
-                return;
-              }
-              p.onRowKey(e, ev);
-            }}
-            className={`flex cursor-pointer items-center gap-2 px-2 py-0.5 text-xs ${
-              rowDrop === e.path
-                ? 'bg-blue-900/60 text-neutral-100 outline outline-1 outline-blue-600'
-                : p.sel.has(e.path)
-                  ? 'bg-neutral-700 text-neutral-100 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-neutral-500'
-                  : 'text-neutral-300 outline-none hover:bg-neutral-800 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-neutral-500'
-            }`}
-          >
-            <span className="w-4 shrink-0 text-center">
-              {e.kind === 'dir' ? '📁' : e.kind === 'symlink' ? '🔗' : '📄'}
-            </span>
-            <span className="min-w-0 flex-1 truncate" title={e.name}>
-              {e.name}
-            </span>
-            <span className="w-16 shrink-0 text-right text-neutral-500 tabular-nums">
-              {e.kind === 'dir' ? '' : fmtSize(e.size)}
-            </span>
-            <span className="w-16 shrink-0 text-right text-neutral-600 tabular-nums">
-              {fmtTime(e.mtime)}
-            </span>
-            {p.side === 'remote' && (
-              <span
-                className="w-32 shrink-0 text-right text-neutral-600"
-                title={permsTitle(e.permissions)}
+                onDragOver={
+                  e.kind === 'dir'
+                    ? (ev) => {
+                        // 目录行可接收对面栏条目（落到该子目录）；OS 文件走原生事件，不进这里
+                        if (ev.dataTransfer.types.includes('application/x-myssh-entry')) {
+                          ev.preventDefault();
+                          ev.stopPropagation();
+                          setRowDrop(e.path);
+                        }
+                      }
+                    : undefined
+                }
+                onDragLeave={
+                  e.kind === 'dir' ? () => setRowDrop((d) => (d === e.path ? null : d)) : undefined
+                }
+                onDrop={
+                  e.kind === 'dir'
+                    ? (ev) => {
+                        const raw = ev.dataTransfer.getData('application/x-myssh-entry');
+                        // 非内部负载（OS 文件）不拦截：冒泡给栏位级 onDrop 统一处理
+                        if (!raw) return;
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        setRowDrop(null);
+                        p.onDropHover(false);
+                        const src = JSON.parse(raw) as { side: string; paths: string[] };
+                        if (src.side !== p.side) p.onDropEntriesInto(src.paths, e.path);
+                      }
+                    : undefined
+                }
+                onClick={(ev) => p.onRowClick(e, ev)}
+                onDoubleClick={() => p.onOpen(e)}
+                onContextMenu={(ev) => {
+                  ev.preventDefault();
+                  p.onRowMenu(e, ev.clientX, ev.clientY);
+                }}
+                onKeyDown={(ev) => {
+                  // 键盘导航（批次十一 3，风格对齐 Sidebar）：↑↓ 移选中且焦点跟随，
+                  // Enter 打开/进目录，Backspace 回上级，Delete/F2 交父级确认/输入
+                  if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+                    ev.preventDefault();
+                    const i = visible.findIndex((x) => x.path === e.path);
+                    const next = visible[i + (ev.key === 'ArrowDown' ? 1 : -1)];
+                    if (next) {
+                      p.onArrowSelect(next);
+                      // 虚拟化后相邻行未必在 DOM：按索引滚动 + data-idx 查询焦点
+                      focusRow(i + (ev.key === 'ArrowDown' ? 1 : -1));
+                    }
+                    return;
+                  }
+                  if (ev.key === 'Enter') {
+                    ev.preventDefault();
+                    p.onOpen(e);
+                    return;
+                  }
+                  if (ev.key === 'Backspace') {
+                    ev.preventDefault();
+                    p.onUp();
+                    return;
+                  }
+                  p.onRowKey(e, ev);
+                }}
+                className={`flex cursor-pointer items-center gap-2 px-2 py-0.5 text-xs ${
+                  rowDrop === e.path
+                    ? 'bg-blue-900/60 text-neutral-100 outline outline-1 outline-blue-600'
+                    : p.sel.has(e.path)
+                      ? 'bg-neutral-700 text-neutral-100 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-neutral-500'
+                      : 'text-neutral-300 outline-none hover:bg-neutral-800 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-neutral-500'
+                }`}
               >
-                {fmtPermsCn(e.permissions)}
-              </span>
-            )}
-          </div>
-        ))}
+                <span className="w-4 shrink-0 text-center">
+                  {e.kind === 'dir' ? '📁' : e.kind === 'symlink' ? '🔗' : '📄'}
+                </span>
+                <span className="min-w-0 flex-1 truncate" title={e.name}>
+                  {e.name}
+                </span>
+                <span className="w-16 shrink-0 text-right text-neutral-500 tabular-nums">
+                  {e.kind === 'dir' ? '' : fmtSize(e.size)}
+                </span>
+                <span className="w-16 shrink-0 text-right text-neutral-600 tabular-nums">
+                  {fmtTime(e.mtime)}
+                </span>
+                {p.side === 'remote' && (
+                  <span
+                    className="w-32 shrink-0 text-right text-neutral-600"
+                    title={permsTitle(e.permissions)}
+                  >
+                    {fmtPermsCn(e.permissions)}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
         {!p.loading && visible.length === 0 && (
           <div className="px-3 py-4 text-xs text-neutral-600">
             {p.entries.length === 0 ? t('panels.emptyDir') : t('panels.noMatch')}

@@ -67,84 +67,123 @@ const JOB_STATE_KEY: Record<TransferJobView['state'], MsgKey> = {
   canceled: 'panels.stateCanceled',
 };
 
-/** 目录任务行（PR-8）：父任务聚合展示——已发现/完成/失败/吞吐；扫描中总量未知显示 ? */
+/** 目录任务行（PR-8/10）：父任务聚合展示——已发现/完成/失败/吞吐；扫描中总量未知显示 ?；
+ *  ⓘ 展开在途文件与失败条目（失败条目单独保留，后端 cap 256；展示 cap 50 + 溢出计数）。 */
 function JobRow({ j, sessionId }: { j: TransferJobView; sessionId: string }) {
   const tr = useT();
+  const [showDetail, setShowDetail] = useState(false);
   const terminal = j.state === 'completed' || j.state === 'failed' || j.state === 'canceled';
   const btn = 'rounded px-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200';
+  const hasDetail = j.current.length > 0 || j.failedEntries.length > 0;
   return (
-    <div className="flex items-center gap-2 py-0.5 text-neutral-400">
-      <span title={j.direction === 'upload' ? tr('panels.upload') : tr('panels.download')}>
-        {j.direction === 'upload' ? '📁⬆' : '📁⬇'}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-neutral-200" title={j.summary}>
-        {j.summary}
-      </span>
-      <span className="shrink-0 tabular-nums">
-        {j.completedFiles}/{j.scanDone ? j.discoveredFiles : '?'} · {fmtSize(j.bytesDone)}
-        {j.failedFiles > 0 && (
-          <span className="text-red-400">
-            {' '}
-            · {tr('panels.jobFailedCount', { count: j.failedFiles })}
-          </span>
+    <div>
+      <div className="flex items-center gap-2 py-0.5 text-neutral-400">
+        <span title={j.direction === 'upload' ? tr('panels.upload') : tr('panels.download')}>
+          {j.direction === 'upload' ? '📁⬆' : '📁⬇'}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-neutral-200" title={j.summary}>
+          {j.summary}
+        </span>
+        <span className="shrink-0 tabular-nums">
+          {j.completedFiles}/{j.scanDone ? j.discoveredFiles : '?'} · {fmtSize(j.bytesDone)}
+          {j.failedFiles > 0 && (
+            <span className="text-red-400">
+              {' '}
+              · {tr('panels.jobFailedCount', { count: j.failedFiles })}
+            </span>
+          )}
+        </span>
+        <span className="w-16 shrink-0 text-right text-neutral-400 tabular-nums">
+          {j.paused
+            ? tr('panels.statePaused')
+            : !terminal && (j.rate ?? 0) > 0
+              ? `${fmtSize(j.rate ?? 0)}/s`
+              : tr(JOB_STATE_KEY[j.state])}
+        </span>
+        {!terminal && !j.paused && (
+          <button
+            className={btn}
+            title={tr('panels.pause')}
+            aria-label={tr('panels.pause')}
+            onClick={() => void transferJobCmd(sessionId, 'transfer_job_pause', j.id)}
+          >
+            ⏸
+          </button>
         )}
-      </span>
-      <span className="w-16 shrink-0 text-right text-neutral-400 tabular-nums">
-        {j.paused
-          ? tr('panels.statePaused')
-          : !terminal && (j.rate ?? 0) > 0
-            ? `${fmtSize(j.rate ?? 0)}/s`
-            : tr(JOB_STATE_KEY[j.state])}
-      </span>
-      {!terminal && !j.paused && (
-        <button
-          className={btn}
-          title={tr('panels.pause')}
-          aria-label={tr('panels.pause')}
-          onClick={() => void transferJobCmd(sessionId, 'transfer_job_pause', j.id)}
-        >
-          ⏸
-        </button>
-      )}
-      {!terminal && j.paused && (
-        <button
-          className={btn}
-          title={tr('panels.resume')}
-          aria-label={tr('panels.resume')}
-          onClick={() => void transferJobCmd(sessionId, 'transfer_job_resume', j.id)}
-        >
-          ▶
-        </button>
-      )}
-      {!terminal && (
-        <button
-          className={btn}
-          title={tr('panels.cancel')}
-          aria-label={tr('panels.cancel')}
-          onClick={() => void transferJobCmd(sessionId, 'transfer_job_cancel', j.id)}
-        >
-          ✕
-        </button>
-      )}
-      {terminal && (
-        <button
-          className={btn}
-          title={tr('panels.retryResume')}
-          aria-label={tr('panels.retryResume')}
-          onClick={() => void transferJobCmd(sessionId, 'transfer_job_retry', j.id)}
-        >
-          ↻
-        </button>
-      )}
-      {terminal && (
-        <button
-          className={btn}
-          title={tr('panels.removeFromQueue')}
-          aria-label={tr('panels.removeFromQueue')}
-          onClick={() => void transferJobCmd(sessionId, 'transfer_job_remove', j.id)}
-        >
-          🗑
-        </button>
+        {!terminal && j.paused && (
+          <button
+            className={btn}
+            title={tr('panels.resume')}
+            aria-label={tr('panels.resume')}
+            onClick={() => void transferJobCmd(sessionId, 'transfer_job_resume', j.id)}
+          >
+            ▶
+          </button>
+        )}
+        {!terminal && (
+          <button
+            className={btn}
+            title={tr('panels.cancel')}
+            aria-label={tr('panels.cancel')}
+            onClick={() => void transferJobCmd(sessionId, 'transfer_job_cancel', j.id)}
+          >
+            ✕
+          </button>
+        )}
+        {terminal && (
+          <button
+            className={btn}
+            title={tr('panels.retryResume')}
+            aria-label={tr('panels.retryResume')}
+            onClick={() => void transferJobCmd(sessionId, 'transfer_job_retry', j.id)}
+          >
+            ↻
+          </button>
+        )}
+        {terminal && (
+          <button
+            className={btn}
+            title={tr('panels.removeFromQueue')}
+            aria-label={tr('panels.removeFromQueue')}
+            onClick={() => void transferJobCmd(sessionId, 'transfer_job_remove', j.id)}
+          >
+            🗑
+          </button>
+        )}
+        {hasDetail && (
+          <button
+            className={btn}
+            title={tr('panels.viewError')}
+            aria-label={tr('panels.viewError')}
+            onClick={() => setShowDetail((v) => !v)}
+          >
+            ⓘ
+          </button>
+        )}
+      </div>
+      {showDetail && (
+        <div className="ml-6 break-all py-0.5">
+          {j.current.length > 0 && (
+            <div className="text-neutral-500">
+              {tr('panels.jobCurrent')}: {j.current.join(' · ')}
+            </div>
+          )}
+          {j.failedEntries.length > 0 && (
+            <div className="text-red-400">
+              {tr('panels.jobFailures')}:
+              {j.failedEntries.slice(0, 50).map((f, i) => (
+                <div key={i} className="ml-2">
+                  {f.path} — {f.error}
+                </div>
+              ))}
+              {j.failedFiles > j.failedEntries.length && (
+                <div className="ml-2 text-neutral-500">
+                  {tr('panels.jobMoreEntries', { count: j.failedFiles - j.failedEntries.length })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
