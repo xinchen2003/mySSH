@@ -4,46 +4,132 @@ import type { TransferHistoryView, TransferJobView, TransferView } from '../term
 import { useAppStore } from './app-store';
 import { tNow } from '../i18n';
 
-/** 传输管理中心（批次六 5）：跨 session 聚合 transfer_subscribe 快照。
+/** 传输管理中心（批次六 5）：跨 session 聚合 transfer_subscribe 事件流。
+ *  PR-9 增量事件协议：首帧 snapshot（每实体当前 eventSeq）→ 之后 tick-diff 只发
+ *  变化的 upsert/remove；upsert 为全量实体状态（乱序/重复/丢失可收敛）。
+ *  序号缺口/代际不符/心跳超时（看门狗 15s）→ 拆订阅重建（snapshot 重同步）。
+ *  store 有界：session 级终态传输留 200、终态目录任务留 50；完整历史只分页查询。
  *  订阅惰性建立：SftpPanel 打开时订自己的 session（ensureSession）；
  *  TransferCenter 打开时订当前窗口全部 session 标签（syncAllSessions）。
- *  每个 session 一条 Channel，重复订阅由 channels Map 去重（后端每订阅各起一个
- *  500ms 推送任务，去重避免空转）。
  *  顺带维护「打开 SFTP 时定位到终端 cwd」的导航请求（navRequests，SftpPanel 消费）。 */
 
-interface TransferStore {
-  /** sessionId → 传输快照（live + history 帧） */
-  bySession: Record<string, TransferView[]>;
-  /** sessionId → 目录任务快照（PR-8 DirectoryJob） */
-  jobsBySession: Record<string, TransferJobView[]>;
-  /** 全部会话的持久化历史（transfers 表；TransferCenter 历史记录区） */
-  history: TransferHistoryView[];
-  /** 传输中心可视开关（dock「传输中心」页签由 app-store openDock/closeDock 同步此字段） */
-  open: boolean;
-  /** SFTP 导航请求：tabId → 远端目标路径（终端右键「打开 SFTP」面板已开时写入） */
-  navRequests: Record<string, string>;
-  setOpen(v: boolean): void;
-  requestNav(tabId: string, path: string): void;
-  consumeNav(tabId: string): void;
-  /** 幂等：为 session 建立传输订阅（已订则跳过） */
-  ensureSession(sessionId: string): void;
-  /** 为当前窗口全部 session 标签建立订阅（TransferCenter 打开时调用） */
-  syncAllSessions(): void;
-  /** 拉取持久化历史（打开抽屉时、传输达终态后刷新） */
-  loadHistory(): Promise<void>;
-  /** 清空全部历史记录 */
-  clearHistory(): Promise<void>;
+/** 事件信封（与后端 TransferEvent 对齐；id 带 t:/j: 前缀） */
+export interface TransferEventJson {
+  id: string;
+  kind: 'transfer' | 'job';
+  eventType: 'upsert' | 'remove';
+  generation: number;
+  eventSeq: number;
+  payload: TransferView | TransferJobView | null;
 }
 
+export type TransferFrame =
+  | { type: 'snapshot'; generation: number; events: TransferEventJson[] }
+  | { type: 'events'; generation: number; events: TransferEventJson[] }
+  | { type: 'heartbeat'; generation: number };
+
 /** sessionId → 订阅 Channel（模块级，不随 React 渲染重建） */
-const channels = new Map<
+const channels = new Map<string, Channel<TransferFrame>>();
+/** sessionId → 订阅状态（代际/序号簿/最近帧时间） */
+const subs = new Map<
   string,
-  Channel<{ transfers: TransferView[]; jobs?: TransferJobView[] }>
+  { generation: number; seqs: Record<string, number>; lastFrameAt: number }
 >();
 /** sessionId → 上一帧各传输的状态（转移检测用；history 项不参与） */
 const prevFrames = new Map<string, Map<string, string>>();
+/** sessionId → 上一帧各目录任务的状态 */
+const prevJobs = new Map<string, Map<string, string>>();
 
 const ACTIVE_STATES = new Set(['queued', 'running', 'paused']);
+/** store 有界（PR-9）：session 级终态条目上限 */
+const MAX_TERMINAL_TRANSFERS = 200;
+const MAX_TERMINAL_JOBS = 50;
+/** 看门狗：超过此时长无任何帧（含心跳）即判订阅死亡，拆重建 */
+const WATCHDOG_STALE_MS = 15_000;
+
+/** 终态条目裁剪（PR-9 前端 store 有界）：保留全部非终态 + 末尾 cap 条终态 */
+export function trimTerminal<T extends { state: string }>(
+  list: T[],
+  terminalStates: Set<string>,
+  cap: number,
+): T[] {
+  let terminal = 0;
+  for (const t of list) if (terminalStates.has(t.state)) terminal++;
+  if (terminal <= cap) return list;
+  const keep: T[] = [];
+  let budget = cap;
+  // 从尾部留 cap 条终态；非终态全保留
+  const tailTerminal = new Set<number>();
+  for (let i = list.length - 1; i >= 0 && budget > 0; i--) {
+    if (terminalStates.has(list[i].state)) {
+      tailTerminal.add(i);
+      budget--;
+    }
+  }
+  for (let i = 0; i < list.length; i++) {
+    if (!terminalStates.has(list[i].state) || tailTerminal.has(i)) keep.push(list[i]);
+  }
+  return keep;
+}
+
+const TRANSFER_TERMINAL = new Set(['done', 'failed', 'canceled']);
+const JOB_TERMINAL = new Set(['completed', 'failed', 'canceled']);
+
+export type ApplyResult =
+  | { ok: true; transfers: TransferView[]; jobs: TransferJobView[] }
+  | { ok: false; reason: 'gap' | 'stale-generation' };
+
+/** 纯函数：把一帧 events 应用到（transfers, jobs）列表。
+ *  序号规则：eventSeq <= last 丢弃（重复/迟到）；> last+1 判缺口（调用方重建）；
+ *  upsert 全量替换/追加，remove 按 id 删除。乱序重复不破坏状态（PR-9 验收）。 */
+export function applyTransferEvents(
+  cur: { transfers: TransferView[]; jobs: TransferJobView[] },
+  seqs: Record<string, number>,
+  events: TransferEventJson[],
+  generation: number,
+): ApplyResult {
+  let transfers = cur.transfers;
+  let jobs = cur.jobs;
+  let tDirty = false;
+  let jDirty = false;
+  for (const e of events) {
+    if (e.generation !== generation) return { ok: false, reason: 'stale-generation' };
+    const last = seqs[e.id] ?? 0;
+    if (e.eventSeq <= last) continue;
+    if (e.eventSeq > last + 1) return { ok: false, reason: 'gap' };
+    seqs[e.id] = e.eventSeq;
+    if (e.kind === 'transfer') {
+      if (!tDirty) {
+        transfers = [...transfers];
+        tDirty = true;
+      }
+      const rawId = e.id.slice(2);
+      const idx = transfers.findIndex((t) => t.id === rawId);
+      if (e.eventType === 'remove') {
+        if (idx >= 0) transfers.splice(idx, 1);
+      } else {
+        const v = e.payload as TransferView;
+        if (idx >= 0) transfers[idx] = v;
+        else transfers.push(v);
+      }
+    } else {
+      if (!jDirty) {
+        jobs = [...jobs];
+        jDirty = true;
+      }
+      const rawId = e.id.slice(2);
+      const idx = jobs.findIndex((j) => j.id === rawId);
+      if (e.eventType === 'remove') {
+        if (idx >= 0) jobs.splice(idx, 1);
+      } else {
+        const v = e.payload as TransferJobView;
+        if (idx >= 0) jobs[idx] = v;
+        else jobs.push(v);
+      }
+    }
+  }
+  return { ok: true, transfers, jobs };
+}
 
 /** 帧间状态转移 → 用户提示：开始（info）/完成（success）/失败（error），按方向聚合计数 */
 function diffAndNotify(sessionId: string, transfers: TransferView[]): void {
@@ -103,6 +189,26 @@ function diffAndNotify(sessionId: string, transfers: TransferView[]): void {
   if (upDone + downDone + failed.length > 0) void useTransferStore.getState().loadHistory();
 }
 
+/** 目录任务终态转移 → 聚合提示（首帧播种不报） */
+function jobDiffAndNotify(sessionId: string, jobs: TransferJobView[]): void {
+  const cur = new Map(jobs.map((j) => [j.id, j]));
+  const prev = prevJobs.get(sessionId);
+  prevJobs.set(sessionId, new Map([...cur].map(([id, j]) => [id, j.state])));
+  if (!prev) return;
+  let done = 0;
+  let failed = 0;
+  for (const [id, j] of cur) {
+    const p = prev.get(id);
+    if (!p || p === j.state) continue;
+    if (j.state === 'completed') done++;
+    else if (j.state === 'failed') failed++;
+  }
+  const notify = useAppStore.getState().notify;
+  if (done) notify(tNow('state.dirJobDone', { count: done }), 'success');
+  if (failed) notify(tNow('state.dirJobFailed', { count: failed }), 'error');
+  if (done + failed > 0) void useTransferStore.getState().loadHistory();
+}
+
 /** 聚合发布全局活跃传输数（12.2 状态栏）；无订阅来源时置 null（不显示） */
 function publishActive(
   bySession: Record<string, TransferView[]>,
@@ -125,6 +231,51 @@ function publishActive(
     ).length;
   }
   useAppStore.getState().setTransferActive(n);
+}
+
+/** 拆订阅重建（snapshot 重同步：序号缺口/代际漂移/心跳超时统一走这里） */
+function rebuildSession(sessionId: string): void {
+  channels.delete(sessionId);
+  subs.delete(sessionId);
+  prevFrames.delete(sessionId);
+  prevJobs.delete(sessionId);
+  useTransferStore.getState().ensureSession(sessionId);
+}
+
+let watchdogStarted = false;
+function startWatchdog(): void {
+  if (watchdogStarted) return;
+  watchdogStarted = true;
+  setInterval(() => {
+    const now = Date.now();
+    for (const [sid, sub] of subs) {
+      if (now - sub.lastFrameAt > WATCHDOG_STALE_MS) rebuildSession(sid);
+    }
+  }, 5_000);
+}
+
+interface TransferStore {
+  /** sessionId → 传输快照（live + history 帧） */
+  bySession: Record<string, TransferView[]>;
+  /** sessionId → 目录任务快照（PR-8 DirectoryJob） */
+  jobsBySession: Record<string, TransferJobView[]>;
+  /** 全部会话的持久化历史（transfers 表；TransferCenter 历史记录区） */
+  history: TransferHistoryView[];
+  /** 传输中心可视开关（dock「传输中心」页签由 app-store openDock/closeDock 同步此字段） */
+  open: boolean;
+  /** SFTP 导航请求：tabId → 远端目标路径（终端右键「打开 SFTP」面板已开时写入） */
+  navRequests: Record<string, string>;
+  setOpen(v: boolean): void;
+  requestNav(tabId: string, path: string): void;
+  consumeNav(tabId: string): void;
+  /** 幂等：为 session 建立传输订阅（已订则跳过） */
+  ensureSession(sessionId: string): void;
+  /** 为当前窗口全部 session 标签建立订阅（TransferCenter 打开时调用） */
+  syncAllSessions(): void;
+  /** 拉取持久化历史（打开抽屉时、传输达终态后刷新） */
+  loadHistory(): Promise<void>;
+  /** 清空全部历史记录 */
+  clearHistory(): Promise<void>;
 }
 
 export const useTransferStore = create<TransferStore>((set, get) => ({
@@ -150,16 +301,71 @@ export const useTransferStore = create<TransferStore>((set, get) => ({
     }),
   ensureSession: (sessionId) => {
     if (channels.has(sessionId)) return;
-    const events = new Channel<{ transfers: TransferView[]; jobs?: TransferJobView[] }>();
+    startWatchdog();
+    const events = new Channel<TransferFrame>();
     channels.set(sessionId, events);
+    subs.set(sessionId, { generation: 0, seqs: {}, lastFrameAt: Date.now() });
     events.onmessage = (f) => {
-      diffAndNotify(sessionId, f.transfers);
+      const sub = subs.get(sessionId);
+      if (!sub) return;
+      if (f.type === 'heartbeat') {
+        // 代际不符的心跳同样说明对端状态异常，判活即可（事件帧才校验代际）
+        sub.lastFrameAt = Date.now();
+        return;
+      }
+      sub.lastFrameAt = Date.now();
+      if (f.type === 'snapshot') {
+        // snapshot 重同步：整表替换 + 序号簿重置（snapshotSeq 语义）
+        const transfers: TransferView[] = [];
+        const jobs: TransferJobView[] = [];
+        sub.seqs = {};
+        sub.generation = f.generation;
+        for (const e of f.events) {
+          sub.seqs[e.id] = e.eventSeq;
+          if (e.eventType === 'upsert' && e.payload) {
+            if (e.kind === 'transfer') transfers.push(e.payload as TransferView);
+            else jobs.push(e.payload as TransferJobView);
+          }
+        }
+        set((s) => {
+          const bySession = { ...s.bySession, [sessionId]: transfers };
+          const jobsBySession = { ...s.jobsBySession, [sessionId]: jobs };
+          publishActive(bySession, jobsBySession);
+          return { bySession, jobsBySession };
+        });
+        // 播种转移检测（重同步帧不报）
+        prevFrames.set(
+          sessionId,
+          new Map(transfers.filter((t) => !t.history).map((t) => [t.id, t.state])),
+        );
+        prevJobs.set(sessionId, new Map(jobs.map((j) => [j.id, j.state])));
+        return;
+      }
+      // events 帧：代际校验在 apply 内逐事件执行
+      const state = get();
+      const r = applyTransferEvents(
+        {
+          transfers: state.bySession[sessionId] ?? [],
+          jobs: state.jobsBySession[sessionId] ?? [],
+        },
+        sub.seqs,
+        f.events,
+        sub.generation,
+      );
+      if (!r.ok) {
+        if (r.reason === 'gap') rebuildSession(sessionId); // 序号缺口 → snapshot 重同步
+        return; // stale-generation：旧代际迟到帧，丢弃
+      }
+      const transfers = trimTerminal(r.transfers, TRANSFER_TERMINAL, MAX_TERMINAL_TRANSFERS);
+      const jobs = trimTerminal(r.jobs, JOB_TERMINAL, MAX_TERMINAL_JOBS);
       set((s) => {
-        const bySession = { ...s.bySession, [sessionId]: f.transfers };
-        const jobsBySession = { ...s.jobsBySession, [sessionId]: f.jobs ?? [] };
+        const bySession = { ...s.bySession, [sessionId]: transfers };
+        const jobsBySession = { ...s.jobsBySession, [sessionId]: jobs };
         publishActive(bySession, jobsBySession);
         return { bySession, jobsBySession };
       });
+      diffAndNotify(sessionId, transfers);
+      jobDiffAndNotify(sessionId, jobs);
     };
     // 历史帧（上次运行终态）：transfer_list 一次性合并，live 为准
     void invoke<{ transfers: TransferView[] }>('transfer_list', { sessionId })
@@ -176,7 +382,9 @@ export const useTransferStore = create<TransferStore>((set, get) => ({
       .catch(() => undefined);
     void invoke('transfer_subscribe', { sessionId, events }).catch((e) => {
       channels.delete(sessionId);
+      subs.delete(sessionId);
       prevFrames.delete(sessionId);
+      prevJobs.delete(sessionId);
       // E7006 = 会话记录已删但标签页还在（删服务器不关标签）：订阅无意义，静默跳过
       if (!String(e).includes('E7006')) {
         useAppStore
@@ -270,8 +478,7 @@ export async function retryHistoryTransfer(h: TransferHistoryView): Promise<void
       });
     }
     useTransferStore.getState().ensureSession(h.sessionId);
-    app.notify(tNow('state.requeued'), 'success');
   } catch (e) {
-    app.notify(tNow('state.retryFailed', { error: String(e) }), 'error');
+    app.notify(tNow('state.operationFailed', { error: String(e) }), 'error');
   }
 }

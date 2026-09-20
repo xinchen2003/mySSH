@@ -55,6 +55,8 @@ export const zhState = {
   'state.downloadStarted': '开始下载 {count} 项',
   'state.uploadDone': '{count} 项上传完成',
   'state.downloadDone': '{count} 项下载完成',
+  'state.dirJobDone': '{count} 个目录任务完成',
+  'state.dirJobFailed': '{count} 个目录任务失败',
   'state.transferFailed': '传输失败：{name}',
   'state.transferFailedWithError': '传输失败：{name}（{error}）',
   'state.transfersFailed': '{count} 项传输失败（首个：{name}）',

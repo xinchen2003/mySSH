@@ -1123,7 +1123,63 @@ pub async fn transfer_resume_all(
     Ok(())
 }
 
-/// 进度订阅：500ms 快照推送（前端差分算速率；与 tunnel_subscribe 同构）
+// ---------- PR-9 增量事件协议 ----------
+
+/// 单帧事件数上界（PR-9 帧边界）
+const MAX_EVENTS_PER_FRAME: usize = 256;
+/// 单帧序列化字节上界（PR-9 帧边界）
+const MAX_FRAME_BYTES: usize = 256 * 1024;
+/// 心跳间隔（无变化帧时保活；前端看门狗判活重建）
+const HEARTBEAT_TICKS: u32 = 10; // 10 × 500ms = 5s
+
+/// 事件信封（PR-9）：id=transferId/jobId；eventSeq 在 id 内按代际严格递增。
+/// upsert 载荷为全量实体状态——乱序/重复/丢失均可收敛（C3：投影绝不反压传输）。
+#[derive(Debug, Clone, PartialEq)]
+struct TransferEvent {
+    id: String,
+    kind: &'static str,       // "transfer" | "job"
+    event_type: &'static str, // "upsert" | "remove"
+    seq: u64,
+    payload: Value, // remove 时为 Null
+}
+
+fn event_json(generation: u64, e: &TransferEvent) -> Value {
+    json!({
+        "id": e.id,
+        "kind": e.kind,
+        "eventType": e.event_type,
+        "generation": generation,
+        "eventSeq": e.seq,
+        "payload": e.payload,
+    })
+}
+
+/// 帧切分（PR-9 帧边界）：≤256 事件且序列化 ≤256KB，超出拆帧
+fn chunk_frames(frame_type: &str, generation: u64, events: &[TransferEvent]) -> Vec<Value> {
+    let mut frames = Vec::new();
+    let mut cur: Vec<Value> = Vec::new();
+    let mut bytes = 64usize; // 信封余量
+    for e in events {
+        let v = event_json(generation, e);
+        let len = v.to_string().len() + 1;
+        if !cur.is_empty() && (cur.len() >= MAX_EVENTS_PER_FRAME || bytes + len > MAX_FRAME_BYTES) {
+            frames.push(json!({ "type": frame_type, "generation": generation, "events": cur }));
+            cur = Vec::new();
+            bytes = 64;
+        }
+        bytes += len;
+        cur.push(v);
+    }
+    if !cur.is_empty() {
+        frames.push(json!({ "type": frame_type, "generation": generation, "events": cur }));
+    }
+    frames
+}
+
+/// 进度订阅（PR-9 增量事件协议 + snapshot 重同步）：
+/// 首帧 snapshot（每实体当前 eventSeq），之后 500ms tick-diff 只发变化的 upsert/remove；
+/// upsert 全量载荷（进度槽语义：最新值可覆盖）；无变化 5s 心跳；Channel 失败即弃订阅
+/// （C3：IPC 是可重建投影，绝不反压 SFTP 数据面）。前端序号缺口/心跳超时 → 拆订阅重建。
 #[tauri::command]
 pub async fn transfer_subscribe(
     session_id: String,
@@ -1134,59 +1190,133 @@ pub async fn transfer_subscribe(
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
     let queue = ctx.queue.clone();
     let jobs = ctx.jobs.clone();
+    static GENERATION_SEQ: AtomicU64 = AtomicU64::new(1);
     tauri::async_runtime::spawn(async move {
-        let mut last: HashMap<String, (Instant, u64)> = HashMap::new();
+        let generation = GENERATION_SEQ.fetch_add(1, Ordering::Relaxed);
+        // 本代际 per-id 序号簿（代际间唯一、代际内严格递增）
+        let mut seqs: HashMap<String, u64> = HashMap::new();
+        let next_seq = |seqs: &mut HashMap<String, u64>, id: &str| {
+            let s = seqs.entry(id.to_string()).or_insert(0);
+            *s += 1;
+            *s
+        };
+        // 速率差分簿与变化指纹簿
+        let mut rate_book: HashMap<String, (Instant, u64)> = HashMap::new();
+        let mut prev: HashMap<String, String> = HashMap::new();
+        let rate_of = |rate_book: &mut HashMap<String, (Instant, u64)>,
+                       key: &str,
+                       now: Instant,
+                       bytes: u64| {
+            let r = rate_book
+                .get(key)
+                .map(|(t0, b0)| {
+                    let dt = now.duration_since(*t0).as_secs_f64();
+                    if dt > 0.0 {
+                        (bytes.saturating_sub(*b0) as f64 / dt) as u64
+                    } else {
+                        0
+                    }
+                })
+                .unwrap_or(0);
+            rate_book.insert(key.to_string(), (now, bytes));
+            r
+        };
+        // 当前全量实体（transfer 键 "t:<id>"，job 键 "j:<id>"）
+        let collect = |rate_book: &mut HashMap<String, (Instant, u64)>| {
+            let now = Instant::now();
+            let mut cur: Vec<(String, &'static str, Value)> = Vec::new();
+            for t in queue.list() {
+                let rate = rate_of(rate_book, &format!("t:{}", t.id), now, t.bytes_done);
+                let mut v = transfer_to_json(&t);
+                v["rate"] = json!(rate);
+                cur.push((format!("t:{}", t.id), "transfer", v));
+            }
+            for j in jobs.list() {
+                let key = format!("j:{}", j.id);
+                let rate = rate_of(rate_book, &key, now, j.bytes_done);
+                cur.push((key, "job", job_to_json(&j, rate)));
+            }
+            cur
+        };
+        // 初始 snapshot：每实体分配首个 eventSeq（= 该代际 snapshotSeq 语义）
+        let snapshot: Vec<TransferEvent> = collect(&mut rate_book)
+            .into_iter()
+            .map(|(key, kind, payload)| {
+                prev.insert(key.clone(), payload.to_string());
+                TransferEvent {
+                    seq: next_seq(&mut seqs, &key),
+                    id: key,
+                    kind,
+                    event_type: "upsert",
+                    payload,
+                }
+            })
+            .collect();
+        for frame in chunk_frames("snapshot", generation, &snapshot) {
+            if events.send(frame).is_err() {
+                return;
+            }
+        }
+        let mut idle = 0u32;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let now = Instant::now();
-            let frames: Vec<Value> = queue
-                .list()
-                .iter()
-                .map(|t| {
-                    let mut v = transfer_to_json(t);
-                    // 速率差分
-                    let rate = last
-                        .get(&t.id)
-                        .map(|(t0, b0)| {
-                            let dt = now.duration_since(*t0).as_secs_f64();
-                            if dt > 0.0 {
-                                ((t.bytes_done - b0) as f64 / dt) as u64
-                            } else {
-                                0
-                            }
-                        })
-                        .unwrap_or(0);
-                    last.insert(t.id.clone(), (now, t.bytes_done));
-                    v["rate"] = json!(rate);
-                    v
-                })
+            let cur = collect(&mut rate_book);
+            let mut cur_keys = std::collections::HashSet::with_capacity(cur.len());
+            let mut batch: Vec<TransferEvent> = Vec::new();
+            for (key, kind, payload) in cur {
+                cur_keys.insert(key.clone());
+                let fp = payload.to_string();
+                if prev.get(&key) == Some(&fp) {
+                    continue; // 无变化：进度槽天然合并（只发最新值）
+                }
+                prev.insert(key.clone(), fp);
+                batch.push(TransferEvent {
+                    seq: next_seq(&mut seqs, &key),
+                    id: key,
+                    kind,
+                    event_type: "upsert",
+                    payload,
+                });
+            }
+            // 消失的实体 → remove（唯一不可丢语义；序号缺口由前端重建兜底）
+            let gone: Vec<String> = prev
+                .keys()
+                .filter(|k| !cur_keys.contains(*k))
+                .cloned()
                 .collect();
-            let job_frames: Vec<Value> = jobs
-                .list()
-                .iter()
-                .map(|j| {
-                    // job 速率：bytesDone 差分（与逐文件同手法）
-                    let key = format!("job:{}", j.id);
-                    let rate = last
-                        .get(&key)
-                        .map(|(t0, b0)| {
-                            let dt = now.duration_since(*t0).as_secs_f64();
-                            if dt > 0.0 {
-                                ((j.bytes_done.saturating_sub(*b0)) as f64 / dt) as u64
-                            } else {
-                                0
-                            }
-                        })
-                        .unwrap_or(0);
-                    last.insert(key, (now, j.bytes_done));
-                    job_to_json(j, rate)
-                })
-                .collect();
-            if events
-                .send(json!({ "transfers": frames, "jobs": job_frames }))
-                .is_err()
-            {
-                break; // 前端关闭订阅
+            for key in gone {
+                prev.remove(&key);
+                let kind = if key.starts_with("j:") {
+                    "job"
+                } else {
+                    "transfer"
+                };
+                batch.push(TransferEvent {
+                    seq: next_seq(&mut seqs, &key),
+                    id: key,
+                    kind,
+                    event_type: "remove",
+                    payload: Value::Null,
+                });
+            }
+            if batch.is_empty() {
+                idle += 1;
+                if idle >= HEARTBEAT_TICKS {
+                    idle = 0;
+                    if events
+                        .send(json!({ "type": "heartbeat", "generation": generation }))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                continue;
+            }
+            idle = 0;
+            for frame in chunk_frames("events", generation, &batch) {
+                if events.send(frame).is_err() {
+                    return; // 前端关闭订阅/Channel 死亡——投影终止，不反压数据面
+                }
             }
         }
     });
@@ -1278,4 +1408,48 @@ pub(crate) async fn audit(store: &Arc<Store>, session_id: &str, action: &str, de
             &json!({ "detail": detail }),
         )
         .await;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn ev(id: &str, payload_len: usize) -> TransferEvent {
+        TransferEvent {
+            id: id.to_string(),
+            kind: "transfer",
+            event_type: "upsert",
+            seq: 1,
+            payload: json!({ "data": "x".repeat(payload_len) }),
+        }
+    }
+
+    /// PR-9 帧边界：>256 事件拆帧、单帧 ≤256；大载荷按 256KB 拆帧
+    #[test]
+    fn chunk_frames_respects_count_and_byte_bounds() {
+        // 数量边界：600 事件 → 3 帧（256+256+88），不越界
+        let events: Vec<TransferEvent> = (0..600).map(|i| ev(&format!("t:{i}"), 8)).collect();
+        let frames = chunk_frames("events", 7, &events);
+        assert_eq!(frames.len(), 3);
+        assert_eq!(
+            frames[0]["events"].as_array().unwrap().len(),
+            MAX_EVENTS_PER_FRAME
+        );
+        assert_eq!(
+            frames[1]["events"].as_array().unwrap().len(),
+            MAX_EVENTS_PER_FRAME
+        );
+        assert_eq!(frames[2]["events"].as_array().unwrap().len(), 88);
+        assert!(frames
+            .iter()
+            .all(|f| f.to_string().len() <= MAX_FRAME_BYTES + 1024));
+        // 字节边界：3 个 120KB 载荷 → 2 帧（两枚 ~240KB 恰好同帧，第三枚拆帧）
+        let big: Vec<TransferEvent> = (0..3).map(|i| ev(&format!("t:{i}"), 120 * 1024)).collect();
+        let frames = chunk_frames("events", 7, &big);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0]["events"].as_array().unwrap().len(), 2);
+        // 空事件 → 零帧
+        assert!(chunk_frames("events", 7, &[]).is_empty());
+    }
 }

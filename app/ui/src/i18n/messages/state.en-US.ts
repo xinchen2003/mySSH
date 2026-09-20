@@ -59,6 +59,8 @@ export const enState: Record<keyof typeof zhState, string> = {
   'state.downloadStarted': 'Started downloading {count} item(s)',
   'state.uploadDone': '{count} upload(s) completed',
   'state.downloadDone': '{count} download(s) completed',
+  'state.dirJobDone': '{count} directory job(s) completed',
+  'state.dirJobFailed': '{count} directory job(s) failed',
   'state.transferFailed': 'Transfer failed: {name}',
   'state.transferFailedWithError': 'Transfer failed: {name} ({error})',
   'state.transfersFailed': '{count} transfers failed (first: {name})',
