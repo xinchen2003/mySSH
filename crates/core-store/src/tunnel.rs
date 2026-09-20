@@ -1,7 +1,7 @@
 //! 隧道定义仓储：tunnels 表 CRUD（持久化 + 自启/随会话标记，M2 收口）。
 
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::error::StoreError;
 
@@ -59,29 +59,17 @@ impl TunnelRepo {
 
     pub async fn upsert(&self, rec: &TunnelRecord) -> Result<(), StoreError> {
         validate(rec)?;
-        sqlx::query(
-            "INSERT INTO tunnels (id,session_id,kind,name,bind_host,bind_port,target_host,target_port,autostart,with_session)
-             VALUES (?,?,?,?,?,?,?,?,?,?)
-             ON CONFLICT(id) DO UPDATE SET
-               session_id=excluded.session_id, kind=excluded.kind, name=excluded.name,
-               bind_host=excluded.bind_host, bind_port=excluded.bind_port,
-               target_host=excluded.target_host, target_port=excluded.target_port,
-               autostart=excluded.autostart, with_session=excluded.with_session",
-        )
-        .bind(&rec.id)
-        .bind(&rec.session_id)
-        .bind(&rec.kind)
-        .bind(&rec.name)
-        .bind(&rec.bind_host)
-        .bind(rec.bind_port as i64)
-        .bind(&rec.target_host)
-        .bind(rec.target_port.map(|p| p as i64))
-        .bind(rec.autostart as i64)
-        .bind(rec.with_session as i64)
-        .execute(&self.pool)
-        .await
-        .map_err(db)?;
-        Ok(())
+        upsert_row(&self.pool, rec).await
+    }
+
+    /// 事务内变体（配置导入批量写入用）：与调用方共用同一 Transaction
+    pub(crate) async fn upsert_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        rec: &TunnelRecord,
+    ) -> Result<(), StoreError> {
+        validate(rec)?;
+        upsert_row(&mut **tx, rec).await
     }
 
     pub async fn delete(&self, id: &str) -> Result<(), StoreError> {
@@ -95,6 +83,34 @@ impl TunnelRepo {
         }
         Ok(())
     }
+}
+async fn upsert_row<'e, E>(ex: E, rec: &TunnelRecord) -> Result<(), StoreError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO tunnels (id,session_id,kind,name,bind_host,bind_port,target_host,target_port,autostart,with_session)
+         VALUES (?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET
+           session_id=excluded.session_id, kind=excluded.kind, name=excluded.name,
+           bind_host=excluded.bind_host, bind_port=excluded.bind_port,
+           target_host=excluded.target_host, target_port=excluded.target_port,
+           autostart=excluded.autostart, with_session=excluded.with_session",
+    )
+    .bind(&rec.id)
+    .bind(&rec.session_id)
+    .bind(&rec.kind)
+    .bind(&rec.name)
+    .bind(&rec.bind_host)
+    .bind(rec.bind_port as i64)
+    .bind(&rec.target_host)
+    .bind(rec.target_port.map(|p| p as i64))
+    .bind(rec.autostart as i64)
+    .bind(rec.with_session as i64)
+    .execute(ex)
+    .await
+    .map_err(db)?;
+    Ok(())
 }
 
 fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<TunnelRecord, StoreError> {
@@ -117,7 +133,7 @@ fn db(e: sqlx::Error) -> StoreError {
     StoreError::Query(e.to_string())
 }
 /// 写入口径校验（upsert 统一调用，覆盖面板保存与配置导入两条路径）
-fn validate(rec: &TunnelRecord) -> Result<(), StoreError> {
+pub(crate) fn validate(rec: &TunnelRecord) -> Result<(), StoreError> {
     if rec.id.trim().is_empty() {
         return Err(StoreError::Validation("隧道 id 不能为空".into()));
     }

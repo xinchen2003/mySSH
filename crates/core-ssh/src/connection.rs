@@ -621,11 +621,25 @@ impl client::Handler for ClientHandler {
         match &self.check {
             HostKeyCheck::AcceptAll => Ok(true),
             HostKeyCheck::KnownHosts(policy) => {
+                // known_hosts 同步读写移出 async worker（PR-3）：hostkey 为低频操作，
+                // 直接 spawn_blocking，不占 app 层 FsIoLimiter 配额（core-ssh 不依赖 app）
+                let status = {
+                    let path = policy.path.clone();
+                    let host = self.host.clone();
+                    let port = self.port;
+                    let key = key.clone();
+                    tokio::task::spawn_blocking(move || hostkey::evaluate(&path, &host, port, &key))
+                        .await
+                };
                 // 评估 IO 失败：fail-closed 拒绝（视为环境异常，不重试弹窗）
-                let status = match hostkey::evaluate(&policy.path, &self.host, self.port, key) {
-                    Ok(s) => s,
-                    Err(e) => {
+                let status = match status {
+                    Ok(Ok(s)) => s,
+                    Ok(Err(e)) => {
                         tracing::warn!(error = %e, "known_hosts 评估失败，拒绝连接");
+                        return Ok(false);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "known_hosts 评估任务失败，拒绝连接");
                         return Ok(false);
                     }
                 };
@@ -649,12 +663,20 @@ impl client::Handler for ClientHandler {
                     HostKeyDecision::Learn => {
                         // 变更情形先清旧记录再写入，避免旧条目持续触发 KeyChanged。
                         // 落盘失败不否决用户已批准的本次连接（下次连接会重新弹窗）。
-                        if let Err(e) =
-                            hostkey::remove_host_keys(&policy.path, &self.host, self.port).and_then(
-                                |_| hostkey::learn(&policy.path, &self.host, self.port, key),
-                            )
-                        {
-                            tracing::error!(error = %e, "known_hosts 写入失败");
+                        // 同步 known_hosts 读写移出 async worker（PR-3）：低频操作，直接 spawn_blocking
+                        let path = policy.path.clone();
+                        let host = self.host.clone();
+                        let port = self.port;
+                        let key = key.clone();
+                        let r = tokio::task::spawn_blocking(move || {
+                            hostkey::remove_host_keys(&path, &host, port)
+                                .and_then(|_| hostkey::learn(&path, &host, port, &key))
+                        })
+                        .await;
+                        match r {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => tracing::error!(error = %e, "known_hosts 写入失败"),
+                            Err(e) => tracing::error!(error = %e, "known_hosts 写入任务失败"),
                         }
                         Ok(true)
                     }

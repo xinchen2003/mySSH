@@ -43,6 +43,31 @@ pub enum SshError {
     Internal(String),
 }
 
+/// 重连错误分类（PR-4）：重连策略按稳定枚举分派，禁止匹配错误文本
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconnectClass {
+    /// 可恢复网络错误：持续退避重试（隧道默认无限重试）
+    Retryable,
+    /// 认证失败/凭据不可用/方法不支持：暂停重试并提示用户
+    AuthFailed,
+    /// 主机密钥校验失败或变更：立即停止（fail-closed）
+    HostKeyRejected,
+}
+
+impl SshError {
+    pub fn reconnect_class(&self) -> ReconnectClass {
+        match self {
+            Self::AuthFailed { .. } | Self::CredentialUnavailable(_) | Self::UnsupportedAuth(_) => {
+                ReconnectClass::AuthFailed
+            }
+            Self::HostKeyRejected { .. } | Self::HostKeyChanged { .. } => {
+                ReconnectClass::HostKeyRejected
+            }
+            _ => ReconnectClass::Retryable,
+        }
+    }
+}
+
 impl From<russh::Error> for SshError {
     fn from(e: russh::Error) -> Self {
         match e {
@@ -58,5 +83,39 @@ impl From<russh::Error> for SshError {
             },
             other => SshError::Internal(other.to_string()),
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_classification() {
+        let auth = SshError::AuthFailed {
+            user: "u".into(),
+            host: "h".into(),
+            method: "password".into(),
+        };
+        assert_eq!(auth.reconnect_class(), ReconnectClass::AuthFailed);
+        assert_eq!(
+            SshError::CredentialUnavailable("x".into()).reconnect_class(),
+            ReconnectClass::AuthFailed
+        );
+        assert_eq!(
+            SshError::UnsupportedAuth("x").reconnect_class(),
+            ReconnectClass::AuthFailed
+        );
+        assert_eq!(
+            SshError::HostKeyChanged { host: "h".into() }.reconnect_class(),
+            ReconnectClass::HostKeyRejected
+        );
+        assert_eq!(
+            SshError::ConnectTimeout { target: "h".into() }.reconnect_class(),
+            ReconnectClass::Retryable
+        );
+        assert_eq!(
+            SshError::Disconnected { reason: "r".into() }.reconnect_class(),
+            ReconnectClass::Retryable
+        );
     }
 }

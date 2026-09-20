@@ -1,9 +1,8 @@
 //! 会话档案仓储：sessions 表 CRUD（无秘密材料）。
 
-use serde::{Deserialize, Serialize};
-use sqlx::{Row, SqlitePool};
-
 use crate::error::StoreError;
+use serde::{Deserialize, Serialize};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -146,48 +145,27 @@ impl SessionRepo {
 
     /// 新建或更新（按 id 是否存在区分）；返回最终记录
     pub async fn upsert(&self, rec: &SessionRecord) -> Result<SessionRecord, StoreError> {
-        let tags =
-            serde_json::to_string(&rec.tags).map_err(|e| StoreError::Corrupt(e.to_string()))?;
-        let jump_chain = serde_json::to_string(&rec.jump_chain)
-            .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-        let mcp_perms = serde_json::to_string(&rec.mcp_perms)
-            .map_err(|e| StoreError::Corrupt(e.to_string()))?;
-        sqlx::query(
-            "INSERT INTO sessions (id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,color,encoding,su_user,login_macro,tags,command,jump_chain,mcp_perms,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-             ON CONFLICT(id) DO UPDATE SET
-               name=excluded.name, kind=excluded.kind, host=excluded.host, shell=excluded.shell, workdir=excluded.workdir, port=excluded.port,
-               username=excluded.username, auth_type=excluded.auth_type,
-               key_path=excluded.key_path, group_path=excluded.group_path,
-               color=excluded.color, encoding=excluded.encoding, su_user=excluded.su_user,
-               login_macro=excluded.login_macro,
-               tags=excluded.tags, command=excluded.command,
-               jump_chain=excluded.jump_chain, mcp_perms=excluded.mcp_perms,
-               updated_at=datetime('now')",
-        )
-        .bind(&rec.id)
-        .bind(&rec.name)
-        .bind(rec.kind.as_str())
-        .bind(&rec.host)
-        .bind(&rec.shell)
-        .bind(&rec.workdir)
-        .bind(rec.port as i64)
-        .bind(&rec.user)
-        .bind(rec.auth_type.as_str())
-        .bind(&rec.key_path)
-        .bind(&rec.group_path)
-        .bind(&rec.color)
-        .bind(&rec.encoding)
-        .bind(&rec.su_user)
-        .bind(&rec.login_macro)
-        .bind(tags)
-        .bind(&rec.command)
-        .bind(jump_chain)
-        .bind(mcp_perms)
-        .execute(&self.pool)
-        .await
-        .map_err(db)?;
+        upsert_row(&self.pool, rec).await?;
         self.get(&rec.id).await
+    }
+
+    /// 事务内变体（配置导入批量写入用）：与调用方共用同一 Transaction，
+    /// 保证导入多表写入的整体原子性（sqlx：持有 pool 的方法不会进入外部事务）
+    pub(crate) async fn upsert_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        rec: &SessionRecord,
+    ) -> Result<(), StoreError> {
+        upsert_row(&mut **tx, rec).await
+    }
+
+    /// 全部会话 id（配置导入引用完整性校验用）
+    pub(crate) async fn list_ids(&self) -> Result<std::collections::HashSet<String>, StoreError> {
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM sessions")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
     pub async fn delete(&self, id: &str) -> Result<(), StoreError> {
@@ -315,6 +293,52 @@ impl SessionRepo {
         tx.commit().await.map_err(db)?;
         Ok(affected)
     }
+}
+async fn upsert_row<'e, E>(ex: E, rec: &SessionRecord) -> Result<(), StoreError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let tags = serde_json::to_string(&rec.tags).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+    let jump_chain =
+        serde_json::to_string(&rec.jump_chain).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+    let mcp_perms =
+        serde_json::to_string(&rec.mcp_perms).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+    sqlx::query(
+        "INSERT INTO sessions (id,name,kind,host,shell,workdir,port,username,auth_type,key_path,group_path,color,encoding,su_user,login_macro,tags,command,jump_chain,mcp_perms,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+         ON CONFLICT(id) DO UPDATE SET
+           name=excluded.name, kind=excluded.kind, host=excluded.host, shell=excluded.shell, workdir=excluded.workdir, port=excluded.port,
+           username=excluded.username, auth_type=excluded.auth_type,
+           key_path=excluded.key_path, group_path=excluded.group_path,
+           color=excluded.color, encoding=excluded.encoding, su_user=excluded.su_user,
+           login_macro=excluded.login_macro,
+           tags=excluded.tags, command=excluded.command,
+           jump_chain=excluded.jump_chain, mcp_perms=excluded.mcp_perms,
+           updated_at=datetime('now')",
+    )
+    .bind(&rec.id)
+    .bind(&rec.name)
+    .bind(rec.kind.as_str())
+    .bind(&rec.host)
+    .bind(&rec.shell)
+    .bind(&rec.workdir)
+    .bind(rec.port as i64)
+    .bind(&rec.user)
+    .bind(rec.auth_type.as_str())
+    .bind(&rec.key_path)
+    .bind(&rec.group_path)
+    .bind(&rec.color)
+    .bind(&rec.encoding)
+    .bind(&rec.su_user)
+    .bind(&rec.login_macro)
+    .bind(tags)
+    .bind(&rec.command)
+    .bind(jump_chain)
+    .bind(mcp_perms)
+    .execute(ex)
+    .await
+    .map_err(db)?;
+    Ok(())
 }
 /// 分组路径校验：'' 合法（未分组根）；段非空且无首尾空格；'/' 分隔
 fn validate_group_path(path: &str) -> Result<(), StoreError> {

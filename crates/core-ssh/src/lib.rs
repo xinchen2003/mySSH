@@ -7,14 +7,16 @@
 //! 错误码段：E1xxx 连接 / E2xxx 认证 / E3xxx 通道（统一错误码约定见 09-m0-plan）。
 
 mod auth;
+mod backoff;
 mod connection;
 mod error;
 mod hostkey;
 mod pty;
 
 pub use auth::{AuthMethod, KeyboardInteractivePrompt, KiChallenge, KiPrompter, SharedKiPrompter};
+pub use backoff::{equal_jitter, equal_jitter_with};
 pub use connection::{ConnClass, ConnectOptions, JumpHop, KeepaliveConfig, SshConnection};
-pub use error::SshError;
+pub use error::{ReconnectClass, SshError};
 pub use hostkey::{
     HostKeyCheck, HostKeyDecision, HostKeyPrompt, HostKeyPrompter, HostKeyStatus, KnownHostsPolicy,
 };

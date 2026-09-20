@@ -1,5 +1,10 @@
 //! 受限文件读取：连接对话框选择私钥文件后读入内存（不持久化，Zeroizing 由 core-ssh 负责）。
+//!
+//! 所有同步 `std::fs` 操作经 `fs_limiter` 分组限流后进 spawn_blocking（性能优化 PR-3），
+//! 不占用 async worker；慢盘（网络盘/限流盘）上不拖住终端输入路径。
 use serde_json::{json, Value};
+
+use crate::fs_limiter;
 
 /// 私钥文件大小上限（PuTTY/OpenSSH 私钥均在数 KB 量级）
 const MAX_KEY_BYTES: u64 = 64 * 1024;
@@ -10,24 +15,28 @@ const MAX_KEY_BYTES: u64 = 64 * 1024;
 /// 不做任意文件读取——缩小本地攻击面。
 #[tauri::command]
 pub async fn read_private_key(path: String) -> Result<String, String> {
-    let p = std::path::Path::new(&path);
-    let name = p
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| "无效文件名".to_string())?;
-    let ext_ok = p
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "ppk" | "pem" | "key"))
-        .unwrap_or(false);
-    if !(ext_ok || name.starts_with("id_")) {
-        return Err("不是可识别的私钥文件（.ppk/.pem/.key 或 id_*）".into());
-    }
-    let meta = std::fs::metadata(p).map_err(|e| format!("读取失败: {e}"))?;
-    if meta.len() > MAX_KEY_BYTES {
-        return Err("文件过大，不是私钥".into());
-    }
-    std::fs::read_to_string(p).map_err(|e| format!("读取失败: {e}"))
+    // metadata/小读组：一次 stat + ≤64KB 读
+    fs_limiter::metadata(move || {
+        let p = std::path::Path::new(&path);
+        let name = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| "无效文件名".to_string())?;
+        let ext_ok = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| matches!(e.to_ascii_lowercase().as_str(), "ppk" | "pem" | "key"))
+            .unwrap_or(false);
+        if !(ext_ok || name.starts_with("id_")) {
+            return Err("不是可识别的私钥文件（.ppk/.pem/.key 或 id_*）".into());
+        }
+        let meta = std::fs::metadata(p).map_err(|e| format!("读取失败: {e}"))?;
+        if meta.len() > MAX_KEY_BYTES {
+            return Err("文件过大，不是私钥".into());
+        }
+        std::fs::read_to_string(p).map_err(|e| format!("读取失败: {e}"))
+    })
+    .await?
 }
 
 /// 系统默认方式打开本地路径（SFTP 直编的临时文件 → 默认编辑器）。
@@ -56,37 +65,47 @@ pub async fn open_local(path: String) -> Result<(), String> {
 /// 本地新建目录（SFTP 面板本地栏操作；用户本机文件管理语义，路径不做白名单）
 #[tauri::command]
 pub async fn local_mkdir(path: String) -> Result<(), String> {
-    std::fs::create_dir_all(&path).map_err(|e| format!("创建 {path} 失败: {e}"))
+    // metadata 组：单目录创建
+    fs_limiter::metadata(move || {
+        std::fs::create_dir_all(&path).map_err(|e| format!("创建 {path} 失败: {e}"))
+    })
+    .await?
 }
 
 /// 本地元数据探测（冲突检测/新建前检查用；只读元数据，不读内容）。
 /// 与 local_mkdir 同级：本机文件管理语义，路径不做白名单。
 #[tauri::command]
 pub async fn local_stat(path: String) -> Result<Value, String> {
-    match std::fs::metadata(&path) {
+    // metadata 组：纯 stat
+    fs_limiter::metadata(move || match std::fs::metadata(&path) {
         Ok(m) => Ok(json!({ "exists": true, "size": m.len(), "isDir": m.is_dir() })),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             Ok(json!({ "exists": false, "size": 0, "isDir": false }))
         }
         Err(e) => Err(io_humanize(&e)),
-    }
+    })
+    .await?
 }
 
 /// 本地新建空文件（create_new 语义：已存在则报错，绝不截断；父目录须已存在）
 #[tauri::command]
 pub async fn local_touch(path: String) -> Result<(), String> {
-    std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&path)
-        .map(|_| ())
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                format!("目标已存在: {path}")
-            } else {
-                io_humanize(&e)
-            }
-        })
+    // metadata 组：create_new 打开即关
+    fs_limiter::metadata(move || {
+        std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .map(|_| ())
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    format!("目标已存在: {path}")
+                } else {
+                    io_humanize(&e)
+                }
+            })
+    })
+    .await?
 }
 /// io 错误可读化：权限/占用给中文提示，其余保留原始错误
 fn io_humanize(e: &std::io::Error) -> String {
@@ -103,45 +122,57 @@ fn io_humanize(e: &std::io::Error) -> String {
 /// 本地重命名/移动（SFTP 面板本地栏）；目标已存在则拒绝，避免静默覆盖
 #[tauri::command]
 pub async fn local_rename(from: String, to: String) -> Result<(), String> {
-    if std::path::Path::new(&to).exists() {
-        return Err(format!("目标已存在: {to}"));
-    }
-    std::fs::rename(&from, &to).map_err(|e| io_humanize(&e))
+    // metadata 组：exists 检查 + rename，均为元数据级操作
+    fs_limiter::metadata(move || {
+        if std::path::Path::new(&to).exists() {
+            return Err(format!("目标已存在: {to}"));
+        }
+        std::fs::rename(&from, &to).map_err(|e| io_humanize(&e))
+    })
+    .await?
 }
 
 /// 本地删除：文件 remove_file / 目录 remove_dir_all（递归）
 #[tauri::command]
 pub async fn local_delete(path: String) -> Result<(), String> {
-    let p = std::path::Path::new(&path);
-    let meta = std::fs::metadata(p).map_err(|e| io_humanize(&e))?;
-    let r = if meta.is_dir() {
-        std::fs::remove_dir_all(p)
-    } else {
-        std::fs::remove_file(p)
-    };
-    r.map_err(|e| io_humanize(&e))
+    // 重拷贝/删除组：目录递归删除在慢盘上长尾明显，限并发保护交互路径
+    fs_limiter::heavy(move || {
+        let p = std::path::Path::new(&path);
+        let meta = std::fs::metadata(p).map_err(|e| io_humanize(&e))?;
+        let r = if meta.is_dir() {
+            std::fs::remove_dir_all(p)
+        } else {
+            std::fs::remove_file(p)
+        };
+        r.map_err(|e| io_humanize(&e))
+    })
+    .await?
 }
 /// 本地复制（SFTP 面板：OS 文件拖入本地栏 = 复制进当前本地目录）。
 /// 目录递归复制；目标已存在则拒绝，避免静默覆盖。
 #[tauri::command]
 pub async fn local_copy(from: String, to_dir: String) -> Result<String, String> {
-    let src = std::path::Path::new(&from);
-    if !src.exists() {
-        return Err(format!("来源不存在: {from}"));
-    }
-    let name = src
-        .file_name()
-        .ok_or_else(|| format!("无效来源路径: {from}"))?;
-    let dst = std::path::Path::new(&to_dir).join(name);
-    if dst.exists() {
-        return Err(format!("目标已存在: {}", dst.display()));
-    }
-    if src.is_dir() {
-        copy_dir_recursive(src, &dst)?;
-    } else {
-        std::fs::copy(src, &dst).map_err(|e| io_humanize(&e))?;
-    }
-    Ok(dst.to_string_lossy().replace('\\', "/"))
+    // 重拷贝/删除组：递归复制占盘带宽
+    fs_limiter::heavy(move || {
+        let src = std::path::Path::new(&from);
+        if !src.exists() {
+            return Err(format!("来源不存在: {from}"));
+        }
+        let name = src
+            .file_name()
+            .ok_or_else(|| format!("无效来源路径: {from}"))?;
+        let dst = std::path::Path::new(&to_dir).join(name);
+        if dst.exists() {
+            return Err(format!("目标已存在: {}", dst.display()));
+        }
+        if src.is_dir() {
+            copy_dir_recursive(src, &dst)?;
+        } else {
+            std::fs::copy(src, &dst).map_err(|e| io_humanize(&e))?;
+        }
+        Ok(dst.to_string_lossy().replace('\\', "/"))
+    })
+    .await?
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
@@ -169,38 +200,47 @@ pub async fn transfer_save_file(path: String, b64: String) -> Result<(), String>
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64.as_bytes())
         .map_err(|e| format!("b64 解码失败: {e}"))?;
-    std::fs::write(&path, &bytes).map_err(|e| io_humanize(&e))
+    // 重拷贝/删除组：整体写入，体量可达 MB 级
+    fs_limiter::heavy(move || std::fs::write(&path, &bytes).map_err(|e| io_humanize(&e))).await?
 }
 
 /// 桌面路径（SFTP 本地栏快捷位「桌面」）。
 /// 不新增目录 crate：Windows 用 %USERPROFILE%\Desktop，类 Unix 用 $HOME/Desktop，校验存在。
 #[tauri::command]
 pub async fn local_desktop_path() -> Result<String, String> {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .ok_or_else(|| "无法定位用户目录（USERPROFILE/HOME 均未设置）".to_string())?;
-    let desktop = std::path::PathBuf::from(home).join("Desktop");
-    if !desktop.is_dir() {
-        return Err(format!("桌面目录不存在: {}", desktop.display()));
-    }
-    Ok(desktop.to_string_lossy().replace('\\', "/"))
+    // metadata 组：仅 is_dir 校验
+    fs_limiter::metadata(|| {
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .ok_or_else(|| "无法定位用户目录（USERPROFILE/HOME 均未设置）".to_string())?;
+        let desktop = std::path::PathBuf::from(home).join("Desktop");
+        if !desktop.is_dir() {
+            return Err(format!("桌面目录不存在: {}", desktop.display()));
+        }
+        Ok(desktop.to_string_lossy().replace('\\', "/"))
+    })
+    .await?
 }
 
 /// 在资源管理器中定位：文件 → /select 高亮；目录 → 直接打开。
 /// 注意 explorer 的退出码语义非常规（选中文件时常返回非零），spawn 成功即视为成功。
 #[tauri::command]
 pub async fn open_in_explorer(path: String) -> Result<(), String> {
-    let p = std::path::Path::new(&path);
-    if !p.exists() {
-        return Err(format!("路径不存在: {path}"));
-    }
-    let mut cmd = std::process::Command::new("explorer");
-    if p.is_dir() {
-        cmd.arg(&path);
-    } else {
-        cmd.arg(format!("/select,{path}"));
-    }
-    cmd.spawn()
-        .map_err(|e| format!("打开资源管理器失败: {e}"))?;
-    Ok(())
+    // metadata 组：exists/is_dir 探测 + explorer spawn（进程创建为一次性轻量动作）
+    fs_limiter::metadata(move || {
+        let p = std::path::Path::new(&path);
+        if !p.exists() {
+            return Err(format!("路径不存在: {path}"));
+        }
+        let mut cmd = std::process::Command::new("explorer");
+        if p.is_dir() {
+            cmd.arg(&path);
+        } else {
+            cmd.arg(format!("/select,{path}"));
+        }
+        cmd.spawn()
+            .map_err(|e| format!("打开资源管理器失败: {e}"))?;
+        Ok(())
+    })
+    .await?
 }

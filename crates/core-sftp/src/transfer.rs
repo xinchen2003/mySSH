@@ -280,27 +280,39 @@ impl TransferQueue {
         id
     }
 
-    /// 通用执行器：并发闸 + 暂停自旋 + 断点重试环
+    /// 通用执行器：非暂停等待 → 并发闸 → 断点重试环。
+    ///
+    /// P1-8 不变量：暂停自旋与重试退避一律不持有 permit（先 acquire 后自旋会让
+    /// 3 个暂停任务占满并发闸、饿死正常任务）。传输中途暂停在 chunk 边界经
+    /// Interrupted 中断、释放 permit 后回非暂停等待；resume 后重新竞争 permit，
+    /// 断点由 download_once/upload_once 的续传逻辑从已确认偏移恢复
+    /// （上传=远端 stat 的 ACK 连续前缀，下载=本地文件已写长度）。
     async fn run_transfer(&self, t: Arc<TransferInner>) {
         let direction = lock(&t.info).direction;
-        let _permit = self
-            .permits
-            .acquire()
-            .await
-            .unwrap_or_else(|_| unreachable!("semaphore closed"));
         loop {
             if t.cancel.load(Ordering::Relaxed) {
                 lock(&t.info).state = TransferState::Canceled;
                 self.emit(&t);
                 return;
             }
-            // 暂停自旋（200ms 粒度；传输块大，粒度不敏感）
-            while t.pause.load(Ordering::Relaxed) && !t.cancel.load(Ordering::Relaxed) {
+            // 非暂停等待（200ms 粒度；不持 permit，不占并发额度）
+            if t.pause.load(Ordering::Relaxed) {
                 lock(&t.info).state = TransferState::Paused;
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                self.emit(&t);
+                while t.pause.load(Ordering::Relaxed) && !t.cancel.load(Ordering::Relaxed) {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                continue; // 回顶部：cancel 分支或重新竞争 permit
             }
-            if t.cancel.load(Ordering::Relaxed) {
-                continue; // 交由顶部 cancel 分支
+            let permit = self
+                .permits
+                .acquire()
+                .await
+                .unwrap_or_else(|_| unreachable!("semaphore closed"));
+            // acquire 等待期间可能被暂停/取消：二次确认，避免持 permit 进传输
+            if t.cancel.load(Ordering::Relaxed) || t.pause.load(Ordering::Relaxed) {
+                drop(permit);
+                continue; // 交由顶部 cancel/pause 分支
             }
             lock(&t.info).state = TransferState::Running;
             self.emit(&t);
@@ -308,6 +320,8 @@ impl TransferQueue {
                 TransferDirection::Download => download_once(self.sftp.clone(), t.clone()).await,
                 TransferDirection::Upload => upload_once(self.sftp.clone(), t.clone()).await,
             };
+            // 执行单元结束（完成/中断/失败）：立即释放 permit，后续去向均不持有它
+            drop(permit);
             match result {
                 Ok(()) => {
                     lock(&t.info).state = TransferState::Done;
@@ -318,7 +332,7 @@ impl TransferQueue {
                     if t.cancel.load(Ordering::Relaxed) {
                         continue;
                     }
-                    // 暂停引发的断点中断不算失败重试，回暂停自旋
+                    // 暂停引发的断点中断不算失败重试：回顶部非暂停等待（无 permit）
                     if t.pause.load(Ordering::Relaxed) {
                         continue;
                     }
@@ -334,7 +348,7 @@ impl TransferQueue {
                         return;
                     }
                     self.emit(&t);
-                    // 重试退避：1s、2s
+                    // 重试退避：1s、2s（不持 permit）
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }

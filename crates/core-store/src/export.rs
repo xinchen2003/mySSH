@@ -21,6 +21,26 @@ const ARGON2_M_KIB: u32 = 64 * 1024;
 const ARGON2_T: u32 = 3;
 const ARGON2_P: u32 = 4;
 
+// ---- C7 导入输入硬上限 ----
+/// 包络文本最大 64 MiB
+const MAX_ENVELOPE_BYTES: usize = 64 * 1024 * 1024;
+/// 解密后 payload 最大 128 MiB
+const MAX_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
+const MAX_SESSIONS: usize = 100_000;
+const MAX_TUNNELS: usize = 100_000;
+const MAX_CREDENTIALS: usize = 300_000;
+const SALT_MIN_BYTES: usize = 16;
+const SALT_MAX_BYTES: usize = 64;
+/// AES-GCM nonce 严格 12 字节
+const NONCE_BYTES: usize = 12;
+/// Argon2 内存 8~256 MiB（桌面定位下调，原评审上限 1 GiB）
+const ARGON2_M_MIN_KIB: u32 = 8 * 1024;
+const ARGON2_M_MAX_KIB: u32 = 256 * 1024;
+const ARGON2_T_MIN: u32 = 1;
+const ARGON2_T_MAX: u32 = 10;
+const ARGON2_P_MIN: u32 = 1;
+const ARGON2_P_MAX: u32 = 16;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CredEntry {
@@ -140,11 +160,22 @@ pub async fn export_encrypted(store: &Store, passphrase: &[u8]) -> Result<String
 }
 
 /// 导入（自动识别明文/加密包络；加密需口令）。幂等 upsert。
+///
+/// 顺序：解析 → 版本/KDF/字段/引用校验（全部事务外）→ DPAPI 加密（事务外）
+/// → begin → 批量写入 → commit；Argon2/AES/DPAPI/大 JSON 一律不进事务。
+/// 原子性边界（C7）：仅覆盖 SQLite sessions/tunnels/credentials 表；
+/// DPAPI 只在事务外生成加密 blob，未来外部 credential provider 不承诺跨系统 ACID。
 pub async fn import_config(
     store: &Store,
     text: &str,
     passphrase: Option<&[u8]>,
 ) -> Result<ConfigImportOutcome, StoreError> {
+    if text.len() > MAX_ENVELOPE_BYTES {
+        return Err(StoreError::Validation(format!(
+            "配置包络超过 {} MiB 上限",
+            MAX_ENVELOPE_BYTES / 1024 / 1024
+        )));
+    }
     let env: Envelope =
         serde_json::from_str(text).map_err(|e| StoreError::Corrupt(format!("包络解析: {e}")))?;
     if env.app != "myssh" || env.v != 1 {
@@ -159,12 +190,45 @@ pub async fn import_config(
         if kdf.algo != "argon2id" {
             return Err(StoreError::Corrupt(format!("未知 KDF {}", kdf.algo)));
         }
+        // KDF 参数边界必须在派生前校验：恶意包络可用超大 m/t/p 放大内存与 CPU 消耗
+        if !(ARGON2_M_MIN_KIB..=ARGON2_M_MAX_KIB).contains(&kdf.m_kib) {
+            return Err(StoreError::Validation(format!(
+                "KDF 内存参数 {} KiB 超出 {}~{} MiB 允许范围",
+                kdf.m_kib,
+                ARGON2_M_MIN_KIB / 1024,
+                ARGON2_M_MAX_KIB / 1024
+            )));
+        }
+        if !(ARGON2_T_MIN..=ARGON2_T_MAX).contains(&kdf.t) {
+            return Err(StoreError::Validation(format!(
+                "KDF 迭代次数 {} 超出 {ARGON2_T_MIN}~{ARGON2_T_MAX} 允许范围",
+                kdf.t
+            )));
+        }
+        if !(ARGON2_P_MIN..=ARGON2_P_MAX).contains(&kdf.p) {
+            return Err(StoreError::Validation(format!(
+                "KDF 并行度 {} 超出 {ARGON2_P_MIN}~{ARGON2_P_MAX} 允许范围",
+                kdf.p
+            )));
+        }
         let salt = b64dec(&kdf.salt)?;
+        if !(SALT_MIN_BYTES..=SALT_MAX_BYTES).contains(&salt.len()) {
+            return Err(StoreError::Validation(format!(
+                "salt 长度须为 {SALT_MIN_BYTES}~{SALT_MAX_BYTES} 字节，实际 {}",
+                salt.len()
+            )));
+        }
         let nonce = b64dec(
             env.nonce
                 .as_ref()
                 .ok_or_else(|| StoreError::Corrupt("缺 nonce".into()))?,
         )?;
+        if nonce.len() != NONCE_BYTES {
+            return Err(StoreError::Validation(format!(
+                "AES-GCM nonce 须严格为 {NONCE_BYTES} 字节，实际 {}",
+                nonce.len()
+            )));
+        }
         let blob = b64dec(
             env.data
                 .as_str()
@@ -179,34 +243,128 @@ pub async fn import_config(
         let plain = cipher
             .decrypt(&nonce_arr, blob.as_slice())
             .map_err(|_| StoreError::Corrupt("解密失败（口令错误或数据损坏）".into()))?;
+        if plain.len() > MAX_PAYLOAD_BYTES {
+            return Err(StoreError::Validation(format!(
+                "解密载荷超过 {} MiB 上限",
+                MAX_PAYLOAD_BYTES / 1024 / 1024
+            )));
+        }
         serde_json::from_slice(&plain).map_err(|e| StoreError::Corrupt(e.to_string()))?
     } else {
         serde_json::from_value(env.data).map_err(|e| StoreError::Corrupt(e.to_string()))?
     };
 
-    let mut outcome = ConfigImportOutcome {
-        sessions: 0,
-        tunnels: 0,
-        credentials: 0,
-    };
-    for rec in &payload.sessions {
-        store.sessions().upsert(rec).await?;
-        outcome.sessions += 1;
-    }
-    for t in &payload.tunnels {
-        store.tunnels().upsert(t).await?;
-        outcome.tunnels += 1;
-    }
+    validate_payload(store, &payload).await?;
+
+    // 凭据落库准备（全部事务外）：kind 解析 + base64 解码 + DPAPI 加密 blob。
+    let mut creds: Vec<(String, CredentialKind, Vec<u8>)> =
+        Vec::with_capacity(payload.credentials.len());
     for c in &payload.credentials {
         let kind = CredentialKind::parse(&c.kind)?;
-        let secret = b64dec(&c.secret)?;
+        let secret = crate::Secret::new(b64dec(&c.secret)?);
+        let blob = crate::cred::protect(secret.expose())?;
+        creds.push((c.session_id.clone(), kind, blob));
+    }
+
+    // 批量写入：单事务保证整体原子性，任一失败回滚、无部分导入
+    let mut tx = store
+        .pool()
+        .begin()
+        .await
+        .map_err(|e| StoreError::Query(e.to_string()))?;
+    for rec in &payload.sessions {
+        store.sessions().upsert_tx(&mut tx, rec).await?;
+    }
+    for t in &payload.tunnels {
+        store.tunnels().upsert_tx(&mut tx, t).await?;
+    }
+    for (session_id, kind, blob) in &creds {
         store
             .credentials()
-            .put(&c.session_id, kind, &crate::Secret::new(secret))
+            .put_blob_tx(&mut tx, session_id, *kind, blob)
             .await?;
-        outcome.credentials += 1;
     }
-    Ok(outcome)
+    tx.commit()
+        .await
+        .map_err(|e| StoreError::Query(e.to_string()))?;
+
+    Ok(ConfigImportOutcome {
+        sessions: payload.sessions.len(),
+        tunnels: payload.tunnels.len(),
+        credentials: creds.len(),
+    })
+}
+
+/// 事务外校验（C7 输入上限）：条数上限、ID 重复、隧道字段口径、引用完整性。
+/// 引用集合 = 载荷内会话 ∪ 库内已存在会话；引用缺失整体拒绝，
+/// 不再依赖写入期 FK 报错造成的中途失败。
+async fn validate_payload(store: &Store, payload: &Payload) -> Result<(), StoreError> {
+    if payload.sessions.len() > MAX_SESSIONS {
+        return Err(StoreError::Validation(format!(
+            "会话条数 {} 超过上限 {MAX_SESSIONS}",
+            payload.sessions.len()
+        )));
+    }
+    if payload.tunnels.len() > MAX_TUNNELS {
+        return Err(StoreError::Validation(format!(
+            "隧道条数 {} 超过上限 {MAX_TUNNELS}",
+            payload.tunnels.len()
+        )));
+    }
+    if payload.credentials.len() > MAX_CREDENTIALS {
+        return Err(StoreError::Validation(format!(
+            "凭据条数 {} 超过上限 {MAX_CREDENTIALS}",
+            payload.credentials.len()
+        )));
+    }
+
+    // ID 重复检测：upsert 语义下重复 id 会静默覆盖，导入视为输入错误
+    let mut session_ids = std::collections::HashSet::with_capacity(payload.sessions.len());
+    for s in &payload.sessions {
+        if s.id.trim().is_empty() {
+            return Err(StoreError::Validation("会话 id 不能为空".into()));
+        }
+        if !session_ids.insert(s.id.as_str()) {
+            return Err(StoreError::Validation(format!("会话 id 重复: {}", s.id)));
+        }
+    }
+    let mut tunnel_ids = std::collections::HashSet::with_capacity(payload.tunnels.len());
+    for t in &payload.tunnels {
+        crate::tunnel::validate(t)?;
+        if !tunnel_ids.insert(t.id.as_str()) {
+            return Err(StoreError::Validation(format!("隧道 id 重复: {}", t.id)));
+        }
+    }
+    let mut cred_keys = std::collections::HashSet::with_capacity(payload.credentials.len());
+    for c in &payload.credentials {
+        if !cred_keys.insert((c.session_id.as_str(), c.kind.as_str())) {
+            return Err(StoreError::Validation(format!(
+                "凭据重复: {} ({})",
+                c.session_id, c.kind
+            )));
+        }
+    }
+
+    // 引用完整性
+    let mut known = store.sessions().list_ids().await?;
+    known.extend(payload.sessions.iter().map(|s| s.id.clone()));
+    for t in &payload.tunnels {
+        if !known.contains(&t.session_id) {
+            return Err(StoreError::Validation(format!(
+                "隧道 {} 引用了不存在的会话 {}",
+                t.id, t.session_id
+            )));
+        }
+    }
+    for c in &payload.credentials {
+        if !known.contains(&c.session_id) {
+            return Err(StoreError::Validation(format!(
+                "凭据引用了不存在的会话 {}",
+                c.session_id
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn derive_key(

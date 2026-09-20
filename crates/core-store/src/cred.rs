@@ -3,7 +3,7 @@
 //! 安全模型第 4 条：秘密材料只以密文落盘；`Secret` 不 Serialize、Drop 零化。
 //! 非 Windows 平台暂无密钥托管（Argon2id 主密码档留待跨平台需求），运行时返回 Unsupported。
 
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use crate::error::StoreError;
 use crate::Secret;
@@ -68,18 +68,19 @@ impl CredentialStore {
         secret: &Secret,
     ) -> Result<(), StoreError> {
         let blob = protect(secret.expose())?;
-        sqlx::query(
-            "INSERT INTO credentials (session_id, kind, blob, updated_at)
-             VALUES (?,?,?,datetime('now'))
-             ON CONFLICT(session_id, kind) DO UPDATE SET blob=excluded.blob, updated_at=excluded.updated_at",
-        )
-        .bind(session_id)
-        .bind(kind.as_str())
-        .bind(blob)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Query(e.to_string()))?;
-        Ok(())
+        put_blob_row(&self.pool, session_id, kind, &blob).await
+    }
+
+    /// 事务内写入已加密 blob（配置导入用）。DPAPI 加密必须在事务外完成：
+    /// 原子性仅覆盖 SQLite 表，跨系统（DPAPI 托管密钥）不承诺 ACID
+    pub(crate) async fn put_blob_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        session_id: &str,
+        kind: CredentialKind,
+        blob: &[u8],
+    ) -> Result<(), StoreError> {
+        put_blob_row(&mut **tx, session_id, kind, blob).await
     }
 
     /// 取指定类型凭据（迁移 0009 起每会话可并存多条，必须带 kind）
@@ -139,9 +140,31 @@ impl CredentialStore {
         Ok(())
     }
 }
+async fn put_blob_row<'e, E>(
+    ex: E,
+    session_id: &str,
+    kind: CredentialKind,
+    blob: &[u8],
+) -> Result<(), StoreError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO credentials (session_id, kind, blob, updated_at)
+         VALUES (?,?,?,datetime('now'))
+         ON CONFLICT(session_id, kind) DO UPDATE SET blob=excluded.blob, updated_at=excluded.updated_at",
+    )
+    .bind(session_id)
+    .bind(kind.as_str())
+    .bind(blob)
+    .execute(ex)
+    .await
+    .map_err(|e| StoreError::Query(e.to_string()))?;
+    Ok(())
+}
 
 #[cfg(windows)]
-fn protect(plain: &[u8]) -> Result<Vec<u8>, StoreError> {
+pub(crate) fn protect(plain: &[u8]) -> Result<Vec<u8>, StoreError> {
     windows_dpapi::encrypt_data(plain, windows_dpapi::Scope::User, None)
         .map_err(|e| StoreError::Crypto(e.to_string()))
 }
@@ -153,7 +176,7 @@ fn unprotect(blob: &[u8]) -> Result<Vec<u8>, StoreError> {
 }
 
 #[cfg(not(windows))]
-fn protect(_plain: &[u8]) -> Result<Vec<u8>, StoreError> {
+pub(crate) fn protect(_plain: &[u8]) -> Result<Vec<u8>, StoreError> {
     Err(StoreError::Crypto(
         "当前平台暂无密钥托管（需 DPAPI 或主密码档）".into(),
     ))

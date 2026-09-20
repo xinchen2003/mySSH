@@ -884,3 +884,92 @@ async fn pause_all_resume_all_flip_states() {
         );
     }
 }
+
+/// P1-8 回归：暂停任务不得持有并发 permit。
+/// 并发上限 3：3 个任务 Running 中暂停 → 第 4 个正常任务应能立即开跑
+/// （修复前 3 个暂停任务占满 Semaphore(3) 自旋，第 4 个在 acquire 上饿死）。
+#[tokio::test]
+async fn paused_tasks_release_permits_for_queued_transfer() {
+    let root = temp_root("permit");
+    let port = start_sftp_server(root.clone()).await;
+    let conn = connect(port).await;
+    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        sftp,
+        3,
+        tokio::runtime::Handle::current(),
+    ));
+
+    // 3 个慢速上传占满并发额度
+    let local = temp_root("permit-local");
+    let mut ids = Vec::new();
+    for name in ["a.SLOW.bin", "b.SLOW.bin", "c.SLOW.bin"] {
+        let p = local.join(name);
+        std::fs::write(&p, pattern(2 * 1024 * 1024)).unwrap();
+        ids.push(
+            q.enqueue_upload(
+                p,
+                format!("/{name}"),
+                2 * 1024 * 1024,
+                core_sftp::OnExists::Resume,
+            )
+            .await,
+        );
+    }
+    for id in &ids {
+        wait_state(&q, id, core_sftp::TransferState::Running).await;
+    }
+
+    // 全部暂停 → 各自在 chunk 边界中断并释放 permit
+    for id in &ids {
+        q.pause(id).unwrap();
+    }
+    for id in &ids {
+        wait_state(&q, id, core_sftp::TransferState::Paused).await;
+    }
+
+    // 第 4 个正常任务：暂停任务不占额度，应立即开跑并完成
+    let local_fast = local.join("fast.bin");
+    std::fs::write(&local_fast, pattern(1024)).unwrap();
+    let id4 = q
+        .enqueue_upload(
+            local_fast,
+            "/fast.bin".into(),
+            1024,
+            core_sftp::OnExists::Resume,
+        )
+        .await;
+    let done4 = wait_done(&q, &id4).await;
+    assert_eq!(
+        done4.state,
+        core_sftp::TransferState::Done,
+        "{:?}",
+        done4.error
+    );
+    assert_eq!(std::fs::read(root.join("fast.bin")).unwrap(), pattern(1024));
+    // 暂停任务状态不被挤乱
+    for id in &ids {
+        assert_eq!(q.get(id).unwrap().state, core_sftp::TransferState::Paused);
+    }
+
+    // 恢复其一：重新竞争 permit，从远端已确认偏移续传至完整
+    q.resume(&ids[0]).unwrap();
+    let done = wait_done(&q, &ids[0]).await;
+    assert_eq!(
+        done.state,
+        core_sftp::TransferState::Done,
+        "{:?}",
+        done.error
+    );
+    assert_eq!(
+        std::fs::read(root.join("a.SLOW.bin")).unwrap(),
+        pattern(2 * 1024 * 1024)
+    );
+
+    // 收尾：取消剩余暂停任务（暂停态取消 → Canceled）
+    for id in &ids[1..] {
+        q.cancel(id).unwrap();
+        let info = wait_done(&q, id).await;
+        assert_eq!(info.state, core_sftp::TransferState::Canceled);
+    }
+}

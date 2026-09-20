@@ -83,6 +83,11 @@ impl Store {
         Ok(Self { pool })
     }
 
+    /// 事务入口（配置导入批量写入用）：调用方 begin 后传给各 Repo 的 `_tx` 变体
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     pub fn sessions(&self) -> SessionRepo {
         SessionRepo::new(self.pool.clone())
     }

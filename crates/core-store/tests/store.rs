@@ -707,3 +707,237 @@ async fn move_to_group_batch() {
 
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
+
+/// PR-5 明文导入包络构造（data 直接给 serde_json::Value）
+fn plain_envelope(data: serde_json::Value) -> String {
+    serde_json::json!({
+        "v": 1,
+        "app": "myssh",
+        "encrypted": false,
+        "data": data,
+    })
+    .to_string()
+}
+
+fn session_json(id: &str) -> serde_json::Value {
+    serde_json::to_value(sample(id, "导入源")).expect("session json")
+}
+
+/// PR-5：载荷中途出现非法记录（第二条会话 id 为空）→ 整体拒绝，无部分写入
+#[tokio::test]
+async fn import_rolls_back_when_payload_has_bad_record() {
+    let path = temp_db("import-rollback");
+    let store = Store::open(&path).await.expect("open");
+
+    let mut bad = session_json("s-bad");
+    bad["id"] = serde_json::json!("  ");
+    let text = plain_envelope(serde_json::json!({
+        "sessions": [session_json("s-ok"), bad],
+        "tunnels": [],
+    }));
+    let err = core_store::import_config(&store, &text, None)
+        .await
+        .expect_err("非法记录必须报错");
+    assert!(
+        matches!(err, core_store::StoreError::Validation(_)),
+        "应为校验错误: {err}"
+    );
+    assert!(
+        store.sessions().list().await.expect("list").is_empty(),
+        "整体回滚：第一条合法会话也不得落库"
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// PR-5：重复导入幂等——同一加密包络导入两次，结果一致且无重复行
+#[tokio::test]
+async fn import_is_idempotent_on_reimport() {
+    let path = temp_db("import-idem-src");
+    let src = Store::open(&path).await.expect("open src");
+    src.sessions()
+        .upsert(&sample("s1", "幂等"))
+        .await
+        .expect("upsert");
+    src.credentials()
+        .put(
+            "s1",
+            CredentialKind::Password,
+            &Secret::new(b"pw-1".to_vec()),
+        )
+        .await
+        .expect("put cred");
+    let enc = core_store::export_encrypted(&src, b"pp")
+        .await
+        .expect("export");
+
+    let path2 = temp_db("import-idem-dst");
+    let dst = Store::open(&path2).await.expect("open dst");
+    let first = core_store::import_config(&dst, &enc, Some(b"pp"))
+        .await
+        .expect("first import");
+    let second = core_store::import_config(&dst, &enc, Some(b"pp"))
+        .await
+        .expect("second import");
+    assert_eq!(first, second, "重复导入结果应一致");
+    assert_eq!(dst.sessions().list().await.expect("list").len(), 1);
+    let sec = dst
+        .credentials()
+        .get("s1", CredentialKind::Password)
+        .await
+        .expect("cred");
+    assert_eq!(sec.expose(), b"pw-1");
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    let _ = std::fs::remove_dir_all(path2.parent().unwrap());
+}
+
+/// PR-5：隧道引用不存在的会话 → 整体回滚（载荷内会话也不落库）
+#[tokio::test]
+async fn import_rejects_tunnel_referencing_missing_session() {
+    let path = temp_db("import-dangling");
+    let store = Store::open(&path).await.expect("open");
+
+    let text = plain_envelope(serde_json::json!({
+        "sessions": [session_json("s-ok")],
+        "tunnels": [{
+            "id": "t-dangling",
+            "sessionId": "s-ghost",
+            "kind": "local",
+            "name": "",
+            "bindHost": "127.0.0.1",
+            "bindPort": 10080,
+            "targetHost": "10.0.0.1",
+            "targetPort": 80,
+            "autostart": false,
+            "withSession": false,
+            "createdAt": "",
+        }],
+    }));
+    let err = core_store::import_config(&store, &text, None)
+        .await
+        .expect_err("悬空引用必须报错");
+    assert!(
+        matches!(err, core_store::StoreError::Validation(_)),
+        "应为校验错误: {err}"
+    );
+    assert!(
+        store.sessions().list().await.expect("list").is_empty(),
+        "整体回滚：载荷内会话不得落库"
+    );
+    assert!(store.tunnels().list().await.expect("list").is_empty());
+
+    // 引用库内已存在会话（不在载荷内）合法：口径 = 载荷 ∪ 库
+    store
+        .sessions()
+        .upsert(&sample("s-db", "库内"))
+        .await
+        .expect("upsert");
+    let ok = plain_envelope(serde_json::json!({
+        "sessions": [],
+        "tunnels": [{
+            "id": "t-db",
+            "sessionId": "s-db",
+            "kind": "dynamic",
+            "name": "",
+            "bindHost": "127.0.0.1",
+            "bindPort": 11080,
+            "targetHost": null,
+            "targetPort": null,
+            "autostart": false,
+            "withSession": false,
+            "createdAt": "",
+        }],
+    }));
+    let out = core_store::import_config(&store, &ok, None)
+        .await
+        .expect("引用库内会话应成功");
+    assert_eq!(out.tunnels, 1);
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// PR-5/C7：超限输入明确报错（包络尺寸、条数上限、KDF 参数、salt/nonce、ID 重复）
+#[tokio::test]
+async fn import_rejects_out_of_bounds_input() {
+    let path = temp_db("import-limits");
+    let store = Store::open(&path).await.expect("open");
+
+    // 1) 包络文本 > 64 MiB
+    let huge = " ".repeat(64 * 1024 * 1024 + 1);
+    let err = core_store::import_config(&store, &huge, None)
+        .await
+        .expect_err("超大包络必须报错");
+    assert!(err.to_string().contains("64"), "{err}");
+
+    // 2) 会话条数 > 100,000
+    let mut sessions = Vec::with_capacity(100_001);
+    for i in 0..=100_000 {
+        sessions.push(session_json(&format!("s{i}")));
+    }
+    let text = plain_envelope(serde_json::json!({ "sessions": sessions, "tunnels": [] }));
+    let err = core_store::import_config(&store, &text, None)
+        .await
+        .expect_err("超上限必须报错");
+    assert!(err.to_string().contains("100000"), "{err}");
+
+    // 3) 会话 id 重复
+    let text = plain_envelope(serde_json::json!({
+        "sessions": [session_json("dup"), session_json("dup")],
+        "tunnels": [],
+    }));
+    let err = core_store::import_config(&store, &text, None)
+        .await
+        .expect_err("重复 id 必须报错");
+    assert!(err.to_string().contains("重复"), "{err}");
+
+    // 4) 加密包络 KDF 参数越界（m=1GiB 超上限）——须在 Argon2 派生前快速拒绝
+    let env = serde_json::json!({
+        "v": 1,
+        "app": "myssh",
+        "encrypted": true,
+        "kdf": { "algo": "argon2id", "salt": "AAAA", "mKib": 1048576u32, "t": 3, "p": 4 },
+        "nonce": "AAAA",
+        "data": "AAAA",
+    })
+    .to_string();
+    let err = core_store::import_config(&store, &env, Some(b"pp"))
+        .await
+        .expect_err("KDF 越界必须报错");
+    assert!(err.to_string().contains("KDF"), "{err}");
+
+    // 5) salt 过短 / nonce 非 12 字节（KDF 参数合法，确保落在长度校验上）
+    let env = |salt_b64: &str, nonce_b64: &str| {
+        serde_json::json!({
+            "v": 1,
+            "app": "myssh",
+            "encrypted": true,
+            "kdf": { "algo": "argon2id", "salt": salt_b64, "mKib": 8192u32, "t": 1, "p": 1 },
+            "nonce": nonce_b64,
+            "data": "AAAA",
+        })
+        .to_string()
+    };
+    let err = core_store::import_config(&store, &env("AAAA", "AAAA"), Some(b"pp"))
+        .await
+        .expect_err("salt 过短必须报错");
+    assert!(err.to_string().contains("salt"), "{err}");
+    // salt 合法（16B）、nonce 3 字节
+    let salt16 = base64_encode(&[7u8; 16]);
+    let err = core_store::import_config(&store, &env(&salt16, "AAAA"), Some(b"pp"))
+        .await
+        .expect_err("nonce 长度非法必须报错");
+    assert!(err.to_string().contains("nonce"), "{err}");
+
+    assert!(
+        store.sessions().list().await.expect("list").is_empty(),
+        "全部拒绝：不得有任何写入"
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}

@@ -84,6 +84,34 @@ impl SftpManagerState {
             rt,
         })
     }
+
+    /// PR-0 可观测性：每会话上下文与传输队列快照
+    pub(crate) fn perf_json(&self) -> Value {
+        let ctxs = self.ctxs.lock();
+        let sessions: Vec<Value> = ctxs
+            .iter()
+            .map(|(id, ctx)| {
+                let tasks = ctx.queue.list();
+                let (mut queued, mut running, mut paused) = (0usize, 0usize, 0usize);
+                for t in &tasks {
+                    match t.state {
+                        core_sftp::TransferState::Queued => queued += 1,
+                        core_sftp::TransferState::Running => running += 1,
+                        core_sftp::TransferState::Paused => paused += 1,
+                        _ => {}
+                    }
+                }
+                json!({
+                    "sessionId": id,
+                    "tasks": tasks.len(),
+                    "queued": queued,
+                    "running": running,
+                    "paused": paused,
+                })
+            })
+            .collect();
+        json!({ "contexts": ctxs.len(), "sessions": sessions })
+    }
 }
 
 /// 取/建会话的 SFTP 上下文（Bulk 连接 + SFTP 子系统通道，bulk-rt 上建立）

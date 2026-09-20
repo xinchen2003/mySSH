@@ -4,6 +4,7 @@
 mod diagnostics;
 mod encoding;
 mod files;
+mod fs_limiter;
 mod local_pty;
 mod logging;
 mod mcp;

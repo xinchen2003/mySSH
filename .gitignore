@@ -4,6 +4,9 @@ dist/
 results/
 *.log
 
+# 性能基线 artifact（scripts/perf-baseline.mjs 产物，本地对比用）
+perf/
+
 # 本地草稿/冒烟产物（此前靠全局忽略，入库以保证其他克隆同样忽略）
 .scratch/
 
