@@ -968,13 +968,19 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       let skipped = 0;
       for (const p of paths) {
         try {
-          const res = await invoke<{ transferIds: string[]; skipped: number }>('sftp_upload', {
+          const res = await invoke<{
+            transferIds?: string[];
+            skipped: number;
+            job?: boolean;
+            jobId?: string;
+          }>('sftp_upload', {
             sessionId,
             local: p,
             remote: dir,
             ...(policy === 'none' ? {} : { onExists: policy }),
           });
           skipped += res.skipped;
+          if (res.job) notify(t('panels.jobStarted'), 'info');
         } catch (e) {
           notify(t('panels.uploadFailed', { error: String(e) }), 'error');
         }
@@ -997,13 +1003,19 @@ export function SftpPanel({ tabId }: { tabId: string }) {
       let skipped = 0;
       for (const p of paths) {
         try {
-          const res = await invoke<{ transferIds: string[]; skipped: number }>('sftp_download', {
+          const res = await invoke<{
+            transferIds?: string[];
+            skipped: number;
+            job?: boolean;
+            jobId?: string;
+          }>('sftp_download', {
             sessionId,
             remote: p,
             local: dir,
             ...(policy === 'none' ? {} : { onExists: policy }),
           });
           skipped += res.skipped;
+          if (res.job) notify(t('panels.jobStarted'), 'info');
         } catch (e) {
           notify(t('panels.downloadFailed', { error: String(e) }), 'error');
         }

@@ -7,11 +7,16 @@
 
 mod client;
 mod error;
+mod job;
 mod shellint;
 mod transfer;
 
 pub use client::{DirEntry, EntryKind, SftpClient};
 pub use error::SftpError;
+pub use job::{
+    DirectoryJobScheduler, FailedEntry, FileTerminal, JobRoot, JobSnapshot, JobSpec, JobState,
+    SchedulerCaps,
+};
 pub use shellint::{add_integration, has_integration, remove_integration, SCRIPT, SCRIPT_REL};
 pub use transfer::{
     rename_candidate, OnExists, ProgressFn, TransferId, TransferInfo, TransferQueue, TransferState,

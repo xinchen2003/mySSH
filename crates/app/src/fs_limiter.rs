@@ -59,13 +59,10 @@ where
     run(&LIMITER.meta, f).await
 }
 
-/// 递归扫描组：目录遍历（PR-6 本地扫描复用此配额）
-#[allow(dead_code)] // 配额按 PR-3 规格预置，消费方在 PR-6 落地
-pub async fn scan<T>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String>
-where
-    T: Send + 'static,
-{
-    run(&LIMITER.scan, f).await
+/// 递归扫描组信号量句柄（DirectoryJob 本地扫描共享此配额，ADR 0001；
+/// 闭包式 API 不适用——扫描在 core-sftp 的 spawn_blocking 内执行）
+pub fn scan_permits() -> Arc<Semaphore> {
+    LIMITER.scan.clone()
 }
 
 /// 重拷贝/删除组：递归复制、递归删除、大文件整体写入

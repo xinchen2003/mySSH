@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useAppStore } from '../state/app-store';
-import { retryHistoryTransfer, transferCmd, useTransferStore } from '../state/transfer-store';
-import type { TransferHistoryView, TransferView } from '../term/types';
+import {
+  retryHistoryTransfer,
+  transferCmd,
+  transferJobCmd,
+  useTransferStore,
+} from '../state/transfer-store';
+import type { TransferHistoryView, TransferJobView, TransferView } from '../term/types';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useT, type MsgKey } from '../i18n';
 
@@ -52,6 +57,98 @@ const STATE_KEY: Record<TransferView['state'], MsgKey> = {
   failed: 'panels.stateFailed',
   canceled: 'panels.stateCanceled',
 };
+
+const JOB_STATE_KEY: Record<TransferJobView['state'], MsgKey> = {
+  scanning: 'panels.jobScanning',
+  transferring: 'panels.jobTransferring',
+  finalizing: 'panels.jobFinalizing',
+  completed: 'panels.stateDone',
+  failed: 'panels.stateFailed',
+  canceled: 'panels.stateCanceled',
+};
+
+/** 目录任务行（PR-8）：父任务聚合展示——已发现/完成/失败/吞吐；扫描中总量未知显示 ? */
+function JobRow({ j, sessionId }: { j: TransferJobView; sessionId: string }) {
+  const tr = useT();
+  const terminal = j.state === 'completed' || j.state === 'failed' || j.state === 'canceled';
+  const btn = 'rounded px-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200';
+  return (
+    <div className="flex items-center gap-2 py-0.5 text-neutral-400">
+      <span title={j.direction === 'upload' ? tr('panels.upload') : tr('panels.download')}>
+        {j.direction === 'upload' ? '📁⬆' : '📁⬇'}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-neutral-200" title={j.summary}>
+        {j.summary}
+      </span>
+      <span className="shrink-0 tabular-nums">
+        {j.completedFiles}/{j.scanDone ? j.discoveredFiles : '?'} · {fmtSize(j.bytesDone)}
+        {j.failedFiles > 0 && (
+          <span className="text-red-400">
+            {' '}
+            · {tr('panels.jobFailedCount', { count: j.failedFiles })}
+          </span>
+        )}
+      </span>
+      <span className="w-16 shrink-0 text-right text-neutral-400 tabular-nums">
+        {j.paused
+          ? tr('panels.statePaused')
+          : !terminal && (j.rate ?? 0) > 0
+            ? `${fmtSize(j.rate ?? 0)}/s`
+            : tr(JOB_STATE_KEY[j.state])}
+      </span>
+      {!terminal && !j.paused && (
+        <button
+          className={btn}
+          title={tr('panels.pause')}
+          aria-label={tr('panels.pause')}
+          onClick={() => void transferJobCmd(sessionId, 'transfer_job_pause', j.id)}
+        >
+          ⏸
+        </button>
+      )}
+      {!terminal && j.paused && (
+        <button
+          className={btn}
+          title={tr('panels.resume')}
+          aria-label={tr('panels.resume')}
+          onClick={() => void transferJobCmd(sessionId, 'transfer_job_resume', j.id)}
+        >
+          ▶
+        </button>
+      )}
+      {!terminal && (
+        <button
+          className={btn}
+          title={tr('panels.cancel')}
+          aria-label={tr('panels.cancel')}
+          onClick={() => void transferJobCmd(sessionId, 'transfer_job_cancel', j.id)}
+        >
+          ✕
+        </button>
+      )}
+      {terminal && (
+        <button
+          className={btn}
+          title={tr('panels.retryResume')}
+          aria-label={tr('panels.retryResume')}
+          onClick={() => void transferJobCmd(sessionId, 'transfer_job_retry', j.id)}
+        >
+          ↻
+        </button>
+      )}
+      {terminal && (
+        <button
+          className={btn}
+          title={tr('panels.removeFromQueue')}
+          aria-label={tr('panels.removeFromQueue')}
+          onClick={() => void transferJobCmd(sessionId, 'transfer_job_remove', j.id)}
+        >
+          🗑
+        </button>
+      )}
+    </div>
+  );
+}
 
 function baseName(path: string): string {
   const norm = path.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -236,6 +333,7 @@ export function TransferCenter() {
   const open = useTransferStore((s) => s.open);
   const closeDock = useAppStore((s) => s.closeDock);
   const bySession = useTransferStore((s) => s.bySession);
+  const jobsBySession = useTransferStore((s) => s.jobsBySession);
   const tabs = useAppStore((s) => s.tabs);
   const history = useTransferStore((s) => s.history);
   const clearHistory = useTransferStore((s) => s.clearHistory);
@@ -254,7 +352,9 @@ export function TransferCenter() {
 
   if (!open) return null;
 
-  const sessionIds = Object.keys(bySession).filter((id) => (bySession[id]?.length ?? 0) > 0);
+  const sessionIds = [
+    ...new Set([...Object.keys(bySession), ...Object.keys(jobsBySession)]),
+  ].filter((id) => (bySession[id]?.length ?? 0) > 0 || (jobsBySession[id]?.length ?? 0) > 0);
   // 总进度（批次十 1）：全部活动任务的字节合计，标题栏下一条动画总条
   const active = Object.values(bySession)
     .flat()
@@ -357,6 +457,9 @@ export function TransferCenter() {
             <div className="border-b border-neutral-800 py-1 font-medium text-neutral-300">
               {titleOf(sid)}
             </div>
+            {jobsBySession[sid]?.map((j) => (
+              <JobRow key={j.id} j={j} sessionId={sid} />
+            ))}
             {bySession[sid]?.map((t) => (
               <TransferRow key={t.id} t={t} sessionId={sid} />
             ))}

@@ -1,6 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand';
-import type { TransferHistoryView, TransferView } from '../term/types';
+import type { TransferHistoryView, TransferJobView, TransferView } from '../term/types';
 import { useAppStore } from './app-store';
 import { tNow } from '../i18n';
 
@@ -14,6 +14,8 @@ import { tNow } from '../i18n';
 interface TransferStore {
   /** sessionId → 传输快照（live + history 帧） */
   bySession: Record<string, TransferView[]>;
+  /** sessionId → 目录任务快照（PR-8 DirectoryJob） */
+  jobsBySession: Record<string, TransferJobView[]>;
   /** 全部会话的持久化历史（transfers 表；TransferCenter 历史记录区） */
   history: TransferHistoryView[];
   /** 传输中心可视开关（dock「传输中心」页签由 app-store openDock/closeDock 同步此字段） */
@@ -34,7 +36,10 @@ interface TransferStore {
 }
 
 /** sessionId → 订阅 Channel（模块级，不随 React 渲染重建） */
-const channels = new Map<string, Channel<{ transfers: TransferView[] }>>();
+const channels = new Map<
+  string,
+  Channel<{ transfers: TransferView[]; jobs?: TransferJobView[] }>
+>();
 /** sessionId → 上一帧各传输的状态（转移检测用；history 项不参与） */
 const prevFrames = new Map<string, Map<string, string>>();
 
@@ -99,7 +104,10 @@ function diffAndNotify(sessionId: string, transfers: TransferView[]): void {
 }
 
 /** 聚合发布全局活跃传输数（12.2 状态栏）；无订阅来源时置 null（不显示） */
-function publishActive(bySession: Record<string, TransferView[]>): void {
+function publishActive(
+  bySession: Record<string, TransferView[]>,
+  jobsBySession: Record<string, TransferJobView[]>,
+): void {
   if (channels.size === 0) {
     useAppStore.getState().setTransferActive(null);
     return;
@@ -110,11 +118,18 @@ function publishActive(bySession: Record<string, TransferView[]>): void {
       (t) => !t.history && (t.state === 'queued' || t.state === 'running' || t.state === 'paused'),
     ).length;
   }
+  // 目录任务：非终态即活跃（一个 job 计 1）
+  for (const list of Object.values(jobsBySession)) {
+    n += list.filter(
+      (j) => j.state === 'scanning' || j.state === 'transferring' || j.state === 'finalizing',
+    ).length;
+  }
   useAppStore.getState().setTransferActive(n);
 }
 
 export const useTransferStore = create<TransferStore>((set, get) => ({
   bySession: {},
+  jobsBySession: {},
   history: [],
   open: false,
   navRequests: {},
@@ -135,14 +150,15 @@ export const useTransferStore = create<TransferStore>((set, get) => ({
     }),
   ensureSession: (sessionId) => {
     if (channels.has(sessionId)) return;
-    const events = new Channel<{ transfers: TransferView[] }>();
+    const events = new Channel<{ transfers: TransferView[]; jobs?: TransferJobView[] }>();
     channels.set(sessionId, events);
     events.onmessage = (f) => {
       diffAndNotify(sessionId, f.transfers);
       set((s) => {
         const bySession = { ...s.bySession, [sessionId]: f.transfers };
-        publishActive(bySession);
-        return { bySession };
+        const jobsBySession = { ...s.jobsBySession, [sessionId]: f.jobs ?? [] };
+        publishActive(bySession, jobsBySession);
+        return { bySession, jobsBySession };
       });
     };
     // 历史帧（上次运行终态）：transfer_list 一次性合并，live 为准
@@ -153,7 +169,7 @@ export const useTransferStore = create<TransferStore>((set, get) => ({
           const liveIds = new Set(live.map((t) => t.id));
           const merged = [...live, ...r.transfers.filter((t) => !liveIds.has(t.id))];
           const bySession = { ...s.bySession, [sessionId]: merged };
-          publishActive(bySession);
+          publishActive(bySession, s.jobsBySession);
           return { bySession };
         });
       })
@@ -211,6 +227,11 @@ export async function transferCmd(
   } catch (e) {
     useAppStore.getState().notify(tNow('state.operationFailed', { error: String(e) }), 'error');
   }
+}
+
+/** 目录任务控制命令（PR-8；transfer_job_pause/resume/cancel/retry/remove） */
+export async function transferJobCmd(sessionId: string, cmd: string, jobId: string): Promise<void> {
+  await transferCmd(sessionId, cmd, { jobId });
 }
 /** 父目录（本地 \ 统一按 / 处理；盘符根 C:/ 的父级是其自身） */
 function parentPath(p: string, remote: boolean): string {

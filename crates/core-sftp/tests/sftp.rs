@@ -973,3 +973,356 @@ async fn paused_tasks_release_permits_for_queued_transfer() {
         assert_eq!(info.state, core_sftp::TransferState::Canceled);
     }
 }
+
+// ---------- DirectoryJob 调度器测试（PR-8 / ADR 0001） ----------
+
+use core_sftp::{DirectoryJobScheduler, JobRoot, JobSpec, JobState, SchedulerCaps};
+
+/// 小容量压测边界（frontier 8 / ready 16 / 在途 2，远小于树规模）
+fn job_caps() -> SchedulerCaps {
+    SchedulerCaps {
+        frontier: 8,
+        ready: 16,
+        in_flight: 2,
+        max_depth: 64,
+        failed_entries: 16,
+    }
+}
+
+fn make_scheduler(
+    sftp: std::sync::Arc<core_sftp::SftpClient>,
+) -> std::sync::Arc<DirectoryJobScheduler> {
+    DirectoryJobScheduler::with_caps(
+        sftp,
+        tokio::runtime::Handle::current(),
+        std::sync::Arc::new(tokio::sync::Semaphore::new(3)),
+        std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
+        job_caps(),
+    )
+}
+
+/// 造 dirs × files_per 的小文件树，返回文件总数
+fn build_tree(base: &std::path::Path, dirs: usize, files_per: usize, size: usize) -> u64 {
+    let mut total = 0u64;
+    for d in 0..dirs {
+        let dir = base.join(format!("d{d:03}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in 0..files_per {
+            std::fs::write(dir.join(format!("f{f:03}.bin")), pattern(size)).unwrap();
+            total += 1;
+        }
+    }
+    total
+}
+
+fn count_files(base: &std::path::Path) -> u64 {
+    let mut n = 0u64;
+    if let Ok(rd) = std::fs::read_dir(base) {
+        for e in rd.flatten() {
+            let ft = e.file_type().unwrap();
+            if ft.is_dir() {
+                n += count_files(&e.path());
+            } else if ft.is_file() {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// 等 job 到达终态
+async fn wait_job(s: &DirectoryJobScheduler, id: &str, secs: u64) -> core_sftp::JobSnapshot {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    loop {
+        let jobs = s.list();
+        if let Some(j) = jobs.iter().find(|j| j.id == id) {
+            if j.state.is_terminal() {
+                return j.clone();
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "job 未在 {secs}s 内终态: {:?}",
+            jobs.iter()
+                .map(|j| (j.id.clone(), j.state))
+                .collect::<Vec<_>>()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// 宽树上传：frontier/ready/在途全部饱和下不死锁、不驻留、全量到达（C2 风暴场景）
+#[tokio::test]
+async fn job_upload_wide_tree_bounded() {
+    let root = temp_root("job-up-remote");
+    let port = start_sftp_server(root.clone()).await;
+    let conn = connect(port).await;
+    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
+    let sched = make_scheduler(sftp);
+
+    let local = temp_root("job-up-local").join("tree");
+    let total = build_tree(&local, 50, 20, 64); // 1000 文件 / 50 目录，caps 全面饱和
+    let id = sched.submit(JobSpec {
+        direction: core_sftp::TransferDirection::Upload,
+        roots: vec![JobRoot {
+            local: local.clone(),
+            remote: "/tree".into(),
+        }],
+        policy: core_sftp::OnExists::Resume,
+    });
+    let j = wait_job(&sched, &id, 180).await;
+    assert_eq!(j.state, JobState::Completed, "{:?}", j.error);
+    assert_eq!(j.discovered_files, total);
+    assert_eq!(j.completed_files, total);
+    assert_eq!(j.failed_files, 0, "{:?}", j.failed_entries);
+    // 全量到达远端 + 抽查内容
+    assert_eq!(count_files(&root.join("tree")), total);
+    assert_eq!(
+        std::fs::read(root.join("tree/d007/f003.bin")).unwrap(),
+        pattern(64)
+    );
+}
+
+/// 嵌套下载 + Skip 重跑：冲突策略在 worker 逐文件生效
+#[tokio::test]
+async fn job_download_nested_then_skip_rerun() {
+    let root = temp_root("job-down-remote");
+    // 远端树：a/ 下 5 文件 + a/b/ 下 5 文件 + a/b/c/ 下 5 文件
+    let mut total = 0u64;
+    for dir in ["a", "a/b", "a/b/c"] {
+        let d = root.join(dir);
+        std::fs::create_dir_all(&d).unwrap();
+        for f in 0..5 {
+            std::fs::write(d.join(format!("f{f}.bin")), pattern(128)).unwrap();
+            total += 1;
+        }
+    }
+    let port = start_sftp_server(root.clone()).await;
+    let conn = connect(port).await;
+    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
+    let sched = make_scheduler(sftp);
+
+    let local = temp_root("job-down-local");
+    let id = sched.submit(JobSpec {
+        direction: core_sftp::TransferDirection::Download,
+        roots: vec![JobRoot {
+            local: local.clone(),
+            remote: "/a".into(),
+        }],
+        policy: core_sftp::OnExists::Resume,
+    });
+    let j = wait_job(&sched, &id, 60).await;
+    assert_eq!(j.state, JobState::Completed, "{:?}", j.error);
+    assert_eq!(j.completed_files, total);
+    assert_eq!(count_files(&local), total);
+    assert_eq!(
+        std::fs::read(local.join("b/c/f2.bin")).unwrap(),
+        pattern(128)
+    );
+
+    // Skip 重跑：全部已存在 → 全 skip、零完成
+    let id2 = sched.submit(JobSpec {
+        direction: core_sftp::TransferDirection::Download,
+        roots: vec![JobRoot {
+            local: local.clone(),
+            remote: "/a".into(),
+        }],
+        policy: core_sftp::OnExists::Skip,
+    });
+    let j2 = wait_job(&sched, &id2, 60).await;
+    assert_eq!(j2.state, JobState::Completed);
+    assert_eq!(j2.completed_files, 0);
+    assert_eq!(j2.skipped, total);
+}
+
+/// 扫描中取消：快速到达 Canceled，无挂起（验收：扫描中可取消）
+#[tokio::test]
+async fn job_cancel_during_scan() {
+    let root = temp_root("job-cancel-remote");
+    build_tree(&root, 100, 20, 64); // 2000 文件，扫描持续足够久
+    let port = start_sftp_server(root.clone()).await;
+    let conn = connect(port).await;
+    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
+    let sched = make_scheduler(sftp);
+
+    let id = sched.submit(JobSpec {
+        direction: core_sftp::TransferDirection::Download,
+        roots: vec![JobRoot {
+            local: temp_root("job-cancel-local"),
+            remote: "/".into(),
+        }],
+        policy: core_sftp::OnExists::Resume,
+    });
+    sched.cancel(&id).unwrap();
+    let j = wait_job(&sched, &id, 15).await;
+    assert_eq!(j.state, JobState::Canceled);
+    // 已取消 job 的 remove/retry 语义
+    sched.remove(&id).unwrap();
+    assert!(sched.list().iter().all(|x| x.id != id));
+}
+
+/// 暂停→进度停滞→恢复→完成（验收：pause 语义）
+#[tokio::test]
+async fn job_pause_resume_upload() {
+    let root = temp_root("job-pause-remote");
+    let port = start_sftp_server(root.clone()).await;
+    let conn = connect(port).await;
+    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
+    let sched = make_scheduler(sftp);
+
+    let local = temp_root("job-pause-local").join("tree");
+    let total = build_tree(&local, 20, 10, 1024 * 64); // 200 × 64KB
+    let id = sched.submit(JobSpec {
+        direction: core_sftp::TransferDirection::Upload,
+        roots: vec![JobRoot {
+            local,
+            remote: "/tree".into(),
+        }],
+        policy: core_sftp::OnExists::Resume,
+    });
+    // 等起步后暂停
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let j = sched.list().into_iter().find(|j| j.id == id).unwrap();
+        if j.completed_files > 0 || j.bytes_done > 0 {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "job 未起步");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    sched.pause(&id).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    let paused = sched.list().into_iter().find(|j| j.id == id).unwrap();
+    assert!(paused.paused);
+    let done_at_pause = paused.completed_files;
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    let still = sched.list().into_iter().find(|j| j.id == id).unwrap();
+    // 在途 ≤3 个文件可能收尾，其余必须停滞
+    assert!(
+        still.completed_files <= done_at_pause + 3,
+        "暂停后仍推进: {done_at_pause} -> {}",
+        still.completed_files
+    );
+    sched.resume(&id).unwrap();
+    let j = wait_job(&sched, &id, 120).await;
+    assert_eq!(j.state, JobState::Completed);
+    assert_eq!(
+        j.completed_files, total,
+        "discovered={} failed={} skipped={} entries={:?}",
+        j.discovered_files, j.failed_files, j.skipped, j.failed_entries
+    );
+}
+
+/// symlink 不跟随：环不死循环、计 skipped（无特权环境跳过）
+#[tokio::test]
+async fn job_symlink_not_followed() {
+    let local = temp_root("job-sym-local").join("tree");
+    std::fs::create_dir_all(local.join("sub")).unwrap();
+    std::fs::write(local.join("sub/real.bin"), pattern(64)).unwrap();
+    // 自环链接 + 指向文件的链接
+    #[cfg(windows)]
+    let link_result =
+        std::os::windows::fs::symlink_dir(&local, local.join("sub/loop")).and_then(|_| {
+            std::os::windows::fs::symlink_file(local.join("sub/real.bin"), local.join("alias"))
+        });
+    #[cfg(unix)]
+    let link_result = std::os::unix::fs::symlink(&local, local.join("sub/loop"))
+        .and_then(|_| std::os::unix::fs::symlink(local.join("sub/real.bin"), local.join("alias")));
+    if let Err(e) = link_result {
+        eprintln!("跳过：无法创建 symlink（需开发者模式/特权）: {e}");
+        return;
+    }
+
+    let root = temp_root("job-sym-remote");
+    let port = start_sftp_server(root.clone()).await;
+    let conn = connect(port).await;
+    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
+    let sched = make_scheduler(sftp);
+    let id = sched.submit(JobSpec {
+        direction: core_sftp::TransferDirection::Upload,
+        roots: vec![JobRoot {
+            local,
+            remote: "/tree".into(),
+        }],
+        policy: core_sftp::OnExists::Resume,
+    });
+    let j = wait_job(&sched, &id, 60).await;
+    assert_eq!(j.state, JobState::Completed, "{:?}", j.error);
+    assert_eq!(j.completed_files, 1); // 只有 real.bin
+    assert!(j.skipped >= 2, "symlink 应计 skipped: {}", j.skipped);
+    assert_eq!(count_files(&root.join("tree")), 1);
+}
+
+/// 深度防护：max_depth 之外的子目录计 skipped（C2 深目录验收）
+#[tokio::test]
+async fn job_depth_guard() {
+    let local = temp_root("job-deep-local").join("tree");
+    // 深度 5 的链：tree/a/b/c/d/e 每层 1 文件
+    let deep = local.join("a/b/c/d/e");
+    std::fs::create_dir_all(&deep).unwrap();
+    let mut p = local.clone();
+    for seg in ["a", "b", "c", "d", "e"] {
+        p = p.join(seg);
+        std::fs::write(p.join("x.bin"), pattern(32)).unwrap();
+    }
+    std::fs::write(local.join("top.bin"), pattern(32)).unwrap();
+
+    let root = temp_root("job-deep-remote");
+    let port = start_sftp_server(root.clone()).await;
+    let conn = connect(port).await;
+    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
+    let mut caps = job_caps();
+    caps.max_depth = 2; // tree(0) → a(1) → b(2) → c(3 被拦)
+    let sched = DirectoryJobScheduler::with_caps(
+        sftp,
+        tokio::runtime::Handle::current(),
+        std::sync::Arc::new(tokio::sync::Semaphore::new(3)),
+        std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
+        caps,
+    );
+    let id = sched.submit(JobSpec {
+        direction: core_sftp::TransferDirection::Upload,
+        roots: vec![JobRoot {
+            local,
+            remote: "/tree".into(),
+        }],
+        policy: core_sftp::OnExists::Resume,
+    });
+    let j = wait_job(&sched, &id, 60).await;
+    assert_eq!(j.state, JobState::Completed, "{:?}", j.error);
+    assert!(j.skipped >= 1, "深度超限目录应计 skipped");
+    // 只到 b 层：top.bin + a/x.bin + a/b/x.bin
+    assert_eq!(count_files(&root.join("tree")), 3);
+}
+
+/// 终态重试：Resume 重扫重跑、返回新 jobId（ADR 决策 3）
+#[tokio::test]
+async fn job_retry_terminal_reruns() {
+    let root = temp_root("job-retry-remote");
+    let port = start_sftp_server(root.clone()).await;
+    let conn = connect(port).await;
+    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
+    let sched = make_scheduler(sftp);
+
+    let local = temp_root("job-retry-local").join("tree");
+    let total = build_tree(&local, 2, 3, 64);
+    let spec = || JobSpec {
+        direction: core_sftp::TransferDirection::Upload,
+        roots: vec![JobRoot {
+            local: local.clone(),
+            remote: "/tree".into(),
+        }],
+        policy: core_sftp::OnExists::Resume,
+    };
+    let id = sched.submit(spec());
+    let j = wait_job(&sched, &id, 60).await;
+    assert_eq!(j.state, JobState::Completed);
+    // 进行中不可重试（已完成才可）
+    let id2 = sched.retry(&id).expect("终态可重试");
+    assert_ne!(id2, id);
+    let j2 = wait_job(&sched, &id2, 60).await;
+    assert_eq!(j2.state, JobState::Completed);
+    assert_eq!(j2.completed_files, total);
+    // 终态可移除；进行中拒绝（前面 job_cancel 用例已覆盖进行中 remove 拒绝前的 cancel 路径）
+    assert!(sched.remove(&id2).is_ok());
+}

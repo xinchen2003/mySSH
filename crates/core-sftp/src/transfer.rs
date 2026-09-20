@@ -130,11 +130,36 @@ pub struct TransferInfo {
     pub error: Option<String>,
 }
 
-struct TransferInner {
+/// 单文件传输的共享状态。DirectoryJob worker 为在途文件建 transient 实例
+///（不入 transfers registry、随文件结束即弃），复用 pause/cancel/断点机制。
+pub(crate) struct TransferInner {
     info: Mutex<TransferInfo>,
     bytes_done: AtomicU64,
     pause: AtomicBool,
     cancel: AtomicBool,
+}
+
+impl TransferInner {
+    /// job worker 用：构造不入 registry 的 transient 实例
+    pub(crate) fn new_transient(info: TransferInfo) -> Arc<Self> {
+        Arc::new(Self {
+            info: Mutex::new(info),
+            bytes_done: AtomicU64::new(0),
+            pause: AtomicBool::new(false),
+            cancel: AtomicBool::new(false),
+        })
+    }
+
+    /// job 取消/暂停传播：置位后 download_once/upload_once 在 chunk 边界中断
+    pub(crate) fn signal(&self, pause: bool, cancel: bool) {
+        self.pause.store(pause, Ordering::Relaxed);
+        self.cancel.store(cancel, Ordering::Relaxed);
+    }
+
+    /// 结束时的实际字节量（含续传偏移；job 计数用）
+    pub(crate) fn final_bytes(&self) -> u64 {
+        self.bytes_done.load(Ordering::Relaxed)
+    }
 }
 
 /// 进度回调（每个分块落地后调用；实现必须快，不得阻塞）
@@ -144,7 +169,8 @@ pub struct TransferQueue {
     sftp: Arc<SftpClient>,
     /// 传输任务落点（app 传 bulk-rt 的 Handle，保 runtime 分离铁律）
     rt: tokio::runtime::Handle,
-    permits: Arc<Semaphore>,
+    /// 执行槽（DirectoryJob worker 与单文件传输共享同一并发预算，ADR 0001）
+    pub(crate) permits: Arc<Semaphore>,
     transfers: Mutex<HashMap<TransferId, Arc<TransferInner>>>,
     id_seq: AtomicU64,
     max_retries: u32,
@@ -169,6 +195,11 @@ impl TransferQueue {
             max_retries: 2,
             on_progress: Mutex::new(None),
         }
+    }
+
+    /// 执行槽句柄（DirectoryJobScheduler 与单文件传输共享同一并发预算，ADR 0001）
+    pub fn permits_handle(&self) -> Arc<Semaphore> {
+        self.permits.clone()
     }
 
     pub fn set_progress_callback(&self, cb: ProgressFn) {
@@ -476,7 +507,10 @@ impl TransferQueue {
 }
 
 /// 下载一次（从断点）：本地已有长度即断点（本地比远端长 = 脏续写，截断重传）
-async fn download_once(sftp: Arc<SftpClient>, t: Arc<TransferInner>) -> Result<(), SftpError> {
+pub(crate) async fn download_once(
+    sftp: Arc<SftpClient>,
+    t: Arc<TransferInner>,
+) -> Result<(), SftpError> {
     let (local, remote, on_exists, total) = {
         let info = lock(&t.info);
         (
@@ -557,7 +591,10 @@ async fn download_once(sftp: Arc<SftpClient>, t: Arc<TransferInner>) -> Result<(
 }
 
 /// 上传一次（从断点）：远端已有长度即断点（stat 失败视为 0；远端比本地长 = 脏续写，截断重传）
-async fn upload_once(sftp: Arc<SftpClient>, t: Arc<TransferInner>) -> Result<(), SftpError> {
+pub(crate) async fn upload_once(
+    sftp: Arc<SftpClient>,
+    t: Arc<TransferInner>,
+) -> Result<(), SftpError> {
     let (local, remote, on_exists, local_size) = {
         let info = lock(&t.info);
         (

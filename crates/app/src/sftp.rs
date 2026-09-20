@@ -18,7 +18,8 @@ use serde_json::{json, Value};
 use tauri::ipc::Channel;
 
 use core_sftp::{
-    rename_candidate, DirEntry, EntryKind, OnExists, SftpClient, TransferDirection, TransferQueue,
+    rename_candidate, DirEntry, DirectoryJobScheduler, EntryKind, FileTerminal, JobRoot,
+    JobSnapshot, JobSpec, OnExists, SftpClient, TransferDirection, TransferQueue,
 };
 use core_store::Store;
 
@@ -26,12 +27,14 @@ use crate::sessions::SessionManagerState;
 
 static EDIT_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// 单会话的 SFTP 上下文（连接 + 客户端 + 传输队列）
+/// 单会话的 SFTP 上下文（连接 + 客户端 + 传输队列 + 目录任务调度器）
 pub struct SftpCtx {
     /// 保活：conn 在则通道在
     _conn: core_ssh::SshConnection,
     client: Arc<SftpClient>,
     queue: Arc<TransferQueue>,
+    /// DirectoryJob 调度器（PR-8；与 queue 共享执行槽预算）
+    jobs: Arc<DirectoryJobScheduler>,
 }
 
 pub struct SftpManagerState {
@@ -161,16 +164,51 @@ pub(crate) async fn ensure_ctx(
                 3,
                 tokio::runtime::Handle::current(),
             ));
+            let jobs = DirectoryJobScheduler::new(
+                client.clone(),
+                tokio::runtime::Handle::current(),
+                queue.permits_handle(),
+                crate::fs_limiter::scan_permits(),
+            );
             Ok::<_, String>(SftpCtx {
                 _conn: conn,
                 client,
                 queue,
+                jobs,
             })
         }
         .await;
         let _ = tx.send(result);
     });
     let ctx = Arc::new(rx.await.map_err(|_| "bulk-rt 连接任务丢失".to_string())??);
+    // DirectoryJob 接线（ADR 0001 边 ⑤⑥）：writer 批量落库（fire-and-forget）+ job 终态 audit
+    let (wtx, wrx) = tokio::sync::mpsc::channel::<FileTerminal>(4096);
+    state
+        .rt
+        .spawn(history_writer(store.clone(), session_id.to_string(), wrx));
+    ctx.jobs.set_file_terminal_callback(Arc::new(move |rec| {
+        let _ = wtx.try_send(rec); // 满则丢弃文件级记录（红线：SQLite 慢不卡传输）
+    }));
+    {
+        let store = store.clone();
+        let sid = session_id.to_string();
+        ctx.jobs.set_job_terminal_callback(Arc::new(move |snap| {
+            let store = store.clone();
+            let sid = sid.clone();
+            let detail = format!(
+                "{}（{}: 完成 {}/发现 {}，失败 {}，跳过 {}）",
+                snap.summary,
+                snap.state.as_str(),
+                snap.completed_files,
+                snap.discovered_files,
+                snap.failed_files,
+                snap.skipped
+            );
+            tauri::async_runtime::spawn(async move {
+                audit(&store, &sid, "sftp_dir_job", &detail).await;
+            });
+        }));
+    }
     // 并发建连去重：等待 rx 期间可能有别的调用已建好并插入（SFTP 打开瞬间
     // sftp_list / transfer_list / transfer_subscribe 并发触发）。若不检查，
     // 后插入者覆盖 map，而先返回的调用方（如 transfer_subscribe 推送循环）
@@ -543,6 +581,89 @@ fn persist_terminal(store: Arc<Store>, session_id: String) -> core_sftp::Progres
     })
 }
 
+/// SQLite history writer（ADR 0001 边 ⑥）：200ms/500 条批量 upsert 逐文件终态。
+/// 单任务独占写路径；回调侧 try_send，满即丢弃（红线：SQLite 慢不卡传输）。
+async fn history_writer(
+    store: Arc<Store>,
+    session_id: String,
+    mut rx: tokio::sync::mpsc::Receiver<FileTerminal>,
+) {
+    let mut buf: Vec<FileTerminal> = Vec::with_capacity(500);
+    loop {
+        buf.clear();
+        match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+            Ok(Some(r)) => buf.push(r),
+            Ok(None) => break,  // 发送侧全 drop（ctx 销毁）
+            Err(_) => continue, // 聚合窗内无记录
+        }
+        while buf.len() < 500 {
+            match rx.try_recv() {
+                Ok(r) => buf.push(r),
+                Err(_) => break,
+            }
+        }
+        flush_history(&store, &session_id, &mut buf).await;
+    }
+    // 关闭前排空残留
+    while let Ok(r) = rx.try_recv() {
+        buf.push(r);
+    }
+    if !buf.is_empty() {
+        flush_history(&store, &session_id, &mut buf).await;
+    }
+}
+
+async fn flush_history(store: &Arc<Store>, session_id: &str, buf: &mut Vec<FileTerminal>) {
+    for rec in buf.drain(..) {
+        let _ = store
+            .transfers()
+            .upsert(&core_store::TransferRecord {
+                id: rec.id,
+                session_id: session_id.to_string(),
+                direction: match rec.direction {
+                    TransferDirection::Upload => "upload".into(),
+                    TransferDirection::Download => "download".into(),
+                },
+                local: rec.local.to_string_lossy().to_string(),
+                remote: rec.remote,
+                bytes_done: rec.bytes_done,
+                bytes_total: rec.bytes_total,
+                state: rec.state.as_str().into(),
+                error: rec.error,
+                updated_at: String::new(), // 写入侧由 SQLite 时钟生成
+            })
+            .await;
+    }
+}
+
+/// job 快照 → IPC 投影（rate 由订阅侧差分注入）
+fn job_to_json(j: &JobSnapshot, rate: u64) -> Value {
+    json!({
+        "id": j.id,
+        "direction": match j.direction {
+            TransferDirection::Upload => "upload",
+            TransferDirection::Download => "download",
+        },
+        "summary": j.summary,
+        "state": j.state.as_str(),
+        "paused": j.paused,
+        "scanDone": j.scan_done,
+        "discoveredFiles": j.discovered_files,
+        "discoveredBytes": j.discovered_bytes,
+        "completedFiles": j.completed_files,
+        "failedFiles": j.failed_files,
+        "skipped": j.skipped,
+        "bytesDone": j.bytes_done,
+        "error": j.error,
+        "current": j.current,
+        "failedEntries": j.failed_entries.iter().map(|e| json!({
+            "path": e.path,
+            "error": e.error,
+        })).collect::<Vec<_>>(),
+        "rate": rate,
+    })
+}
+
 pub(crate) fn transfer_to_json(t: &core_sftp::TransferInfo) -> Value {
     json!({
         "id": t.id,
@@ -624,7 +745,8 @@ fn resolve_local_target(
 }
 
 /// 上传：local 文件/目录 → remote 目标目录（remote 为目录路径，文件名取本地名）。
-/// on_exists 冲突策略逐文件生效（目录递归展开后每个文件独立判定），返回 skipped 计数。
+/// on_exists 冲突策略逐文件生效（目录任务内每个文件独立判定）。
+/// 目录 → DirectoryJob（立即返回 jobId，PR-8）；单文件 → 旧队列逐条路径不变。
 #[tauri::command]
 pub async fn sftp_upload(
     session_id: String,
@@ -644,20 +766,40 @@ pub async fn sftp_upload(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unnamed".into());
+    if meta.is_dir() {
+        let remote_root = format!("{remote}/{base_name}");
+        // 根目录远端 mkdir 保持同步（旧行为：根建不起来直接报错；子目录 mkdir 在任务内）
+        ctx.client
+            .mkdir(&remote_root)
+            .await
+            .or_else(|e| {
+                if e.to_string().contains("Failure") {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        let job_id = ctx.jobs.submit(JobSpec {
+            direction: TransferDirection::Upload,
+            roots: vec![JobRoot {
+                local: local_path.clone(),
+                remote: remote_root,
+            }],
+            policy,
+        });
+        audit(
+            &sessions.store,
+            &session_id,
+            "sftp_upload",
+            &format!("{local} -> {remote}（目录任务 {job_id}）"),
+        )
+        .await;
+        return Ok(json!({ "job": true, "jobId": job_id, "skipped": 0 }));
+    }
     let mut ids = Vec::new();
     let mut skipped = 0u32;
-    if meta.is_dir() {
-        // 递归展开：远端 mkdir 链 + 逐文件入队
-        enqueue_dir_upload(
-            &ctx,
-            &local_path,
-            &format!("{remote}/{base_name}"),
-            policy,
-            &mut ids,
-            &mut skipped,
-        )
-        .await?;
-    } else if let Some((path, mode)) =
+    if let Some((path, mode)) =
         resolve_remote_target(&ctx, &format!("{remote}/{base_name}"), policy).await?
     {
         ids.push(
@@ -681,48 +823,8 @@ pub async fn sftp_upload(
     Ok(json!({ "transferIds": ids, "skipped": skipped }))
 }
 
-async fn enqueue_dir_upload(
-    ctx: &SftpCtx,
-    local_dir: &Path,
-    remote_dir: &str,
-    policy: OnExists,
-    ids: &mut Vec<String>,
-    skipped: &mut u32,
-) -> Result<(), String> {
-    ctx.client
-        .mkdir(remote_dir)
-        .await
-        .or_else(|e| {
-            if e.to_string().contains("Failure") {
-                Ok(()) // 已存在 → 忽略（mkdir 幂等近似）
-            } else {
-                Err(e)
-            }
-        })
-        .map_err(|e| e.to_string())?;
-    let rd = std::fs::read_dir(local_dir).map_err(|e| e.to_string())?;
-    for e in rd {
-        let e = e.map_err(|e| e.to_string())?;
-        let p = e.path();
-        let name = e.file_name().to_string_lossy().to_string();
-        let remote = format!("{remote_dir}/{name}");
-        let meta = e.metadata().map_err(|e| e.to_string())?;
-        if meta.is_dir() {
-            Box::pin(enqueue_dir_upload(ctx, &p, &remote, policy, ids, skipped)).await?;
-        } else if meta.is_file() {
-            match resolve_remote_target(ctx, &remote, policy).await? {
-                Some((path, mode)) => {
-                    ids.push(ctx.queue.enqueue_upload(p, path, meta.len(), mode).await);
-                }
-                None => *skipped += 1,
-            }
-        }
-    }
-    Ok(())
-}
-
 /// 下载：remote 文件/目录 → local 目标目录。
-/// on_exists 冲突策略逐文件生效（目录递归展开后每个文件独立判定），返回 skipped 计数。
+/// 目录 → DirectoryJob（立即返回 jobId，PR-8）；单文件 → 旧队列逐条路径不变。
 #[tauri::command]
 pub async fn sftp_download(
     session_id: String,
@@ -739,32 +841,38 @@ pub async fn sftp_download(
     let st = ctx.client.stat(&remote).await.map_err(|e| e.to_string())?;
     let base_name = st.name.clone();
     let local_base = PathBuf::from(&local);
-    let mut ids = Vec::new();
-    let mut skipped = 0u32;
     if st.kind == EntryKind::Dir {
         let target = local_base.join(&base_name);
         std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
-        Box::pin(enqueue_dir_download(
-            &ctx,
-            &remote,
-            &target,
+        let job_id = ctx.jobs.submit(JobSpec {
+            direction: TransferDirection::Download,
+            roots: vec![JobRoot {
+                local: target,
+                remote: remote.clone(),
+            }],
             policy,
-            &mut ids,
-            &mut skipped,
-        ))
-        .await?;
-    } else {
-        std::fs::create_dir_all(&local_base).map_err(|e| e.to_string())?;
-        match resolve_local_target(&local_base.join(&base_name), policy)? {
-            Some((path, mode)) => {
-                ids.push(
-                    ctx.queue
-                        .enqueue_download(remote.clone(), path, st.size, mode)
-                        .await,
-                );
-            }
-            None => skipped += 1,
+        });
+        audit(
+            &sessions.store,
+            &session_id,
+            "sftp_download",
+            &format!("{remote} -> {local}（目录任务 {job_id}）"),
+        )
+        .await;
+        return Ok(json!({ "job": true, "jobId": job_id, "skipped": 0 }));
+    }
+    let mut ids = Vec::new();
+    let mut skipped = 0u32;
+    std::fs::create_dir_all(&local_base).map_err(|e| e.to_string())?;
+    match resolve_local_target(&local_base.join(&base_name), policy)? {
+        Some((path, mode)) => {
+            ids.push(
+                ctx.queue
+                    .enqueue_download(remote.clone(), path, st.size, mode)
+                    .await,
+            );
         }
+        None => skipped += 1,
     }
     audit(
         &sessions.store,
@@ -779,40 +887,77 @@ pub async fn sftp_download(
     Ok(json!({ "transferIds": ids, "skipped": skipped }))
 }
 
-async fn enqueue_dir_download(
-    ctx: &SftpCtx,
-    remote_dir: &str,
-    local_dir: &Path,
-    policy: OnExists,
-    ids: &mut Vec<String>,
-    skipped: &mut u32,
+// ---------- DirectoryJob 命令族（PR-8） ----------
+
+/// 目录任务列表（TransferCenter Job 区 / 调试）
+#[tauri::command]
+pub async fn transfer_job_list(
+    session_id: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    let jobs: Vec<Value> = ctx.jobs.list().iter().map(|j| job_to_json(j, 0)).collect();
+    Ok(json!({ "jobs": jobs }))
+}
+
+#[tauri::command]
+pub async fn transfer_job_pause(
+    session_id: String,
+    job_id: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<(), String> {
-    let entries = ctx
-        .client
-        .list(remote_dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    for e in entries {
-        let local = local_dir.join(&e.name);
-        match e.kind {
-            EntryKind::Dir => {
-                std::fs::create_dir_all(&local).map_err(|e| e.to_string())?;
-                Box::pin(enqueue_dir_download(
-                    ctx, &e.path, &local, policy, ids, skipped,
-                ))
-                .await?;
-            }
-            EntryKind::File => match resolve_local_target(&local, policy)? {
-                Some((path, mode)) => {
-                    ids.push(ctx.queue.enqueue_download(e.path, path, e.size, mode).await);
-                }
-                None => *skipped += 1,
-            },
-            // 软链接/其他：跳过（规格书「软链接识别」= 不盲目跟随）
-            _ => {}
-        }
-    }
-    Ok(())
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    ctx.jobs.pause(&job_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn transfer_job_resume(
+    session_id: String,
+    job_id: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<(), String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    ctx.jobs.resume(&job_id).map_err(|e| e.to_string())
+}
+
+/// 取消目录任务：停止发现、丢弃未开始文件、在途 chunk 边界中断
+#[tauri::command]
+pub async fn transfer_job_cancel(
+    session_id: String,
+    job_id: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<(), String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    ctx.jobs.cancel(&job_id).map_err(|e| e.to_string())
+}
+
+/// 重试终态目录任务：Resume 策略重扫重跑（已完成文件秒级短路），返回新 jobId
+#[tauri::command]
+pub async fn transfer_job_retry(
+    session_id: String,
+    job_id: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<Value, String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    let new_id = ctx.jobs.retry(&job_id).map_err(|e| e.to_string())?;
+    Ok(json!({ "jobId": new_id }))
+}
+
+/// 移除终态目录任务（进行中拒绝）
+#[tauri::command]
+pub async fn transfer_job_remove(
+    session_id: String,
+    job_id: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<(), String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    ctx.jobs.remove(&job_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -988,6 +1133,7 @@ pub async fn transfer_subscribe(
 ) -> Result<(), String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
     let queue = ctx.queue.clone();
+    let jobs = ctx.jobs.clone();
     tauri::async_runtime::spawn(async move {
         let mut last: HashMap<String, (Instant, u64)> = HashMap::new();
         loop {
@@ -1015,7 +1161,31 @@ pub async fn transfer_subscribe(
                     v
                 })
                 .collect();
-            if events.send(json!({ "transfers": frames })).is_err() {
+            let job_frames: Vec<Value> = jobs
+                .list()
+                .iter()
+                .map(|j| {
+                    // job 速率：bytesDone 差分（与逐文件同手法）
+                    let key = format!("job:{}", j.id);
+                    let rate = last
+                        .get(&key)
+                        .map(|(t0, b0)| {
+                            let dt = now.duration_since(*t0).as_secs_f64();
+                            if dt > 0.0 {
+                                ((j.bytes_done.saturating_sub(*b0)) as f64 / dt) as u64
+                            } else {
+                                0
+                            }
+                        })
+                        .unwrap_or(0);
+                    last.insert(key, (now, j.bytes_done));
+                    job_to_json(j, rate)
+                })
+                .collect();
+            if events
+                .send(json!({ "transfers": frames, "jobs": job_frames }))
+                .is_err()
+            {
                 break; // 前端关闭订阅
             }
         }

@@ -120,6 +120,26 @@ export interface TransferView {
   history?: boolean;
 }
 
+/** 目录任务快照（PR-8 DirectoryJob；transfer_subscribe 帧 jobs[] 对齐；rate 由后端差分） */
+export interface TransferJobView {
+  id: string;
+  direction: 'upload' | 'download';
+  summary: string;
+  state: 'scanning' | 'transferring' | 'finalizing' | 'completed' | 'failed' | 'canceled';
+  paused: boolean;
+  scanDone: boolean;
+  discoveredFiles: number;
+  discoveredBytes: number;
+  completedFiles: number;
+  failedFiles: number;
+  skipped: number;
+  bytesDone: number;
+  error?: string | null;
+  current: string[];
+  failedEntries: { path: string; error: string }[];
+  rate?: number;
+}
+
 /** 持久化传输历史记录（transfers 表，跨重启保留；TransferCenter 历史记录区） */
 export interface TransferHistoryView {
   id: string;
