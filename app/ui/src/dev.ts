@@ -10,6 +10,8 @@ export function installDevHooks(): void {
   const w = window as unknown as { __myssh?: unknown };
   w.__myssh = {
     rawInvoke: invoke,
+    /** PR-0 性能快照（基线采集 scripts/perf-baseline.mjs 经此取数） */
+    perfStats: () => invoke('perf_stats'),
     connect: (spec: TermOpenSpec) => useAppStore.getState().connect(spec),
     connectBySession: (sessionId: string, title: string) =>
       useAppStore.getState().connectBySession(sessionId, title),

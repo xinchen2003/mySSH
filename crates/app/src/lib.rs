@@ -10,6 +10,7 @@ mod logging;
 mod mcp;
 mod mcp_terminal;
 mod monitor;
+mod perf;
 mod sessions;
 mod settings;
 mod sftp;
@@ -98,6 +99,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             log_frontend,
             app_version,
+            perf::perf_stats,
             diagnostics::export_diagnostics,
             terminal::term_open,
             terminal::term_input,
