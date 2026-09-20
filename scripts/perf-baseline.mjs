@@ -14,7 +14,7 @@
  */
 import { execSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-
+import os from 'node:os';
 const CDP_PORT = process.env.MYSSH_CDP_PORT ?? '9222';
 const label = process.argv[2] ? `-${process.argv[2].replace(/[^\w-]/g, '')}` : '';
 
@@ -72,15 +72,40 @@ async function main() {
   const gitRev = execSync('git rev-parse --short HEAD').toString().trim();
   const gitDirty = execSync('git status --porcelain').toString().trim().length > 0;
 
+
+  // WebView2 运行时版本（CDP 浏览器域）
+  const browserVersion = await call('Browser.getVersion').catch(() => null);
+
+  // 句柄数：Rust 侧受 forbid(unsafe_code) 限制无法调 Win32，进程外挂 PowerShell 补采
+  const handleCount = (() => {
+    try {
+      const out = execSync(
+        'powershell -NoProfile -Command "Get-Process app -ErrorAction SilentlyContinue | Measure-Object HandleCount -Sum | Select-Object -Expand Sum"',
+      )
+        .toString()
+        .trim();
+      const n = Number(out);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  const environment = {
+    os: `${os.type()} ${os.release()} ${os.arch()}`,
+    cpu: `${os.cpus()[0]?.model ?? 'unknown'} x${os.cpus().length}`,
+    memoryGB: Math.round(os.totalmem() / 2 ** 30),
+    webview2: browserVersion?.product ?? null,
+    processHandleCount: handleCount,
+  };
   const artifact = {
     capturedAt: new Date().toISOString(),
     gitRev,
     gitDirty,
     appVersion,
+    environment,
     stats,
   };
-  mkdirSync('perf', { recursive: true });
-  const ts = artifact.capturedAt.replace(/[:.]/g, '-');
   const file = `perf/baseline-${ts}-${gitRev}${label}.json`;
   writeFileSync(file, JSON.stringify(artifact, null, 2));
   console.log(`基线已写入 ${file}`);

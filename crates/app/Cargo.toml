@@ -44,6 +44,7 @@ portable-pty = "0.9"
 encoding_rs = "0.8"
 tauri-plugin-process = "2.3.1"
 zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
+sysinfo = "0.39.6"
 
 [dev-dependencies]
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
