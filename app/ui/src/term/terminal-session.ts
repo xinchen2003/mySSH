@@ -6,6 +6,13 @@ import { bytesToB64, createTransferFilter, type TransferFilter } from './file-tr
 import type { NotificationLevel } from '../state/app-store';
 import type { ConnectTarget, SessionStateFrame, TermEvent } from './types';
 
+/** 新数据通道代际标识（PR-6）：53bit 随机数（JSON 安全整数），每次 attach 必不同 */
+function newStreamEpoch(): number {
+  const buf = new Uint32Array(2);
+  crypto.getRandomValues(buf);
+  return (buf[0] & 0x1fffff) * 2 ** 32 + buf[1];
+}
+
 /**
  * 单标签终端会话编排：channels 建立 → term_open → 输入/resize/credit 直发。
  *
@@ -61,10 +68,15 @@ export class TerminalSession {
           notify: this.notify,
         })
       : null;
+    // 新数据通道 = 新代际：epoch 建链时生成并随 term_open 上报后端（PR-6）。
+    // credit 闭包捕获创建时点 epoch（禁止动态读取当前流身份）；tabId 动态读取由
+    // 后端 epoch 校验兜底——旧 callback 迟到 ACK 携带旧 epoch 被无条件丢弃。
+    const streamEpoch = newStreamEpoch();
     this.consumer = new StreamConsumer(
+      streamEpoch,
       (chunk, cb) => (this.transfer ? this.transfer.onOutput(chunk, cb) : term.write(chunk, cb)),
-      (bytes) => {
-        if (this.tabId) void invoke('term_credit', { tabId: this.tabId, bytes });
+      (ackedTotal) => {
+        if (this.tabId) void invoke('term_credit', { tabId: this.tabId, streamEpoch, ackedTotal });
       },
     );
     const data = createStreamChannel((frame) => this.consumer?.push(frame));
@@ -100,6 +112,8 @@ export class TerminalSession {
       sessionId: target.kind === 'session' ? target.sessionId : null,
       // 终端编码：档案会话取建档快照（缺省由后端读档案），内联 spec 取其自身字段
       encoding: target.kind === 'spec' ? (target.spec.encoding ?? null) : (target.encoding ?? null),
+      // 数据通道代际标识：本 tab 信用 ACK 身份的一部分
+      streamEpoch,
       data,
       events,
       cols: openedCols,
