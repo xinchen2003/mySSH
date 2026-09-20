@@ -74,6 +74,8 @@ export interface TunnelInfo {
   rateUp: number;
   rateDown: number;
   errors: number;
+  /** 因并发上限被拒的连接数 */
+  rejectedConns?: number;
   reconnects: number;
   /** 最近一次连接/运行错误文本 */
   lastError?: string | null;

@@ -14,5 +14,5 @@ mod manager;
 pub use error::TunnelError;
 pub use manager::{
     ConnectFn, DisconnectPolicy, StatsAtomic, TunnelInfo, TunnelKind, TunnelManager, TunnelSpec,
-    TunnelStats, TunnelStatus,
+    TunnelStats, TunnelStatus, DEFAULT_HALF_CLOSE_DRAIN_TIMEOUT, DEFAULT_STOP_GRACE_TIMEOUT,
 };

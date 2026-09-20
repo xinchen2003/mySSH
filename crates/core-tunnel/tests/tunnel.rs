@@ -35,16 +35,20 @@ impl Server for EchoServer {
     }
 }
 
-/// 通道 ↔ TCP 双向桥（32KB 双泵，与 spike relay_bridge 同形态）
+/// 通道 ↔ TCP 双向桥（半关闭版：一侧 EOF → 对侧写端 shutdown，另一侧继续排空，
+/// 两侧都结束才退出——与被测 relay 的半关闭语义对齐，否则服务端先截断尾部数据）
 fn spawn_channel_bridge(ch: Channel<Msg>, mut tcp: TcpStream) {
     tokio::spawn(async move {
         let (mut cr, mut cw) = tokio::io::split(ch.into_stream());
         let (mut tr, mut tw) = tcp.split();
         let up = async move {
-            let mut buf = vec![0u8; 32768];
+            let mut buf = [0u8; 32768];
             loop {
                 match tr.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => {
+                        let _ = cw.shutdown().await;
+                        break;
+                    }
                     Ok(n) => {
                         if cw.write_all(&buf[..n]).await.is_err() {
                             break;
@@ -54,10 +58,13 @@ fn spawn_channel_bridge(ch: Channel<Msg>, mut tcp: TcpStream) {
             }
         };
         let down = async move {
-            let mut buf = vec![0u8; 32768];
+            let mut buf = [0u8; 32768];
             loop {
                 match cr.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => {
+                        let _ = tw.shutdown().await;
+                        break;
+                    }
                     Ok(n) => {
                         if tw.write_all(&buf[..n]).await.is_err() {
                             break;
@@ -66,10 +73,7 @@ fn spawn_channel_bridge(ch: Channel<Msg>, mut tcp: TcpStream) {
                 }
             }
         };
-        tokio::select! {
-            _ = up => {}
-            _ = down => {}
-        }
+        let _ = tokio::join!(up, down);
     });
 }
 
@@ -219,12 +223,30 @@ fn connect_fn(port: u16) -> ConnectFn {
     })
 }
 
+/// 测试隧道默认用小超时：stop drain 500ms（既有用例结束时 socket 多仍开着，
+/// 会走 grace→abort 路径）、半关闭 drain 5s（自然 EOF 毫秒级，绰绰有余）
 fn spec(kind: TunnelKind, target: Option<(String, u16)>) -> TunnelSpec {
+    spec_with_timeouts(
+        kind,
+        target,
+        Duration::from_millis(500),
+        Duration::from_secs(5),
+    )
+}
+
+fn spec_with_timeouts(
+    kind: TunnelKind,
+    target: Option<(String, u16)>,
+    stop_grace: Duration,
+    half_close_drain: Duration,
+) -> TunnelSpec {
     TunnelSpec {
         kind,
         target,
         max_conns: 100,
         on_disconnect: DisconnectPolicy::Queue,
+        stop_grace_timeout: stop_grace,
+        half_close_drain_timeout: half_close_drain,
     }
 }
 
@@ -243,6 +265,16 @@ async fn wait_listening(mgr: &Arc<TunnelManager>, id: &str) {
         assert!(std::time::Instant::now() < deadline, "tunnel not listening");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// 等 Listening 并取实际 bind 地址（瞬态端口回填后的 `ip:port`）
+async fn wait_bind(mgr: &Arc<TunnelManager>, id: &str) -> String {
+    wait_listening(mgr, id).await;
+    mgr.list()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("tunnel listed")
+        .bind
 }
 
 /// 轮询统计直到上下行字节达标（relay 计数滞后于读返回；CI 高负载下裸断言抖动）
@@ -291,6 +323,54 @@ async fn local_forward_echo_roundtrip() {
 
     mgr.stop("lt").await.expect("stop");
     assert!(mgr.list().is_empty());
+}
+
+/// 并发上限：max_conns=1 时第二条连接被 Semaphore 闸拒收（E4003），计 rejected_conns
+#[tokio::test]
+async fn local_forward_over_limit_rejected() {
+    let (ssh_port, _) = start_echo_server().await;
+    let echo_port = start_tcp_echo().await;
+    let mgr = TunnelManager::new();
+    let mut s = spec(
+        TunnelKind::Local {
+            bind: ("127.0.0.1".into(), 0),
+        },
+        Some(("127.0.0.1".into(), echo_port)),
+    );
+    s.max_conns = 1;
+    mgr.start("lt".into(), s, connect_fn(ssh_port))
+        .await
+        .expect("start");
+    wait_listening(&mgr, "lt").await;
+    let bind = mgr.list()[0].bind.clone();
+
+    // A 占住唯一名额（echo 回环确认 relay 已建立）
+    let mut a = TcpStream::connect(&bind).await.expect("connect A");
+    a.write_all(b"hold").await.unwrap();
+    let mut buf = [0u8; 4];
+    a.read_exact(&mut buf).await.unwrap();
+
+    // B 应被拒：RST（读报错）或 FIN（读到 0），不得挂起
+    let mut b = TcpStream::connect(&bind).await.expect("connect B");
+    let mut bb = [0u8; 1];
+    let closed = match tokio::time::timeout(Duration::from_secs(2), b.read(&mut bb)).await {
+        Ok(Ok(0)) | Ok(Err(_)) => true,
+        Ok(Ok(_)) | Err(_) => false,
+    };
+    assert!(closed, "over-limit connection must be rejected");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if mgr.stats("lt").is_some_and(|s| s.rejected_conns >= 1) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "rejected_conns not counted"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    mgr.stop("lt").await.expect("stop");
 }
 
 /// 动态 -D：SOCKS5 握手后走隧道
@@ -445,4 +525,206 @@ async fn tunnel_flood_throughput() {
     // 由 flood_bench 在无污染环境执行（见 10-risks 环境回归注记）
     assert!(rate > 40.0, "吞吐 {rate:.1} MB/s 击穿 40MB/s 灾难地板");
     mgr.stop("flood").await.expect("stop");
+}
+
+/// 只读、不应答也不关闭的 TCP 服务（半关闭对侧无响应场景）
+async fn start_tcp_sink() -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 8192];
+                // 读到 EOF 后仍持有 socket 不关（对侧无响应）
+                while s.read(&mut buf).await.unwrap_or(0) > 0 {}
+                std::future::pending::<()>().await;
+            });
+        }
+    });
+    port
+}
+
+/// 半关闭（PR-7 验收）：客户端上行 EOF 后，下行尾部数据必须字节级完整送达
+#[tokio::test]
+async fn local_forward_half_close_downstream_complete() {
+    let echo_port = start_tcp_echo().await;
+    let (ssh_port, _) = start_echo_server().await;
+    let mgr = TunnelManager::new();
+    mgr.start(
+        "hc".into(),
+        spec(
+            TunnelKind::Local {
+                bind: ("127.0.0.1".into(), 0),
+            },
+            Some(("127.0.0.1".into(), echo_port)),
+        ),
+        connect_fn(ssh_port),
+    )
+    .await
+    .expect("start");
+    let bind = wait_bind(&mgr, "hc").await;
+
+    let mut c = TcpStream::connect(&bind).await.expect("connect");
+    let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+    c.write_all(&payload).await.unwrap();
+    c.shutdown().await.unwrap(); // 上行 EOF：不得截断下行
+    let mut got = Vec::new();
+    c.read_to_end(&mut got).await.unwrap();
+    assert_eq!(got, payload, "下行数据必须字节级完整");
+    mgr.stop("hc").await.expect("stop");
+}
+
+/// stop 等待（PR-7 验收）：idle 活动 relay 在 grace 内不退出 → 强制 abort；
+/// stop() 返回时 entry 删除、连接被关闭
+#[tokio::test]
+async fn local_forward_stop_drains_then_aborts_and_zeroes() {
+    let echo_port = start_tcp_echo().await;
+    let (ssh_port, _) = start_echo_server().await;
+    let mgr = TunnelManager::new();
+    mgr.start(
+        "sd".into(),
+        spec_with_timeouts(
+            TunnelKind::Local {
+                bind: ("127.0.0.1".into(), 0),
+            },
+            Some(("127.0.0.1".into(), echo_port)),
+            Duration::from_millis(500), // 短 grace：idle relay 必然走 abort 路径
+            Duration::from_secs(5),
+        ),
+        connect_fn(ssh_port),
+    )
+    .await
+    .expect("start");
+    let bind = wait_bind(&mgr, "sd").await;
+
+    // 活动 relay：回环一次后保持 idle（不 EOF——自然 drain 不会结束）
+    let mut c = TcpStream::connect(&bind).await.expect("connect");
+    c.write_all(b"ping").await.unwrap();
+    let mut buf = [0u8; 4];
+    c.read_exact(&mut buf).await.unwrap();
+    assert_eq!(mgr.stats("sd").expect("stats").active_conns, 1);
+
+    let t0 = std::time::Instant::now();
+    mgr.stop("sd").await.expect("stop");
+    let elapsed = t0.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "stop 必须在 grace+abort 内有界返回: {elapsed:?}"
+    );
+    assert!(
+        mgr.list().into_iter().all(|t| t.id != "sd"),
+        "stop 返回后 entry 应删除"
+    );
+    // 客户端连接被 abort 关闭：读 EOF 或 reset，不得挂起
+    let mut b = [0u8; 1];
+    match tokio::time::timeout(Duration::from_secs(2), c.read(&mut b)).await {
+        Ok(Ok(0)) | Ok(Err(_)) => {}
+        other => panic!("stop 后连接应关闭: {other:?}"),
+    }
+}
+
+/// 半关闭对侧无响应（PR-7 验收）：half_close_drain_timeout 到点释放 relay
+#[tokio::test]
+async fn half_close_unresponsive_peer_released_by_drain_timeout() {
+    let sink_port = start_tcp_sink().await;
+    let (ssh_port, _) = start_echo_server().await;
+    let mgr = TunnelManager::new();
+    mgr.start(
+        "hu".into(),
+        spec_with_timeouts(
+            TunnelKind::Local {
+                bind: ("127.0.0.1".into(), 0),
+            },
+            Some(("127.0.0.1".into(), sink_port)),
+            Duration::from_secs(5),
+            Duration::from_millis(800), // 短 drain：对侧无响应必须到点释放
+        ),
+        connect_fn(ssh_port),
+    )
+    .await
+    .expect("start");
+    let bind = wait_bind(&mgr, "hu").await;
+
+    let mut c = TcpStream::connect(&bind).await.expect("connect");
+    c.write_all(b"hello").await.unwrap();
+    c.shutdown().await.unwrap(); // 上行 EOF；sink 永不回应也不关闭
+                                 // drain timeout 到点：relay 释放，active_conns 归零
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if mgr.stats("hu").is_some_and(|s| s.active_conns == 0) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "drain timeout 未释放 relay"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    mgr.stop("hu").await.expect("stop");
+}
+
+/// Remote 形态 stop（PR-7 验收：三形态覆盖）：cancel_tcpip_forward + 有界返回
+#[tokio::test]
+async fn remote_forward_stop_clean() {
+    let echo_port = start_tcp_echo().await;
+    let (ssh_port, _) = start_echo_server().await;
+    let mgr = TunnelManager::new();
+    mgr.start(
+        "rs".into(),
+        spec(
+            TunnelKind::Remote {
+                bind: ("127.0.0.1".into(), 9889),
+            },
+            Some(("127.0.0.1".into(), echo_port)),
+        ),
+        connect_fn(ssh_port),
+    )
+    .await
+    .expect("start");
+    wait_listening(&mgr, "rs").await;
+
+    let t0 = std::time::Instant::now();
+    mgr.stop("rs").await.expect("stop");
+    assert!(
+        t0.elapsed() < Duration::from_secs(5),
+        "remote stop 必须有界返回: {:?}",
+        t0.elapsed()
+    );
+    assert!(mgr.list().into_iter().all(|t| t.id != "rs"));
+}
+
+/// 目标拒连（PR-7 验收场景）：open_direct_tcpip 失败 → 连接关闭 + errors 计数
+#[tokio::test]
+async fn local_forward_target_refused() {
+    let (ssh_port, _) = start_echo_server().await;
+    let mgr = TunnelManager::new();
+    mgr.start(
+        "tr".into(),
+        spec(
+            TunnelKind::Local {
+                bind: ("127.0.0.1".into(), 0),
+            },
+            Some(("127.0.0.1".into(), 1)), // 端口 1：必拒连
+        ),
+        connect_fn(ssh_port),
+    )
+    .await
+    .expect("start");
+    let bind = wait_bind(&mgr, "tr").await;
+
+    let mut c = TcpStream::connect(&bind).await.expect("connect");
+    let mut b = [0u8; 1];
+    match tokio::time::timeout(Duration::from_secs(5), c.read(&mut b)).await {
+        Ok(Ok(0)) | Ok(Err(_)) => {}
+        other => panic!("目标拒连后客户端连接应关闭: {other:?}"),
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if mgr.stats("tr").is_some_and(|s| s.errors >= 1) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "errors 未计数");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    mgr.stop("tr").await.expect("stop");
 }

@@ -56,6 +56,8 @@ async fn main() {
             target: Some(("127.0.0.1".into(), target_port)),
             max_conns: 100,
             on_disconnect: DisconnectPolicy::Queue,
+            stop_grace_timeout: core_tunnel::DEFAULT_STOP_GRACE_TIMEOUT,
+            half_close_drain_timeout: core_tunnel::DEFAULT_HALF_CLOSE_DRAIN_TIMEOUT,
         },
         connect,
     )

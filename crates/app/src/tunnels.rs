@@ -186,6 +186,8 @@ async fn start_tunnel(
             } else {
                 DisconnectPolicy::Queue
             },
+            stop_grace_timeout: core_tunnel::DEFAULT_STOP_GRACE_TIMEOUT,
+            half_close_drain_timeout: core_tunnel::DEFAULT_HALF_CLOSE_DRAIN_TIMEOUT,
         },
         connect,
     )
@@ -517,6 +519,7 @@ fn info_to_json(st: &TunnelManagerState, t: &core_tunnel::TunnelInfo) -> Value {
         "rateUp": rate_up,
         "rateDown": rate_down,
         "errors": t.stats.errors,
+        "rejectedConns": t.stats.rejected_conns,
         "reconnects": t.stats.reconnects,
         "lastError": t.last_error,
     })
