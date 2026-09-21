@@ -4,9 +4,12 @@
 //! 传输性能：russh-sftp 默认 max_packet_len 256KiB、并发写 8——不做二次调优，
 //! 预算核对走 flood_bench 手法（见 10-risks）。
 
+use std::sync::Arc;
+
 use core_ssh::SshConnection;
 use russh_sftp::client::fs::File;
-use russh_sftp::client::SftpSession;
+use russh_sftp::client::rawsession::Limits;
+use russh_sftp::client::{Config, RawSftpSession, SftpSession};
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
 
 use crate::SftpError;
@@ -73,10 +76,14 @@ fn map_err(path: &str, e: russh_sftp::client::error::Error) -> SftpError {
 /// SFTP 会话（一个 SSH 通道一份；批量传输应挂在 Bulk 连接上，不占交互连接）
 pub struct SftpClient {
     session: SftpSession,
+    /// 下载 read-ahead 专用裸会话（PR-16 P4-1，第二条通道）：
+    /// 高层 File::poll_read 单在途串行（读完才发下一个 f_read），
+    /// 显式 offset 读才能流水线。建第二条通道失败仅降级串行下载。
+    download_raw: Option<Arc<RawSftpSession>>,
 }
 
 impl SftpClient {
-    /// 在既有 SSH 连接上开 SFTP 子系统通道
+    /// 在既有 SSH 连接上开 SFTP 子系统通道（+ 下载流水线专用第二条通道）
     pub async fn open(conn: &SshConnection) -> Result<Self, SftpError> {
         let ch = conn.open_session_channel().await?;
         ch.request_subsystem(true, "sftp")
@@ -85,7 +92,22 @@ impl SftpClient {
         let session = SftpSession::new(ch.into_stream())
             .await
             .map_err(|e| SftpError::Subsystem(e.to_string()))?;
-        Ok(Self { session })
+        let download_raw = match open_download_raw(conn).await {
+            Ok(r) => Some(r),
+            Err(e) => {
+                tracing::warn!(error = %e, "下载 read-ahead 通道建立失败，降级串行下载");
+                None
+            }
+        };
+        Ok(Self {
+            session,
+            download_raw,
+        })
+    }
+
+    /// 下载 read-ahead 裸会话（显式 offset 读；None → 调用方走串行回退）
+    pub(crate) fn download_raw(&self) -> Option<Arc<RawSftpSession>> {
+        self.download_raw.clone()
     }
 
     /// 目录列表（一次全量；UI 侧做窗口化渲染与按需展开）
@@ -295,4 +317,31 @@ impl SftpClient {
             .map_err(|e| map_err(path, e))?;
         Ok(())
     }
+}
+
+/// 下载流水线裸会话：复刻 SftpSession::new 的 init/limits 握手，
+/// 但保留 RawSftpSession 以做并发显式 offset 读（SftpSession 不暴露内部裸会话）
+async fn open_download_raw(conn: &SshConnection) -> Result<Arc<RawSftpSession>, SftpError> {
+    let ch = conn.open_session_channel().await?;
+    ch.request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| SftpError::Subsystem(e.to_string()))?;
+    let mut raw = RawSftpSession::new_with_config(ch.into_stream(), Config::default());
+    let version = raw
+        .init()
+        .await
+        .map_err(|e| SftpError::Subsystem(e.to_string()))?;
+    if version
+        .extensions
+        .get(russh_sftp::extensions::LIMITS)
+        .is_some_and(|v| v == "1")
+    {
+        let limits = Limits::from(
+            raw.limits()
+                .await
+                .map_err(|e| SftpError::Subsystem(e.to_string()))?,
+        );
+        raw.set_limits(limits);
+    }
+    Ok(Arc::new(raw))
 }

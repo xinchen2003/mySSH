@@ -1398,3 +1398,75 @@ async fn slot_metadata_recover_does_not_touch_data() {
     let es = again.list("/").await.expect("data list");
     assert!(es.iter().any(|e| e.name == "a.bin"));
 }
+
+/// PR-16 P4-1：流水线读路径（> CHUNK 且跨多个 read-ahead 窗口）字节级一致。
+/// 3MiB + 奇数尾：12 块 + 尾包，窗口 8 在途 → 必然乱序完成 + 跨窗口。
+#[tokio::test]
+async fn download_pipelined_byte_exact_across_windows() {
+    let root = temp_root("pipe");
+    let payload = pattern(3 * 1024 * 1024 + 12345);
+    std::fs::write(root.join("big.bin"), &payload).unwrap();
+    let port = start_sftp_server(root).await;
+    let conn = connect(port).await;
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        make_slot(conn).await,
+        2,
+        tokio::runtime::Handle::current(),
+    ));
+
+    let local = temp_root("pipe-local").join("big.bin");
+    let id = q
+        .enqueue_download(
+            "/big.bin".into(),
+            local.clone(),
+            payload.len() as u64,
+            core_sftp::OnExists::Resume,
+        )
+        .await;
+    let info = wait_done(&q, &id).await;
+    assert_eq!(
+        info.state,
+        core_sftp::TransferState::Done,
+        "{:?}",
+        info.error
+    );
+    assert_eq!(info.bytes_done, payload.len() as u64);
+    assert_eq!(std::fs::read(&local).unwrap(), payload);
+}
+
+/// PR-16 P4-1：流水线路径的断点续传——本地预置非块对齐前缀（> CHUNK），
+/// resume 偏移落在窗口中段，最终文件必须与远端逐字节一致。
+#[tokio::test]
+async fn download_pipelined_resume_midwindow() {
+    let root = temp_root("pipe-resume");
+    let full = pattern(2 * 1024 * 1024 + 777);
+    std::fs::write(root.join("full.bin"), &full).unwrap();
+    let port = start_sftp_server(root).await;
+    let conn = connect(port).await;
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        make_slot(conn).await,
+        2,
+        tokio::runtime::Handle::current(),
+    ));
+
+    // 预置 700_001 字节前缀（非 256K 对齐，落在第二个窗口中段）
+    let local = temp_root("pipe-resume-local").join("full.bin");
+    std::fs::write(&local, &full[..700_001]).unwrap();
+
+    let id = q
+        .enqueue_download(
+            "/full.bin".into(),
+            local.clone(),
+            full.len() as u64,
+            core_sftp::OnExists::Resume,
+        )
+        .await;
+    let info = wait_done(&q, &id).await;
+    assert_eq!(
+        info.state,
+        core_sftp::TransferState::Done,
+        "{:?}",
+        info.error
+    );
+    assert_eq!(std::fs::read(&local).unwrap(), full);
+}

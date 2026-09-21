@@ -179,6 +179,9 @@ pub struct TransferQueue {
 }
 
 const CHUNK: usize = 256 * 1024;
+/// 下载 read-ahead 流水线深度（PR-16 P4-1）：在途窗口 = DEPTH × CHUNK = 2MiB。
+/// 先取保守值；P4-2 参数矩阵（effective_packet × in_flight × RTT）出数据后再调
+const READ_AHEAD_DEPTH: usize = 8;
 
 /// 锁中毒自愈（panic 现场已恢复，数据本身无损坏语义）
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -530,15 +533,6 @@ pub(crate) async fn download_once(
     let offset = resume_offset(local_len, total, on_exists);
     t.bytes_done.store(offset, Ordering::Relaxed);
 
-    let mut src = sftp.open_read(&remote).await?;
-    if offset > 0 {
-        src.seek(std::io::SeekFrom::Start(offset))
-            .await
-            .map_err(|e| SftpError::LocalIo {
-                path: remote.clone(),
-                reason: e.to_string(),
-            })?;
-    }
     if let Some(parent) = local.parent() {
         std::fs::create_dir_all(parent).map_err(|e| SftpError::LocalIo {
             path: parent.display().to_string(),
@@ -557,42 +551,192 @@ pub(crate) async fn download_once(
             reason: e.to_string(),
         })?;
 
-    let mut buf = vec![0u8; CHUNK];
-    loop {
-        if t.cancel.load(Ordering::Relaxed) {
-            return Err(SftpError::Interrupted {
-                done: t.bytes_done.load(Ordering::Relaxed),
-                total: lock(&t.info).bytes_total,
-            });
+    // 已知全长且余量超过一块 → 显式 offset 流水线读（PR-16 P4-1）；
+    // 无裸会话/小文件/未知全长 → 原串行路径
+    let remaining = total.saturating_sub(offset);
+    match sftp.download_raw().filter(|_| remaining > CHUNK as u64) {
+        Some(raw) => {
+            download_pipelined(raw, &remote, &local, &t, &mut dst, offset, total).await?;
         }
-        if t.pause.load(Ordering::Relaxed) {
-            return Err(SftpError::Interrupted {
-                done: t.bytes_done.load(Ordering::Relaxed),
-                total: lock(&t.info).bytes_total,
-            });
+        None => {
+            let mut src = sftp.open_read(&remote).await?;
+            if offset > 0 {
+                src.seek(std::io::SeekFrom::Start(offset))
+                    .await
+                    .map_err(|e| SftpError::LocalIo {
+                        path: remote.clone(),
+                        reason: e.to_string(),
+                    })?;
+            }
+            let mut buf = vec![0u8; CHUNK];
+            loop {
+                if t.cancel.load(Ordering::Relaxed) || t.pause.load(Ordering::Relaxed) {
+                    return Err(SftpError::Interrupted {
+                        done: t.bytes_done.load(Ordering::Relaxed),
+                        total: lock(&t.info).bytes_total,
+                    });
+                }
+                let n = src
+                    .read(&mut buf)
+                    .await
+                    .map_err(|e| SftpError::RemotePath {
+                        path: remote.clone(),
+                        reason: e.to_string(),
+                    })?;
+                if n == 0 {
+                    break;
+                }
+                dst.write_all(&buf[..n])
+                    .await
+                    .map_err(|e| SftpError::LocalIo {
+                        path: local.display().to_string(),
+                        reason: e.to_string(),
+                    })?;
+                t.bytes_done.fetch_add(n as u64, Ordering::Relaxed);
+            }
         }
-        let n = src
-            .read(&mut buf)
-            .await
-            .map_err(|e| SftpError::RemotePath {
-                path: remote.clone(),
-                reason: e.to_string(),
-            })?;
-        if n == 0 {
-            break;
-        }
-        dst.write_all(&buf[..n])
-            .await
-            .map_err(|e| SftpError::LocalIo {
-                path: local.display().to_string(),
-                reason: e.to_string(),
-            })?;
-        t.bytes_done.fetch_add(n as u64, Ordering::Relaxed);
     }
     dst.flush().await.map_err(|e| SftpError::LocalIo {
         path: local.display().to_string(),
         reason: e.to_string(),
     })?;
+    Ok(())
+}
+
+/// 显式 offset 流水线读（PR-16 P4-1）：固定窗口在途 READ_AHEAD_DEPTH 个 f_read，
+/// 乱序完成 → BTreeMap 重排 → 只落盘连续前缀。
+/// 风险对策（对应子设计风险清单）：
+/// - 乱序：重排缓冲，bytes_done 恒等于已落盘连续前缀，暂停/失败后 resume 安全
+/// - 短包：SFTP 允许短读（仅 0 = EOF）——缺口尾部重新入队补齐
+/// - EOF/服务端缩水：total 由 stat 预知，请求区间精确覆盖 [offset,total)，正常不见 EOF；
+///   读到 0 = 服务端缩水 → 停发新请求，落定已有前缀后按完成收尾（与串行 EOF 语义一致）
+/// - 中途失败：JoinSet 全 abort，错误上抛由队列重试（重试从 bytes_done 续）
+/// - 取消/暂停：每轮等待前检查，中断点 = 已落盘连续前缀；在途请求 abort
+async fn download_pipelined(
+    raw: Arc<russh_sftp::client::RawSftpSession>,
+    remote: &str,
+    local: &std::path::Path,
+    t: &Arc<TransferInner>,
+    dst: &mut tokio::fs::File,
+    offset: u64,
+    total: u64,
+) -> Result<(), SftpError> {
+    let handle = raw
+        .open(
+            remote.to_string(),
+            russh_sftp::protocol::OpenFlags::READ,
+            russh_sftp::protocol::FileAttributes::default(),
+        )
+        .await
+        .map_err(|e| SftpError::RemotePath {
+            path: remote.to_string(),
+            reason: e.to_string(),
+        })?
+        .handle;
+    let result = pipelined_body(&raw, &handle, remote, local, t, dst, offset, total).await;
+    // 句柄尽力关闭（不遮蔽业务结果；在途读已被 abort/排空）
+    let _ = raw.close(handle).await;
+    result
+}
+
+/// 在途读结果：(请求偏移, 请求长度, 数据)
+type ReadDone = Result<(u64, u64, Vec<u8>), String>;
+
+#[allow(clippy::too_many_arguments)]
+async fn pipelined_body(
+    raw: &Arc<russh_sftp::client::RawSftpSession>,
+    handle: &str,
+    remote: &str,
+    local: &std::path::Path,
+    t: &Arc<TransferInner>,
+    dst: &mut tokio::fs::File,
+    offset: u64,
+    total: u64,
+) -> Result<(), SftpError> {
+    let mut next = offset; // 下一个待发请求偏移
+    let mut write_at = offset; // 已落盘游标（连续前缀）
+    let mut in_flight: tokio::task::JoinSet<ReadDone> = tokio::task::JoinSet::new();
+    let mut reorder: std::collections::BTreeMap<u64, Vec<u8>> = std::collections::BTreeMap::new();
+    // 短读缺口补读队列（(偏移, 长度)，恒在已请求区间内）
+    let mut missing: std::collections::VecDeque<(u64, u64)> = std::collections::VecDeque::new();
+    let mut shrink_eof = false; // 服务端缩水：停发新请求
+
+    loop {
+        // 补满窗口：先补短读缺口，再发新区间
+        while !shrink_eof && in_flight.len() < READ_AHEAD_DEPTH {
+            let (at, len) = match missing.pop_front() {
+                Some(m) => m,
+                None if next < total => {
+                    let len = (total - next).min(CHUNK as u64);
+                    next += len;
+                    (next - len, len)
+                }
+                None => break,
+            };
+            let raw2 = raw.clone();
+            let h = handle.to_string();
+            in_flight.spawn(async move {
+                raw2.read(h, at, len as u32)
+                    .await
+                    .map(|d| (at, len, d.data))
+                    .map_err(|e| e.to_string())
+            });
+        }
+        if in_flight.is_empty() {
+            break;
+        }
+        // 取消/暂停：中断点 = 已落盘连续前缀
+        if t.cancel.load(Ordering::Relaxed) || t.pause.load(Ordering::Relaxed) {
+            in_flight.abort_all();
+            return Err(SftpError::Interrupted {
+                done: write_at,
+                total,
+            });
+        }
+        match in_flight.join_next().await {
+            Some(Ok(Ok((at, want, data)))) => {
+                if data.is_empty() {
+                    shrink_eof = true; // 服务端缩水：后续请求不再发
+                    continue;
+                }
+                let got = data.len() as u64;
+                reorder.insert(at, data);
+                if got < want {
+                    missing.push_back((at + got, want - got)); // 短读补尾
+                }
+            }
+            Some(Ok(Err(reason))) => {
+                in_flight.abort_all();
+                return Err(SftpError::RemotePath {
+                    path: remote.to_string(),
+                    reason,
+                });
+            }
+            Some(Err(join_err)) => {
+                in_flight.abort_all();
+                return Err(SftpError::RemotePath {
+                    path: remote.to_string(),
+                    reason: join_err.to_string(),
+                });
+            }
+            None => break,
+        }
+        // 只落盘连续前缀
+        while reorder
+            .first_key_value()
+            .is_some_and(|(&at, _)| at == write_at)
+        {
+            let Some((_, data)) = reorder.pop_first() else {
+                break;
+            };
+            dst.write_all(&data).await.map_err(|e| SftpError::LocalIo {
+                path: local.display().to_string(),
+                reason: e.to_string(),
+            })?;
+            write_at += data.len() as u64;
+        }
+        t.bytes_done.store(write_at, Ordering::Relaxed);
+    }
     Ok(())
 }
 
