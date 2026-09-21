@@ -110,6 +110,7 @@ pub fn run() {
             terminal::term_input,
             terminal::term_input_raw,
             terminal::term_credit,
+            terminal::term_focus,
             terminal::term_resize,
             terminal::term_close,
             terminal::hostkey_confirm,

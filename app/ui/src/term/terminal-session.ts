@@ -36,6 +36,9 @@ export class TerminalSession {
   inputHook: ((data: string) => void) | null = null;
   /** 终端内文件传输（ZMODEM/trzsz）：仅 UTF-8 会话挂载；GBK 会话为 null */
   private transfer: TransferFilter | null = null;
+  /** 前台标记（PR-17 二期）：后台 tab 由后端 ring buffer 接管；开链前变更挂起，
+   *  tabId 赋值后补同步（与 pendingWrites 同手法） */
+  private focused = true;
   /** 传输结果 toast 透传（app-store notify）；缺省丢弃 */
   private readonly notify: (msg: string, level?: NotificationLevel) => void;
 
@@ -120,6 +123,8 @@ export class TerminalSession {
       rows: openedRows,
     });
     this.tabId = res.tabId;
+    // 开链前若已知在后台（隐藏 tab 挂载），补同步 focus 标记
+    if (!this.focused) void invoke('term_focus', { tabId: res.tabId, focused: false });
     // 补发开链前缓冲的写入
     for (const s of this.pendingWrites.splice(0)) this.write(s);
 
@@ -146,6 +151,12 @@ export class TerminalSession {
       }),
     );
     return this.tabId;
+  }
+
+  /** 前台/后台切换（PR-17 二期）：后台信用耗尽转 ring buffer，回前台回放 */
+  setFocused(focused: boolean): void {
+    this.focused = focused;
+    if (this.tabId) void invoke('term_focus', { tabId: this.tabId, focused });
   }
 
   /** 发送一段输入（广播扇出用；OSC 7 钩子/分屏 cd 注入已移除——不向远程 shell 注入字节）。

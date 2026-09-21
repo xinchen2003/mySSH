@@ -72,6 +72,8 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
   const closePane = useAppStore((s) => s.closePane);
   /** 终态原因（重连耗尽/连接失败）；非空时渲染非阻塞原位操作层。初值取保活池缓存（重挂恢复） */
   const [dead, setDead] = useState<string | null>(() => paneRuntimes.get(pane.id)?.deadMsg ?? null);
+  // PR-17 二期：本 pane 所属 tab 是否前台——驱动后端 ring buffer 行为
+  const isActiveTab = useAppStore((s) => s.activeId === tab.id);
   /** 挂载效应内注册的立即重连闭包（复用同一 xterm 与连接 target） */
   const reconnectRef = useRef<() => void>(() => undefined);
   /** 右键菜单（批次四 10.2）；canCopy 在打开瞬间采样，菜单存续期间不刷新 */
@@ -79,6 +81,12 @@ export function TerminalView({ tab, pane }: { tab: Tab; pane: Pane }) {
   /** 多行粘贴确认（批次十一）：非空时渲染确认框，text 为待粘贴原文 */
   const [pasteConfirm, setPasteConfirm] = useState<{ text: string; lines: number } | null>(null);
   const t = useT();
+
+  // 前台/后台同步给后端（PR-17 二期：后台 tab 信用耗尽进 ring buffer，
+  // 回前台回放 + 截断提示，C11）
+  useEffect(() => {
+    pane.session.setFocused(isActiveTab);
+  }, [isActiveTab, pane.session]);
 
   /** 统一粘贴入口（快捷键/右键直贴/菜单项三路共用）：判定规则抽在 term/paste.ts
    *  （含测试）；确认框默认焦点在「取消」（ConfirmDialog 语义），防误回车批量执行命令 */

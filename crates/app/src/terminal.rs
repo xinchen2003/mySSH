@@ -199,6 +199,65 @@ pub struct TermOpenSpec {
     pub login_macro: Option<String>,
 }
 
+/// 后台 tab 环形缓冲上限（PR-17 二期资源表 term.ring.cap 行）
+const RING_CAP: usize = 1024 * 1024;
+/// 后台 tab 聚合窗降权（PR-17 二期：前台 8ms → 后台 500ms，先降权再截断）
+const BG_AGG_WINDOW: Duration = Duration::from_millis(500);
+/// ring 回放单块上限
+const RING_DRAIN_CHUNK: usize = 64 * 1024;
+
+/// 后台 tab ring buffer（PR-17 二期 / C11：禁止静默截断字节流）：
+/// 覆盖最旧字节必计 truncated；回前台时先注入提示行再按序回放。
+struct RingBuf {
+    buf: Mutex<std::collections::VecDeque<u8>>,
+    cap: usize,
+    /// 累计被覆盖丢弃的字节数（回放时取出归零并注入提示）
+    truncated: AtomicU64,
+}
+
+impl RingBuf {
+    fn new(cap: usize) -> Self {
+        Self {
+            buf: Mutex::new(std::collections::VecDeque::new()),
+            cap,
+            truncated: AtomicU64::new(0),
+        }
+    }
+
+    fn push(&self, data: &[u8]) {
+        // 单批超 cap：只留尾部（被丢弃的批头计入 truncated——C11 无静默丢弃）
+        let data = if data.len() > self.cap {
+            let drop = data.len() - self.cap;
+            self.truncated.fetch_add(drop as u64, Ordering::Relaxed);
+            &data[drop..]
+        } else {
+            data
+        };
+        let mut b = self.buf.lock();
+        let overflow = (b.len() + data.len()).saturating_sub(self.cap);
+        if overflow > 0 {
+            let evict = overflow.min(b.len());
+            b.drain(..evict);
+            self.truncated.fetch_add(evict as u64, Ordering::Relaxed);
+        }
+        b.extend(data.iter().copied());
+    }
+
+    fn pop_chunk(&self, n: usize) -> Vec<u8> {
+        let mut b = self.buf.lock();
+        let k = n.min(b.len());
+        b.drain(..k).collect()
+    }
+
+    fn take_truncated(&self) -> u64 {
+        self.truncated.swap(0, Ordering::Relaxed)
+    }
+
+    fn len(&self) -> usize {
+        self.buf.lock().len()
+    }
+}
+
 fn default_encoding() -> String {
     "utf-8".into()
 }
@@ -383,6 +442,10 @@ struct TermSession {
     /// 最新终端尺寸：重连开 PTY 用（resize 命令实时更新）
     cols: AtomicU64,
     rows: AtomicU64,
+    /// 前台标记（PR-17 二期）：后台 tab 信用耗尽转 ring buffer 而非反压远端
+    focused: Arc<AtomicBool>,
+    /// 后台输出环形缓冲（C11：截断可观测，回前台回放）
+    ring: Arc<RingBuf>,
     task: tauri::async_runtime::JoinHandle<()>,
 }
 
@@ -434,6 +497,10 @@ impl TerminalManager {
                     "tabId": id,
                     "streamEpoch": s.credit.epoch,
                     "outstandingBytes": s.credit.outstanding(),
+                    // PR-17 二期：后台 ring 观测（term.outstanding/term.ring 资源行）
+                    "focused": s.focused.load(Ordering::Relaxed),
+                    "ringBytes": s.ring.len(),
+                    "ringTruncated": s.ring.truncated.load(Ordering::Relaxed),
                     "creditAvailable": s.credit.credits.available_permits(),
                     "streamBroken": s.credit.is_broken(),
                 })
@@ -506,6 +573,8 @@ pub async fn term_open(
             let login_macro = macro_lines(ls_login_macro.as_deref().unwrap_or(""));
             let shell = pty.shell.clone();
             let credit = Arc::new(CreditState::new(stream_epoch));
+            let focused = Arc::new(AtomicBool::new(true));
+            let ring = Arc::new(RingBuf::new(RING_CAP));
             let writer = Arc::new(AnyWriter::Local(pty.writer));
             let task = tauri::async_runtime::spawn(supervise(SuperviseCtx {
                 tab_id: tab_id.clone(),
@@ -524,6 +593,8 @@ pub async fn term_open(
                 data,
                 events: events.clone(),
                 credit: credit.clone(),
+                focused: focused.clone(),
+                ring: ring.clone(),
                 reader: AnyReader::Local(pty.reader),
             }));
             mgr.sessions.lock().insert(
@@ -535,6 +606,8 @@ pub async fn term_open(
                     credit,
                     cols: AtomicU64::new(cols as u64),
                     rows: AtomicU64::new(rows as u64),
+                    focused,
+                    ring,
                     task,
                 },
             );
@@ -664,6 +737,8 @@ pub async fn term_open(
     let writer = Arc::new(AnyWriter::Ssh(writer));
 
     let credit = Arc::new(CreditState::new(stream_epoch));
+    let focused = Arc::new(AtomicBool::new(true));
+    let ring = Arc::new(RingBuf::new(RING_CAP));
     let task = tauri::async_runtime::spawn(supervise(SuperviseCtx {
         tab_id: tab_id.clone(),
         mgr: mgr.clone(),
@@ -683,6 +758,8 @@ pub async fn term_open(
         data,
         events: events.clone(),
         credit: credit.clone(),
+        focused: focused.clone(),
+        ring: ring.clone(),
         reader: AnyReader::Ssh(reader),
     }));
 
@@ -695,6 +772,8 @@ pub async fn term_open(
             credit,
             cols: AtomicU64::new(cols as u64),
             rows: AtomicU64::new(rows as u64),
+            focused,
+            ring,
             task,
         },
     );
@@ -750,6 +829,9 @@ struct SuperviseCtx {
     data: Channel<Response>,
     events: Channel<Value>,
     credit: Arc<CreditState>,
+    /// 前台标记与 ring（PR-17 二期；与 TermSession 共享 Arc）
+    focused: Arc<AtomicBool>,
+    ring: Arc<RingBuf>,
     reader: AnyReader,
 }
 
@@ -810,6 +892,8 @@ async fn supervise(mut ctx: SuperviseCtx) {
             &mut ctx.reader,
             &ctx.data,
             &ctx.credit,
+            &ctx.focused,
+            &ctx.ring,
             ctx.out_encoding,
             su_watch.as_mut(),
             &ctx.writer,
@@ -974,6 +1058,25 @@ pub async fn term_credit(
     Ok(())
 }
 
+/// 前台/后台标记（PR-17 二期）：后台 tab 信用耗尽转 ring buffer；
+/// 回前台由读循环检查点触发回放（截断提示先行，C11）
+#[tauri::command]
+pub async fn term_focus(
+    state: tauri::State<'_, Arc<TerminalManager>>,
+    tab_id: String,
+    focused: bool,
+) -> Result<(), String> {
+    let entry = state
+        .sessions
+        .lock()
+        .get(&tab_id)
+        .map(|s| s.focused.clone());
+    if let Some(f) = entry {
+        f.store(focused, Ordering::Release);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn term_resize(
     tab_id: String,
@@ -1065,6 +1168,8 @@ async fn read_loop(
     reader: &mut AnyReader,
     data_ch: &Channel<Response>,
     credit: &Arc<CreditState>,
+    focused: &Arc<AtomicBool>,
+    ring: &Arc<RingBuf>,
     out_encoding: Option<&'static encoding_rs::Encoding>,
     // su 二级登录：一次性密码 expect（Some = 本轮 shell 武装中）
     mut su_watch: Option<&mut SuWatch>,
@@ -1073,12 +1178,24 @@ async fn read_loop(
     macro_pending: &mut Option<MacroPending>,
 ) {
     let mut agg: Vec<u8> = Vec::with_capacity(AGG_CAP);
-    let mut flush_at = Instant::now() + AGG_WINDOW;
+    // 降权（PR-17 二期）：后台 tab 聚合窗 8ms → 500ms
+    let window = |f: &AtomicBool| {
+        if f.load(Ordering::Acquire) {
+            AGG_WINDOW
+        } else {
+            BG_AGG_WINDOW
+        }
+    };
+    let mut flush_at = Instant::now() + window(focused);
     // 非 utf-8：流式 Decoder（跨帧半字符内部缓冲），decode 产物进既有聚合通路；
     // utf-8（None）：完全直通，不引入任何拷贝
     let mut decoder = out_encoding.map(crate::encoding::OutputDecoder::new);
 
     loop {
+        // 回前台：先回放 ring（截断提示先行），再处理新输出——顺序即时间序
+        if focused.load(Ordering::Acquire) && ring.len() > 0 {
+            drain_ring(data_ch, credit, focused, ring).await;
+        }
         let delay = tokio::time::sleep_until(tokio::time::Instant::from_std(flush_at));
         tokio::pin!(delay);
         tokio::select! {
@@ -1114,42 +1231,28 @@ async fn read_loop(
                             None => agg.extend_from_slice(&bytes),
                         }
                         if agg.len() >= AGG_CAP {
-                            flush(data_ch, &mut agg, credit).await;
-                            flush_at = Instant::now() + AGG_WINDOW;
+                            flush(data_ch, &mut agg, credit, focused, ring).await;
+                            flush_at = Instant::now() + window(focused);
                         }
                     }
                     None => {
-                        flush(data_ch, &mut agg, credit).await;
+                        flush(data_ch, &mut agg, credit, focused, ring).await;
                         return;
                     }
                 }
             }
             _ = &mut delay => {
                 if !agg.is_empty() {
-                    flush(data_ch, &mut agg, credit).await;
+                    flush(data_ch, &mut agg, credit, focused, ring).await;
                 }
-                flush_at = Instant::now() + AGG_WINDOW;
+                flush_at = Instant::now() + window(focused);
             }
         }
     }
 }
 
-async fn flush(data_ch: &Channel<Response>, agg: &mut Vec<u8>, credit: &Arc<CreditState>) {
-    if agg.is_empty() {
-        return;
-    }
-    let buf = std::mem::replace(agg, Vec::with_capacity(AGG_CAP));
-    // 断代（send 已失败，前端不可达）：数据直接丢弃，不再消耗信用
-    if credit.is_broken() {
-        return;
-    }
-    // 等待前端信用——背压点；等待期间读取循环挂起。
-    // permit 必须 forget，否则 drop 即归还，闸门形同虚设（实测踩中）。
-    match credit.credits.acquire_many(buf.len() as u32).await {
-        Ok(permit) => permit.forget(),
-        Err(_) => return, // 信号量关闭（会话拆除）：丢弃残余数据
-    }
-    // C4 顺序：分配 frameSeq/offset → 登记 sent range → send
+/// 组帧发送（信用已由调用方取得；C4：alloc 登记先于 send，失败断代不回滚）
+fn send_frame(data_ch: &Channel<Response>, credit: &Arc<CreditState>, buf: Vec<u8>) {
     let Some(frame) = credit.alloc_frame(buf) else {
         return; // offset 溢出断代（信用已耗，随代际销毁）
     };
@@ -1160,9 +1263,105 @@ async fn flush(data_ch: &Channel<Response>, agg: &mut Vec<u8>, credit: &Arc<Cred
     }
 }
 
+async fn flush(
+    data_ch: &Channel<Response>,
+    agg: &mut Vec<u8>,
+    credit: &Arc<CreditState>,
+    focused: &Arc<AtomicBool>,
+    ring: &Arc<RingBuf>,
+) {
+    if agg.is_empty() {
+        return;
+    }
+    let buf = std::mem::replace(agg, Vec::with_capacity(AGG_CAP));
+    // 断代（send 已失败，前端不可达）：数据直接丢弃，不再消耗信用
+    if credit.is_broken() {
+        return;
+    }
+    if focused.load(Ordering::Acquire) {
+        // 前台：等待前端信用——背压点；等待期间读取循环挂起。
+        // permit 必须 forget，否则 drop 即归还，闸门形同虚设（实测踩中）。
+        match credit.credits.acquire_many(buf.len() as u32).await {
+            Ok(permit) => permit.forget(),
+            Err(_) => return, // 信号量关闭（会话拆除）：丢弃残余数据
+        }
+    } else {
+        // 后台 tab（PR-17 二期）：有信用直发；耗尽不等待（不反压远端进程），
+        // 转 ring buffer——覆盖最旧字节必计 truncated，回前台提示并回放（C11）
+        match credit.credits.try_acquire_many(buf.len() as u32) {
+            Ok(permit) => permit.forget(),
+            Err(_) => {
+                ring.push(&buf);
+                return;
+            }
+        }
+    }
+    send_frame(data_ch, credit, buf);
+}
+
+/// 回前台回放（C11）：先注入截断提示行（如有），再按序回放 ring；
+/// 走正常信用闸 + 帧分配，offset 语义与常态输出一致。
+/// 中途再次退到后台即停（剩余留 ring 等下次前台）。
+async fn drain_ring(
+    data_ch: &Channel<Response>,
+    credit: &Arc<CreditState>,
+    focused: &Arc<AtomicBool>,
+    ring: &Arc<RingBuf>,
+) {
+    let truncated = ring.take_truncated();
+    if truncated > 0 {
+        let notice = format!(
+            "\r\n\x1b[1;33m[myssh] 后台输出已截断 {truncated} 字节（过载保护） \
+             / background output truncated {truncated} bytes (overload protection)\x1b[0m\r\n"
+        );
+        if credit
+            .credits
+            .acquire_many(notice.len() as u32)
+            .await
+            .is_ok()
+        {
+            send_frame(data_ch, credit, notice.into_bytes());
+        }
+    }
+    while focused.load(Ordering::Acquire) {
+        let chunk = ring.pop_chunk(RING_DRAIN_CHUNK);
+        if chunk.is_empty() {
+            break;
+        }
+        match credit.credits.acquire_many(chunk.len() as u32).await {
+            Ok(permit) => permit.forget(),
+            Err(_) => return, // 会话拆除
+        }
+        send_frame(data_ch, credit, chunk);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ring_buf_fifo_and_cap_eviction_counts_truncated() {
+        let r = RingBuf::new(8);
+        r.push(b"abcd");
+        r.push(b"efgh");
+        assert_eq!(r.len(), 8);
+        // 溢出 2 字节：覆盖最旧 "ab"，截断计数 2；buffer = "cdefghij"
+        r.push(b"ij");
+        assert_eq!(r.len(), 8);
+        assert_eq!(r.pop_chunk(3), b"cde".to_vec());
+        assert_eq!(r.pop_chunk(64), b"fghij".to_vec());
+        assert_eq!(r.take_truncated(), 2);
+        assert_eq!(r.take_truncated(), 0, "取出即归零");
+    }
+
+    #[test]
+    fn ring_buf_push_larger_than_cap_keeps_tail() {
+        let r = RingBuf::new(4);
+        r.push(b"012345");
+        assert_eq!(r.pop_chunk(64), b"2345".to_vec());
+        assert_eq!(r.take_truncated(), 2);
+    }
 
     #[test]
     fn reconnect_attempts_parse_fallback_and_clamp() {
