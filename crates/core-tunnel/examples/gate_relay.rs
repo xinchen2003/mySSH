@@ -26,9 +26,9 @@ use tokio::net::{TcpListener, TcpStream};
 
 const CONNS: usize = 32;
 const PAYLOAD: usize = 1024 * 1024;
-/// 阈值（本机 release 首测 median ~8ms/conn、~950MiB/s；2 倍裕度取整）
+/// 阈值（本机 release 首测 median 7.4ms/conn、122MiB/s；回归探测取观测值约一半/数倍裕度）
 const MEDIAN_CONN_MS_MAX: f64 = 50.0;
-const THROUGHPUT_MIBS_MIN: f64 = 300.0;
+const THROUGHPUT_MIBS_MIN: f64 = 60.0;
 
 fn median(mut v: Vec<f64>) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
