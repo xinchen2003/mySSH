@@ -1,7 +1,7 @@
 //! 队列化传输：并发可控、断点续传、失败重试、暂停/取消、进度回调。
 //!
 //! 设计要点：
-//! - 并发上限用 Semaphore（默认 3），超过排队
+//! - 并发上限用 Budget 账本（PR-17；默认 3），超过排队
 //! - 每个传输 = 独立 tokio 任务，分块 256KB（对齐 russh-sftp max_packet_len）
 //! - 续传：下载看本地已有长度；上传先 stat 远端长度，从断点继续
 //! - 重试：失败自动重试（默认 2 次），每次从当前断点继续
@@ -16,7 +16,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::Semaphore;
 pub type TransferId = String;
 
 /// 目标已存在时的处理策略。
@@ -170,8 +169,9 @@ pub struct TransferQueue {
     /// data 代际重建后重试自动落到新 client；失败经 record_error 上报可疑
     data: Arc<SftpSlot>,
     rt: tokio::runtime::Handle,
-    /// 执行槽（DirectoryJob worker 与单文件传输共享同一并发预算，ADR 0001）
-    pub(crate) permits: Arc<Semaphore>,
+    /// 执行槽（DirectoryJob worker 与单文件传输共享同一并发预算，ADR 0001；
+    /// PR-17 账本化：active/rejected 指标直接可读）
+    pub(crate) permits: Arc<core_policy::Budget>,
     transfers: Mutex<HashMap<TransferId, Arc<TransferInner>>>,
     id_seq: AtomicU64,
     max_retries: u32,
@@ -193,7 +193,7 @@ impl TransferQueue {
         Self {
             data,
             rt,
-            permits: Arc::new(Semaphore::new(max_concurrent.max(1))),
+            permits: core_policy::Budget::new("sftp.exec", max_concurrent.max(1)),
             transfers: Mutex::new(HashMap::new()),
             id_seq: AtomicU64::new(1),
             max_retries: 2,
@@ -202,8 +202,13 @@ impl TransferQueue {
     }
 
     /// 执行槽句柄（DirectoryJobScheduler 与单文件传输共享同一并发预算，ADR 0001）
-    pub fn permits_handle(&self) -> Arc<Semaphore> {
+    pub fn permits_handle(&self) -> Arc<core_policy::Budget> {
         self.permits.clone()
+    }
+
+    /// 执行槽预算快照（PR-17 perf_json governor 节数据源）
+    pub fn exec_budget_snapshot(&self) -> core_policy::BudgetSnapshot {
+        self.permits.snapshot()
     }
 
     pub fn set_progress_callback(&self, cb: ProgressFn) {
@@ -339,11 +344,7 @@ impl TransferQueue {
                 }
                 continue; // 回顶部：cancel 分支或重新竞争 permit
             }
-            let permit = self
-                .permits
-                .acquire()
-                .await
-                .unwrap_or_else(|_| unreachable!("semaphore closed"));
+            let permit = self.permits.acquire().await;
             // acquire 等待期间可能被暂停/取消：二次确认，避免持 permit 进传输
             if t.cancel.load(Ordering::Relaxed) || t.pause.load(Ordering::Relaxed) {
                 drop(permit);

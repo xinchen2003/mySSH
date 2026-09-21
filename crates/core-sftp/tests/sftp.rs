@@ -998,7 +998,7 @@ fn make_scheduler(
     DirectoryJobScheduler::with_caps(
         data,
         tokio::runtime::Handle::current(),
-        std::sync::Arc::new(tokio::sync::Semaphore::new(3)),
+        core_policy::Budget::new("sftp.exec", 3),
         std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
         job_caps(),
     )
@@ -1273,7 +1273,7 @@ async fn job_depth_guard() {
     let sched = DirectoryJobScheduler::with_caps(
         make_slot(conn).await,
         tokio::runtime::Handle::current(),
-        std::sync::Arc::new(tokio::sync::Semaphore::new(3)),
+        core_policy::Budget::new("sftp.exec", 3),
         std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
         caps,
     );

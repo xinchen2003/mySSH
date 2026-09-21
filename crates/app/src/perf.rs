@@ -43,6 +43,8 @@ pub async fn perf_stats(
         "sftp": sftp.perf_json(),
         "tunnels": tunnels_json,
         "process": process_json(),
+        // PR-17 一期：资源表 + 隧道 channel / SFTP 执行槽账本快照
+        "governor": crate::governor::perf_json(&tunnels, &sftp),
     }))
 }
 

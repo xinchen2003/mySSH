@@ -43,7 +43,8 @@ impl Default for SchedulerCaps {
     fn default() -> Self {
         Self {
             frontier: 1024,
-            ready: 512,
+            // 上限值单一事实源在 core_policy::budget::caps（PR-17 资源表）
+            ready: core_policy::budget::caps::SFTP_READY,
             in_flight: 4,
             max_depth: 64,
             failed_entries: 256,
@@ -248,8 +249,8 @@ pub struct DirectoryJobScheduler {
     /// 数据面 subsystem 槽（PR-11/C8）：扫描/传输每次操作经 get() 取当前代际
     data: Arc<SftpSlot>,
     rt: tokio::runtime::Handle,
-    /// 执行槽：与 TransferQueue 共享同一信号量（ADR：job 与单文件传输同预算）
-    permits: Arc<Semaphore>,
+    /// 执行槽：与 TransferQueue 共享同一预算账本（ADR：job 与单文件传输同预算）
+    permits: Arc<core_policy::Budget>,
     /// 本地递归扫描配额（app 注入 FsIoLimiter scan 组）
     scan_io: Arc<Semaphore>,
     caps: SchedulerCaps,
@@ -268,7 +269,7 @@ impl DirectoryJobScheduler {
     pub fn new(
         data: Arc<SftpSlot>,
         rt: tokio::runtime::Handle,
-        permits: Arc<Semaphore>,
+        permits: Arc<core_policy::Budget>,
         scan_io: Arc<Semaphore>,
     ) -> Arc<Self> {
         Self::with_caps(data, rt, permits, scan_io, SchedulerCaps::default())
@@ -278,7 +279,7 @@ impl DirectoryJobScheduler {
     pub fn with_caps(
         data: Arc<SftpSlot>,
         rt: tokio::runtime::Handle,
-        permits: Arc<Semaphore>,
+        permits: Arc<core_policy::Budget>,
         scan_io: Arc<Semaphore>,
         caps: SchedulerCaps,
     ) -> Arc<Self> {
@@ -960,10 +961,7 @@ impl Worker {
                 self.report(&task, 0, TransferState::Canceled, None);
                 return;
             }
-            let permit = match self.sched.permits.acquire().await {
-                Ok(p) => p,
-                Err(_) => return, // 信号量关闭 = 调度器销毁
-            };
+            let permit = self.sched.permits.acquire().await;
             if self.job.cancel.load(Ordering::Relaxed) || self.job.pause.load(Ordering::Relaxed) {
                 drop(permit);
                 continue;

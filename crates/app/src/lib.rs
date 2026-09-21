@@ -6,6 +6,7 @@ mod encoding;
 mod exec;
 mod files;
 mod fs_limiter;
+mod governor;
 mod local_pty;
 mod logging;
 mod mcp;

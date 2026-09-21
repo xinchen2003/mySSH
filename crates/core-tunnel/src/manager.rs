@@ -178,7 +178,8 @@ enum Slot {
 
 /// Transport channel 上限（PR-15 组级；C10 数据结构预留多 Transport 语义，
 /// 第一期 max_transports=1 单槽，扩容依据指标再议）
-const GROUP_CHANNEL_MAX: usize = 256;
+/// 上限值单一事实源在 core_policy::budget::caps（PR-17 资源表）
+const GROUP_CHANNEL_MAX: usize = core_policy::budget::caps::TUNNEL_CHANNEL;
 /// channel permit 等待上限：超时明确拒绝（PR-15 第一期策略；
 /// 单隧道 max_conns 配额（C5 立即拒）在其上仍然独立先生效）
 const GROUP_CHANNEL_WAIT: Duration = Duration::from_secs(3);
@@ -196,8 +197,9 @@ struct TunnelGroup {
     last_error: Arc<Mutex<Option<String>>>,
     leases: AtomicU32,
     shutdown: watch::Sender<bool>,
-    /// Transport channel 上限（与单隧道 relay 配额独立叠加）
-    channel_sem: Arc<Semaphore>,
+    /// Transport channel 上限（PR-17 接入 Governor 账本：CAS 扣减 + 唤醒，禁止轮询；
+    /// 与单隧道 relay 配额独立叠加）
+    channel_budget: Arc<core_policy::Budget>,
 }
 
 /// 全局单例 runtime 在第一个隧道启动时建立
@@ -341,7 +343,7 @@ impl TunnelManager {
             last_error: Arc::new(Mutex::new(None)),
             leases: AtomicU32::new(1),
             shutdown: shutdown_tx,
-            channel_sem: Arc::new(Semaphore::new(GROUP_CHANNEL_MAX)),
+            channel_budget: core_policy::Budget::new("tunnel.chan", GROUP_CHANNEL_MAX),
         });
         // 组监督器：原单隧道 supervise_conn 原样提升到组级
         self.rt.spawn(supervise_conn(
@@ -364,6 +366,15 @@ impl TunnelManager {
             map.remove(&group.key);
             let _ = group.shutdown.send(true);
         }
+    }
+
+    /// 各组 channel 预算快照（PR-17 perf_json governor 节数据源）
+    pub fn channel_budgets(&self) -> Vec<core_policy::BudgetSnapshot> {
+        self.groups
+            .lock()
+            .values()
+            .map(|g| g.channel_budget.snapshot())
+            .collect()
     }
 
     /// 分阶段停止：标记停 accept → 等 supervisor drain/abort/join 完全部任务 →
@@ -577,7 +588,7 @@ async fn run_tunnel(
     let ctx = LinkCtx {
         slot: group.slot.subscribe(),
         notify: group.notify.clone(),
-        channel_sem: group.channel_sem.clone(),
+        channel_budget: group.channel_budget.clone(),
         policy: spec.on_disconnect,
         stats: entry.stats.clone(),
         status: entry.status.clone(),
@@ -790,8 +801,8 @@ fn reject_tcp(tcp: TcpStream) {
 struct LinkCtx {
     slot: watch::Receiver<Slot>,
     notify: Arc<Notify>,
-    /// 组级 Transport channel 上限（PR-15）
-    channel_sem: Arc<Semaphore>,
+    /// 组级 Transport channel 上限（PR-15 上限值；PR-17 账本化）
+    channel_budget: Arc<core_policy::Budget>,
     policy: DisconnectPolicy,
     stats: Arc<StatsAtomic>,
     /// 远端 tcpip_forward 注册成功后置 Listening（Remote 形态用）
@@ -810,19 +821,15 @@ async fn handle_local(
 ) -> RelayResult {
     // Transport channel 上限（PR-15）：等待 permit 最多 3s，超时明确拒绝
     let stats = &ctx.stats;
-    let _chan_permit =
-        match tokio::time::timeout(GROUP_CHANNEL_WAIT, ctx.channel_sem.clone().acquire_owned())
-            .await
-        {
-            Ok(Ok(p)) => p,
-            Ok(Err(_)) => return RelayResult::Failed, // 组已销毁（隧道收尾中）
-            Err(_) => {
-                tracing::warn!("Tunnel transport channel limit reached");
-                stats.rejected_conns.fetch_add(1, Ordering::Relaxed);
-                stats.active_conns.fetch_sub(1, Ordering::Relaxed);
-                return RelayResult::Failed;
-            }
-        };
+    let _chan_permit = match ctx.channel_budget.acquire_timeout(GROUP_CHANNEL_WAIT).await {
+        Ok(p) => p,
+        Err(_) => {
+            tracing::warn!("Tunnel transport channel limit reached");
+            stats.rejected_conns.fetch_add(1, Ordering::Relaxed);
+            stats.active_conns.fetch_sub(1, Ordering::Relaxed);
+            return RelayResult::Failed;
+        }
+    };
     // 开通道失败一次 → 通知重连 + 等槽位 → 重试一次；再败计数放弃
     for attempt in 0..2 {
         let Some(conn) = wait_connected(&ctx.slot, ctx.policy).await else {
@@ -988,18 +995,13 @@ async fn remote_loop(
                     };
                     let (th, tp) = (target_host.clone(), target_port);
                     let drain_timeout = ctx.drain_timeout;
-                    let ch_sem = ctx.channel_sem.clone();
+                    let ch_budget = ctx.channel_budget.clone();
                     let req: RelayReq = Box::pin(async move {
                         let _permit = permit; // 名额随 relay 生命周期持有
                         // Transport channel 上限（PR-15）：3s 等待超时明确拒绝
-                        let _chan_permit = match tokio::time::timeout(
-                            GROUP_CHANNEL_WAIT,
-                            ch_sem.acquire_owned(),
-                        )
-                        .await
+                        let _chan_permit = match ch_budget.acquire_timeout(GROUP_CHANNEL_WAIT).await
                         {
-                            Ok(Ok(p)) => p,
-                            Ok(Err(_)) => return RelayResult::Failed,
+                            Ok(p) => p,
                             Err(_) => {
                                 tracing::warn!("Tunnel transport channel limit reached");
                                 stats.rejected_conns.fetch_add(1, Ordering::Relaxed);

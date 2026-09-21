@@ -8,6 +8,7 @@ license = "MIT"
 workspace = true
 
 [dependencies]
+core-policy.path = "../core-policy"
 core-ssh.path = "../core-ssh"
 tokio.workspace = true
 bytes.workspace = true

@@ -869,7 +869,9 @@ dependencies = [
 name = "core-policy"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
@@ -877,6 +879,7 @@ name = "core-sftp"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "core-policy",
  "core-ssh",
  "rand",
  "russh",
@@ -931,6 +934,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "core-policy",
  "core-ssh",
  "parking_lot",
  "rand",

@@ -8,6 +8,7 @@ license = "MIT"
 workspace = true
 
 [dependencies]
+core-policy.path = "../core-policy"
 core-ssh.path = "../core-ssh"
 tokio.workspace = true
 bytes.workspace = true
@@ -17,6 +18,7 @@ russh-sftp = "2.4.0"
 serde.workspace = true
 
 [dev-dependencies]
+core-policy.path = "../core-policy"
 serde_json.workspace = true
 rand = "0.10.2"
 russh.workspace = true

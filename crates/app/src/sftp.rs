@@ -254,10 +254,29 @@ impl SftpManagerState {
                     // PR-11/C8：subsystem 代际（重建次数可观测）
                     "metaGen": ctx.metadata.generation(),
                     "dataGen": ctx.data.generation(),
+                    // PR-17：执行槽预算（active/rejected 直接可读）
+                    "execBudget": serde_json::to_value(ctx.queue.exec_budget_snapshot())
+                        .unwrap_or(Value::Null),
                 })
             })
             .collect();
         json!({ "contexts": ctxs.len(), "sessions": sessions })
+    }
+
+    /// 各 ctx 执行槽预算快照（PR-17 perf_json governor 节数据源）
+    pub(crate) fn exec_budgets(&self) -> Vec<Value> {
+        self.ctxs
+            .lock()
+            .iter()
+            .filter_map(|(id, slot)| {
+                slot.ready().map(|ctx| {
+                    let mut v = serde_json::to_value(ctx.queue.exec_budget_snapshot())
+                        .unwrap_or(Value::Null);
+                    v["sessionId"] = json!(id);
+                    v
+                })
+            })
+            .collect()
     }
 
     /// 会话配置变更/删除时摘除 ctx 槽（PR-12：旧组随配置失效；
@@ -495,7 +514,11 @@ async fn build_ctx(
     let data = SftpSlot::open_sftp("data", conn.clone(), handle.clone())
         .await
         .map_err(|e| e.to_string())?;
-    let queue = Arc::new(TransferQueue::new(data.clone(), 3, handle.clone()));
+    let queue = Arc::new(TransferQueue::new(
+        data.clone(),
+        core_policy::budget::caps::SFTP_EXEC,
+        handle.clone(),
+    ));
     let jobs = DirectoryJobScheduler::new(
         data.clone(),
         handle,

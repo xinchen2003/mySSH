@@ -16,10 +16,12 @@
 //!
 //! 错误码段：E6xxx。
 
+pub mod budget;
 mod classifier;
 mod error;
 mod rate;
 
+pub use budget::{Budget, BudgetExhausted, BudgetSnapshot, Permit};
 pub use classifier::{AccessLevel, PolicyEngine, Verdict};
 pub use error::PolicyError;
 pub use rate::{CallerId, RateLimiter};
