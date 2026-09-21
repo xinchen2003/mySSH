@@ -44,6 +44,7 @@ pub async fn session_upsert(
     state: tauri::State<'_, Arc<SessionManagerState>>,
     sftp_state: tauri::State<'_, Arc<crate::sftp::SftpManagerState>>,
     exec_state: tauri::State<'_, Arc<crate::exec::ExecManagerState>>,
+    tunnels_state: tauri::State<'_, Arc<crate::tunnels::TunnelManagerState>>,
 ) -> Result<Value, String> {
     let rec = state
         .store
@@ -65,6 +66,13 @@ pub async fn session_upsert(
     // 配置变更使旧 SFTP ctx 组失效（PR-12）：下次 ensure_ctx 按新配置重建
     sftp_state.drop_ctx(&rec.id);
     exec_state.drop_ctx(&rec.id);
+    // 隧道组共享键含配置指纹（PR-15）：重启在跑隧道——旧组 drain 后关闭
+    crate::tunnels::restart_session_tunnels(
+        tunnels_state.mgr.clone(),
+        state.store.clone(),
+        &rec.id,
+    )
+    .await;
     serde_json::to_value(rec).map_err(|e| e.to_string())
 }
 

@@ -176,9 +176,35 @@ enum Slot {
     Connected(Arc<SshConnection>),
 }
 
+/// Transport channel 上限（PR-15 组级；C10 数据结构预留多 Transport 语义，
+/// 第一期 max_transports=1 单槽，扩容依据指标再议）
+const GROUP_CHANNEL_MAX: usize = 256;
+/// channel permit 等待上限：超时明确拒绝（PR-15 第一期策略；
+/// 单隧道 max_conns 配额（C5 立即拒）在其上仍然独立先生效）
+const GROUP_CHANNEL_WAIT: Duration = Duration::from_secs(3);
+
+/// SessionTunnelGroup（PR-15）：supervisor/slot/notify 从单隧道提升到组——
+/// 同组隧道共享一条 Tunnel Transport（断线由组统一重建一次，根治惊群）。
+/// 组生命周期 = 对组 lease（活跃隧道数）：归零即关停监督器并摘出注册表。
+struct TunnelGroup {
+    key: String,
+    slot: watch::Sender<Slot>,
+    notify: Arc<Notify>,
+    status: Arc<Mutex<TunnelStatus>>,
+    /// reconnects 归组：共享连接的重连不被每个隧道重复计
+    stats: Arc<StatsAtomic>,
+    last_error: Arc<Mutex<Option<String>>>,
+    leases: AtomicU32,
+    shutdown: watch::Sender<bool>,
+    /// Transport channel 上限（与单隧道 relay 配额独立叠加）
+    channel_sem: Arc<Semaphore>,
+}
+
 /// 全局单例 runtime 在第一个隧道启动时建立
 pub struct TunnelManager {
     tunnels: Mutex<HashMap<String, Arc<TunnelEntry>>>,
+    /// SessionTunnelGroup 注册表（共享键 → 组；PR-15）
+    groups: Mutex<HashMap<String, Arc<TunnelGroup>>>,
     rt: tokio::runtime::Handle,
     _rt_thread: std::thread::JoinHandle<()>,
 }
@@ -212,6 +238,7 @@ impl TunnelManager {
             .unwrap_or_else(|_| panic!("tunnel runtime failed to start (handle channel closed)"));
         Arc::new(Self {
             tunnels: Mutex::new(HashMap::new()),
+            groups: Mutex::new(HashMap::new()),
             rt,
             _rt_thread: thread,
         })
@@ -221,6 +248,7 @@ impl TunnelManager {
         self: &Arc<Self>,
         id: String,
         spec: TunnelSpec,
+        group_key: String,
         connect: ConnectFn,
     ) -> Result<(), TunnelError> {
         if self.tunnels.lock().contains_key(&id) {
@@ -259,12 +287,15 @@ impl TunnelManager {
             target: spec.target.as_ref().map(|(h, p)| format!("{h}:{p}")),
         });
 
+        let group = self.acquire_group(&group_key, connect);
         let task_spec = spec.clone();
         let task_entry = entry.clone();
+        let task_group = group.clone();
+        let mgr = self.clone();
         self.rt.spawn(async move {
             let result = run_tunnel(
                 task_spec,
-                connect,
+                task_group.clone(),
                 listener,
                 task_entry.clone(),
                 shutdown_rx,
@@ -283,10 +314,56 @@ impl TunnelManager {
             }
             // 终态信号：stop() 等待者放行（含 Failed 路径——stop 不得悬挂）
             task_entry.stopped.send_replace(true);
+            // 对组 lease 归还（最后一个隧道带走组监督器与共享 Transport）
+            mgr.release_group(&task_group);
         });
 
         self.tunnels.lock().insert(id, entry);
         Ok(())
+    }
+
+    /// 取/建组（leases+1）：注册表与计数同锁，与 release_group 线性化。
+    /// 同组隧道共享一条 Transport——断线由组监督器统一重建一次（PR-15）。
+    fn acquire_group(self: &Arc<Self>, key: &str, connect: ConnectFn) -> Arc<TunnelGroup> {
+        let mut map = self.groups.lock();
+        if let Some(g) = map.get(key) {
+            g.leases.fetch_add(1, Ordering::Relaxed);
+            return g.clone();
+        }
+        let (slot_tx, _slot_rx) = watch::channel(Slot::Connecting);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let group = Arc::new(TunnelGroup {
+            key: key.to_string(),
+            slot: slot_tx.clone(),
+            notify: Arc::new(Notify::new()),
+            status: Arc::new(Mutex::new(TunnelStatus::Starting)),
+            stats: Arc::new(StatsAtomic::default()),
+            last_error: Arc::new(Mutex::new(None)),
+            leases: AtomicU32::new(1),
+            shutdown: shutdown_tx,
+            channel_sem: Arc::new(Semaphore::new(GROUP_CHANNEL_MAX)),
+        });
+        // 组监督器：原单隧道 supervise_conn 原样提升到组级
+        self.rt.spawn(supervise_conn(
+            connect,
+            slot_tx,
+            group.notify.clone(),
+            group.status.clone(),
+            group.stats.clone(),
+            group.last_error.clone(),
+            shutdown_rx,
+        ));
+        map.insert(key.to_string(), group.clone());
+        group
+    }
+
+    /// 还 lease：归零即关停组监督器并摘出注册表（同锁防 acquire/release 竞态）
+    fn release_group(&self, group: &Arc<TunnelGroup>) {
+        let mut map = self.groups.lock();
+        if group.leases.fetch_sub(1, Ordering::Relaxed) == 1 {
+            map.remove(&group.key);
+            let _ = group.shutdown.send(true);
+        }
     }
 
     /// 分阶段停止：标记停 accept → 等 supervisor drain/abort/join 完全部任务 →
@@ -492,30 +569,60 @@ type RelayReq = std::pin::Pin<Box<dyn Future<Output = RelayResult> + Send>>;
 /// join 全部任务 → 断言归零。
 async fn run_tunnel(
     spec: TunnelSpec,
-    connect: ConnectFn,
+    group: Arc<TunnelGroup>,
     listener: Option<std::net::TcpListener>,
     entry: Arc<TunnelEntry>,
     shutdown: watch::Receiver<bool>,
 ) -> Result<(), TunnelError> {
-    let (slot_tx, slot_rx) = watch::channel(Slot::Connecting);
-    let notify = Arc::new(Notify::new());
-    let sc = tokio::spawn(supervise_conn(
-        connect,
-        slot_tx,
-        notify.clone(),
-        entry.status.clone(),
-        entry.stats.clone(),
-        entry.last_error.clone(),
-        shutdown.clone(),
-    ));
-
     let ctx = LinkCtx {
-        slot: slot_rx,
-        notify,
+        slot: group.slot.subscribe(),
+        notify: group.notify.clone(),
+        channel_sem: group.channel_sem.clone(),
         policy: spec.on_disconnect,
         stats: entry.stats.clone(),
         status: entry.status.clone(),
         drain_timeout: spec.half_close_drain_timeout,
+    };
+    // 组状态镜像 → 隧道状态（连接态由组统一驱动；reconnects 计数归组同步）。
+    // Remote 形态的 Listening 由 remote_loop 在 tcpip_forward 注册成功后自行设置，
+    // 镜像只推进 Starting/Reconnecting → Listening，不回退。
+    let mirror = {
+        let mut slot_rx = group.slot.subscribe();
+        let gstatus = group.status.clone();
+        let gstats = group.stats.clone();
+        let gerr = group.last_error.clone();
+        let status = entry.status.clone();
+        let stats = entry.stats.clone();
+        let last_error = entry.last_error.clone();
+        let mut shutdown_m = shutdown.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown_m.changed() => break,
+                    r = slot_rx.changed() => {
+                        if r.is_err() { break; }
+                        match *gstatus.lock() {
+                            TunnelStatus::Listening => {
+                                let mut s = status.lock();
+                                if matches!(*s, TunnelStatus::Starting | TunnelStatus::Reconnecting) {
+                                    *s = TunnelStatus::Listening;
+                                }
+                            }
+                            TunnelStatus::Reconnecting => *status.lock() = TunnelStatus::Reconnecting,
+                            TunnelStatus::Failed => {
+                                *status.lock() = TunnelStatus::Failed;
+                                *last_error.lock() = gerr.lock().clone();
+                            }
+                            _ => {}
+                        }
+                        stats.reconnects.store(
+                            gstats.reconnects.load(Ordering::Relaxed),
+                            Ordering::Relaxed,
+                        );
+                    }
+                }
+            }
+        })
     };
     let (req_tx, mut req_rx) = mpsc::channel::<RelayReq>(RELAY_REQ_QUEUE);
     let accept = match spec.kind.clone() {
@@ -588,9 +695,9 @@ async fn run_tunnel(
         relays.abort_all();
         while relays.join_next().await.is_some() {}
     }
-    // 连接监督器随 shutdown 退出（用户 stop 已发；致命错误路径在此补发）
+    // 组监督器是共享资源，不随单隧道停止——仅收掉状态镜像
     let _ = entry.shutdown.send(true);
-    let _ = sc.await;
+    mirror.abort();
     // 断言归零（fail-loud：不归零即任务所有权缺陷）
     let active = entry.stats.active_conns.load(Ordering::Relaxed);
     if active != 0 {
@@ -683,6 +790,8 @@ fn reject_tcp(tcp: TcpStream) {
 struct LinkCtx {
     slot: watch::Receiver<Slot>,
     notify: Arc<Notify>,
+    /// 组级 Transport channel 上限（PR-15）
+    channel_sem: Arc<Semaphore>,
     policy: DisconnectPolicy,
     stats: Arc<StatsAtomic>,
     /// 远端 tcpip_forward 注册成功后置 Listening（Remote 形态用）
@@ -699,8 +808,22 @@ async fn handle_local(
     port: u16,
     _permit: OwnedSemaphorePermit,
 ) -> RelayResult {
-    // 开通道失败一次 → 通知重连 + 等槽位 → 重试一次；再败计数放弃
+    // Transport channel 上限（PR-15）：等待 permit 最多 3s，超时明确拒绝
     let stats = &ctx.stats;
+    let _chan_permit =
+        match tokio::time::timeout(GROUP_CHANNEL_WAIT, ctx.channel_sem.clone().acquire_owned())
+            .await
+        {
+            Ok(Ok(p)) => p,
+            Ok(Err(_)) => return RelayResult::Failed, // 组已销毁（隧道收尾中）
+            Err(_) => {
+                tracing::warn!("Tunnel transport channel limit reached");
+                stats.rejected_conns.fetch_add(1, Ordering::Relaxed);
+                stats.active_conns.fetch_sub(1, Ordering::Relaxed);
+                return RelayResult::Failed;
+            }
+        };
+    // 开通道失败一次 → 通知重连 + 等槽位 → 重试一次；再败计数放弃
     for attempt in 0..2 {
         let Some(conn) = wait_connected(&ctx.slot, ctx.policy).await else {
             stats.errors.fetch_add(1, Ordering::Relaxed);
@@ -865,8 +988,24 @@ async fn remote_loop(
                     };
                     let (th, tp) = (target_host.clone(), target_port);
                     let drain_timeout = ctx.drain_timeout;
+                    let ch_sem = ctx.channel_sem.clone();
                     let req: RelayReq = Box::pin(async move {
                         let _permit = permit; // 名额随 relay 生命周期持有
+                        // Transport channel 上限（PR-15）：3s 等待超时明确拒绝
+                        let _chan_permit = match tokio::time::timeout(
+                            GROUP_CHANNEL_WAIT,
+                            ch_sem.acquire_owned(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(p)) => p,
+                            Ok(Err(_)) => return RelayResult::Failed,
+                            Err(_) => {
+                                tracing::warn!("Tunnel transport channel limit reached");
+                                stats.rejected_conns.fetch_add(1, Ordering::Relaxed);
+                                return RelayResult::Failed;
+                            }
+                        };
                         stats.active_conns.fetch_add(1, Ordering::Relaxed);
                         stats.total_conns.fetch_add(1, Ordering::Relaxed);
                         let result = match tokio::time::timeout(

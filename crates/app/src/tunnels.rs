@@ -63,6 +63,21 @@ fn make_connect_fn(store: Arc<Store>, session_id: String) -> core_tunnel::Connec
     })
 }
 
+/// 共享键（PR-15）：sessionId + 配置指纹（host/port/user/auth/jump 链；
+/// host-key 策略全局一致不入键）。Session 配置变更 → 指纹变 →
+/// 重启后新隧道进新组，旧组随 drain 与 lease 归零关闭。
+async fn tunnel_group_key(store: &Arc<Store>, session_id: &str) -> Result<String, String> {
+    let spec = crate::sessions::resolve_session_spec(store, session_id).await?;
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    spec.host.hash(&mut h);
+    spec.port.hash(&mut h);
+    spec.user.hash(&mut h);
+    format!("{:?}", spec.auth).hash(&mut h);
+    format!("{:?}", spec.jump_chain).hash(&mut h);
+    Ok(format!("{session_id}:{:016x}", h.finish()))
+}
+
 async fn connect_for_tunnel(
     auth: core_ssh::AuthMethod,
     spec: &crate::terminal::TermOpenSpec,
@@ -174,6 +189,7 @@ async fn start_tunnel(
     if !matches!(kind, TunnelKind::DynamicSocks5 { .. }) && target.is_none() {
         return Err("local/remote 隧道需要 targetHost+targetPort".into());
     }
+    let group_key = tunnel_group_key(store, session_id).await?;
     let connect = make_connect_fn(store.clone(), session_id.to_string());
     mgr.start(
         id,
@@ -189,6 +205,7 @@ async fn start_tunnel(
             stop_grace_timeout: core_tunnel::DEFAULT_STOP_GRACE_TIMEOUT,
             half_close_drain_timeout: core_tunnel::DEFAULT_HALF_CLOSE_DRAIN_TIMEOUT,
         },
+        group_key,
         connect,
     )
     .await
@@ -438,6 +455,61 @@ pub async fn stop_all_session_tunnels(
         match mgr.stop(&d.id).await {
             Ok(()) | Err(core_tunnel::TunnelError::NotFound(_)) => {}
             Err(e) => tracing::warn!(tunnel = %d.id, error = %e, "删除会话前停止隧道失败"),
+        }
+    }
+}
+
+/// Session 配置变更（PR-15 评审定稿：旧组 draining、新连接进新组）：
+/// 重启该会话全部在跑隧道——stop 按 grace 让旧 relay 自然收尾（超时强制），
+/// 旧组随 lease 归零关闭；新启动按新配置指纹建/入新组。
+pub async fn restart_session_tunnels(
+    mgr: Arc<core_tunnel::TunnelManager>,
+    store: Arc<Store>,
+    session_id: &str,
+) {
+    let defs = match store.tunnels().for_session(session_id).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = %e, "隧道定义读取失败（配置变更重启跳过）");
+            return;
+        }
+    };
+    let running: std::collections::HashSet<String> = mgr
+        .list()
+        .into_iter()
+        .filter(|t| {
+            matches!(
+                t.status,
+                core_tunnel::TunnelStatus::Starting
+                    | core_tunnel::TunnelStatus::Listening
+                    | core_tunnel::TunnelStatus::Reconnecting
+            )
+        })
+        .map(|t| t.id)
+        .collect();
+    for d in defs.into_iter().filter(|d| running.contains(&d.id)) {
+        match mgr.stop(&d.id).await {
+            Ok(()) | Err(core_tunnel::TunnelError::NotFound(_)) => {}
+            Err(e) => {
+                tracing::warn!(tunnel = %d.id, error = %e, "配置变更停止隧道失败");
+                continue;
+            }
+        }
+        if let Err(e) = start_tunnel(
+            &mgr,
+            &store,
+            d.id.clone(),
+            session_id,
+            &d.kind,
+            &d.bind_host,
+            d.bind_port,
+            d.target_host.clone(),
+            d.target_port,
+            false,
+        )
+        .await
+        {
+            tracing::warn!(tunnel = %d.id, error = %e, "配置变更后重启隧道失败");
         }
     }
 }

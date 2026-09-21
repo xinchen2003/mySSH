@@ -59,6 +59,7 @@ async fn main() {
             stop_grace_timeout: core_tunnel::DEFAULT_STOP_GRACE_TIMEOUT,
             half_close_drain_timeout: core_tunnel::DEFAULT_HALF_CLOSE_DRAIN_TIMEOUT,
         },
+        "bench".into(),
         connect,
     )
     .await

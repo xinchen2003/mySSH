@@ -20,6 +20,8 @@ use tokio::net::{TcpListener, TcpStream};
 /// direct-tcpip 桥接到真实目标的测试服务端；tcpip_forward 接受并 200ms 后回开通道写标记再读回
 struct EchoServer {
     remote_loopback_ok: Arc<AtomicBool>,
+    /// 建连计数（PR-15 组共享断言：同组隧道应共享一条 Transport）
+    conn_count: Arc<std::sync::atomic::AtomicU64>,
 }
 
 struct EchoHandler {
@@ -29,6 +31,7 @@ struct EchoHandler {
 impl Server for EchoServer {
     type Handler = EchoHandler;
     fn new_client(&mut self, _addr: Option<std::net::SocketAddr>) -> EchoHandler {
+        self.conn_count.fetch_add(1, Ordering::Relaxed);
         EchoHandler {
             remote_loopback_ok: self.remote_loopback_ok.clone(),
         }
@@ -173,7 +176,7 @@ async fn start_tcp_echo() -> u16 {
     port
 }
 
-async fn start_echo_server() -> (u16, Arc<AtomicBool>) {
+async fn start_echo_server() -> (u16, Arc<AtomicBool>, Arc<std::sync::atomic::AtomicU64>) {
     let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
     let mut methods = MethodSet::empty();
     methods.push(MethodKind::None);
@@ -192,14 +195,16 @@ async fn start_echo_server() -> (u16, Arc<AtomicBool>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let flag = Arc::new(AtomicBool::new(false));
+    let conn_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let srv = EchoServer {
         remote_loopback_ok: flag.clone(),
+        conn_count: conn_count.clone(),
     };
     tokio::spawn(async move {
         let mut server = srv;
         let _ = server.run_on_socket(Arc::new(config), &listener).await;
     });
-    (port, flag)
+    (port, flag, conn_count)
 }
 
 fn connect_fn(port: u16) -> ConnectFn {
@@ -294,7 +299,7 @@ async fn wait_stats(mgr: &Arc<TunnelManager>, id: &str, min_up: u64, min_down: u
 /// 本地 -L：隧道口收发 echo 回环
 #[tokio::test]
 async fn local_forward_echo_roundtrip() {
-    let (ssh_port, _) = start_echo_server().await;
+    let (ssh_port, _, _) = start_echo_server().await;
     let echo_port = start_tcp_echo().await;
     let mgr = TunnelManager::new();
     mgr.start(
@@ -305,6 +310,7 @@ async fn local_forward_echo_roundtrip() {
             },
             Some(("127.0.0.1".into(), echo_port)),
         ),
+        "g".into(),
         connect_fn(ssh_port),
     )
     .await
@@ -328,7 +334,7 @@ async fn local_forward_echo_roundtrip() {
 /// 并发上限：max_conns=1 时第二条连接被 Semaphore 闸拒收（E4003），计 rejected_conns
 #[tokio::test]
 async fn local_forward_over_limit_rejected() {
-    let (ssh_port, _) = start_echo_server().await;
+    let (ssh_port, _, _) = start_echo_server().await;
     let echo_port = start_tcp_echo().await;
     let mgr = TunnelManager::new();
     let mut s = spec(
@@ -338,7 +344,7 @@ async fn local_forward_over_limit_rejected() {
         Some(("127.0.0.1".into(), echo_port)),
     );
     s.max_conns = 1;
-    mgr.start("lt".into(), s, connect_fn(ssh_port))
+    mgr.start("lt".into(), s, "g".into(), connect_fn(ssh_port))
         .await
         .expect("start");
     wait_listening(&mgr, "lt").await;
@@ -377,7 +383,7 @@ async fn local_forward_over_limit_rejected() {
 #[tokio::test]
 async fn dynamic_socks5_roundtrip() {
     let echo_port = start_tcp_echo().await;
-    let (ssh_port, _) = start_echo_server().await;
+    let (ssh_port, _, _) = start_echo_server().await;
     let mgr = TunnelManager::new();
     mgr.start(
         "dt".into(),
@@ -387,6 +393,7 @@ async fn dynamic_socks5_roundtrip() {
             },
             None,
         ),
+        "g".into(),
         connect_fn(ssh_port),
     )
     .await
@@ -436,7 +443,7 @@ async fn remote_forward_loopback() {
         }
     });
 
-    let (ssh_port, flag) = start_echo_server().await;
+    let (ssh_port, flag, _) = start_echo_server().await;
     let mgr = TunnelManager::new();
     mgr.start(
         "rt".into(),
@@ -446,6 +453,7 @@ async fn remote_forward_loopback() {
             },
             Some(("127.0.0.1".into(), echo_port)),
         ),
+        "g".into(),
         connect_fn(ssh_port),
     )
     .await
@@ -500,6 +508,7 @@ async fn tunnel_flood_throughput() {
             },
             Some(("127.0.0.1".into(), flood_port)),
         ),
+        "g".into(),
         connect_fn(ssh_port),
     )
     .await
@@ -548,7 +557,7 @@ async fn start_tcp_sink() -> u16 {
 #[tokio::test]
 async fn local_forward_half_close_downstream_complete() {
     let echo_port = start_tcp_echo().await;
-    let (ssh_port, _) = start_echo_server().await;
+    let (ssh_port, _, _) = start_echo_server().await;
     let mgr = TunnelManager::new();
     mgr.start(
         "hc".into(),
@@ -558,6 +567,7 @@ async fn local_forward_half_close_downstream_complete() {
             },
             Some(("127.0.0.1".into(), echo_port)),
         ),
+        "g".into(),
         connect_fn(ssh_port),
     )
     .await
@@ -579,7 +589,7 @@ async fn local_forward_half_close_downstream_complete() {
 #[tokio::test]
 async fn local_forward_stop_drains_then_aborts_and_zeroes() {
     let echo_port = start_tcp_echo().await;
-    let (ssh_port, _) = start_echo_server().await;
+    let (ssh_port, _, _) = start_echo_server().await;
     let mgr = TunnelManager::new();
     mgr.start(
         "sd".into(),
@@ -591,6 +601,7 @@ async fn local_forward_stop_drains_then_aborts_and_zeroes() {
             Duration::from_millis(500), // 短 grace：idle relay 必然走 abort 路径
             Duration::from_secs(5),
         ),
+        "g".into(),
         connect_fn(ssh_port),
     )
     .await
@@ -627,7 +638,7 @@ async fn local_forward_stop_drains_then_aborts_and_zeroes() {
 #[tokio::test]
 async fn half_close_unresponsive_peer_released_by_drain_timeout() {
     let sink_port = start_tcp_sink().await;
-    let (ssh_port, _) = start_echo_server().await;
+    let (ssh_port, _, _) = start_echo_server().await;
     let mgr = TunnelManager::new();
     mgr.start(
         "hu".into(),
@@ -639,6 +650,7 @@ async fn half_close_unresponsive_peer_released_by_drain_timeout() {
             Duration::from_secs(5),
             Duration::from_millis(800), // 短 drain：对侧无响应必须到点释放
         ),
+        "g".into(),
         connect_fn(ssh_port),
     )
     .await
@@ -667,7 +679,7 @@ async fn half_close_unresponsive_peer_released_by_drain_timeout() {
 #[tokio::test]
 async fn remote_forward_stop_clean() {
     let echo_port = start_tcp_echo().await;
-    let (ssh_port, _) = start_echo_server().await;
+    let (ssh_port, _, _) = start_echo_server().await;
     let mgr = TunnelManager::new();
     mgr.start(
         "rs".into(),
@@ -677,6 +689,7 @@ async fn remote_forward_stop_clean() {
             },
             Some(("127.0.0.1".into(), echo_port)),
         ),
+        "g".into(),
         connect_fn(ssh_port),
     )
     .await
@@ -696,7 +709,7 @@ async fn remote_forward_stop_clean() {
 /// 目标拒连（PR-7 验收场景）：open_direct_tcpip 失败 → 连接关闭 + errors 计数
 #[tokio::test]
 async fn local_forward_target_refused() {
-    let (ssh_port, _) = start_echo_server().await;
+    let (ssh_port, _, _) = start_echo_server().await;
     let mgr = TunnelManager::new();
     mgr.start(
         "tr".into(),
@@ -706,6 +719,7 @@ async fn local_forward_target_refused() {
             },
             Some(("127.0.0.1".into(), 1)), // 端口 1：必拒连
         ),
+        "g".into(),
         connect_fn(ssh_port),
     )
     .await
@@ -727,4 +741,94 @@ async fn local_forward_target_refused() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     mgr.stop("tr").await.expect("stop");
+}
+
+/// PR-15 SessionTunnelGroup：同组隧道共享一条 Tunnel Transport；
+/// 停一条不影响同组另一条；组随 lease 归零关闭、新隧道触发新组重建。
+#[tokio::test]
+async fn session_group_shares_one_transport() {
+    let (ssh_port, _, conn_count) = start_echo_server().await;
+    let echo_port = start_tcp_echo().await;
+    let mgr = TunnelManager::new();
+    let target = Some(("127.0.0.1".into(), echo_port));
+
+    // 同 key 两条隧道 → 一条 Transport
+    mgr.start(
+        "g-t1".into(),
+        spec(
+            TunnelKind::Local {
+                bind: ("127.0.0.1".into(), 0),
+            },
+            target.clone(),
+        ),
+        "grp".into(),
+        connect_fn(ssh_port),
+    )
+    .await
+    .unwrap();
+    mgr.start(
+        "g-t2".into(),
+        spec(
+            TunnelKind::Local {
+                bind: ("127.0.0.1".into(), 0),
+            },
+            target.clone(),
+        ),
+        "grp".into(),
+        connect_fn(ssh_port),
+    )
+    .await
+    .unwrap();
+    let bind1 = wait_bind(&mgr, "g-t1").await;
+    let bind2 = wait_bind(&mgr, "g-t2").await;
+    assert_eq!(
+        conn_count.load(Ordering::Relaxed),
+        1,
+        "同组隧道必须共享一条 Transport"
+    );
+
+    // 两条都能收发（共享 Transport 上各自 channel）
+    for bind in [&bind1, &bind2] {
+        let mut tcp = TcpStream::connect(bind).await.unwrap();
+        tcp.write_all(b"ping").await.unwrap();
+        let mut buf = [0u8; 4];
+        tcp.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+    }
+
+    // 停一条：同组另一条照常工作，Transport 不重建
+    mgr.stop("g-t1").await.unwrap();
+    let mut tcp = TcpStream::connect(&bind2).await.unwrap();
+    tcp.write_all(b"pong").await.unwrap();
+    let mut buf = [0u8; 4];
+    tcp.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"pong");
+    assert_eq!(
+        conn_count.load(Ordering::Relaxed),
+        1,
+        "停一条不得影响共享连接"
+    );
+
+    // 停最后一条：组随 lease 归零关闭；新隧道（同 key）触发新组重建
+    mgr.stop("g-t2").await.unwrap();
+    mgr.start(
+        "g-t3".into(),
+        spec(
+            TunnelKind::Local {
+                bind: ("127.0.0.1".into(), 0),
+            },
+            target,
+        ),
+        "grp".into(),
+        connect_fn(ssh_port),
+    )
+    .await
+    .unwrap();
+    wait_listening(&mgr, "g-t3").await;
+    assert_eq!(
+        conn_count.load(Ordering::Relaxed),
+        2,
+        "组关闭后新隧道应触发新 Transport"
+    );
+    mgr.stop("g-t3").await.unwrap();
 }
