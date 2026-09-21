@@ -28,13 +28,12 @@ use crate::sessions::SessionManagerState;
 
 static EDIT_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// 租约类别（PR-13；C9：Monitor 为 PR-14 前过渡，PR-14 迁入 Exec Transport 后删除；
+/// 租约类别（PR-13；Monitor 已随 PR-14 迁入 Exec Transport 删除（C9）；
 /// Panel/MCP 浏览类操作只 touch last_used 不持长租约——闲置面板理应被 TTL 回收；
 /// Transfer 租约不走 guard——活跃 transfer id 集合由生命周期回调维护）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SftpLeaseKind {
     Edit,
-    Monitor,
 }
 
 /// RAII 租约 guard（C9：Drop 自动释放）

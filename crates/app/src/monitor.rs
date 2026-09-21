@@ -13,8 +13,8 @@ use tauri::ipc::Channel;
 
 use core_monitor::MonitorError;
 
+use crate::exec::ExecManagerState;
 use crate::sessions::SessionManagerState;
-use crate::sftp::SftpManagerState;
 
 #[derive(Default)]
 pub struct MonitorState {
@@ -39,21 +39,20 @@ pub async fn metrics_subscribe(
     interval_ms: u32,
     events: Channel<Value>,
     state: tauri::State<'_, Arc<MonitorState>>,
-    sftp: tauri::State<'_, Arc<SftpManagerState>>,
+    exec: tauri::State<'_, Arc<ExecManagerState>>,
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<(), String> {
     unsubscribe_inner(&state, &session_id);
     let interval = u64::from(interval_ms.max(2000)); // 契约：下限 2s
-    let ctx = crate::sftp::ensure_ctx(&sftp, &sessions.store, &session_id).await?;
+    let ctx = crate::exec::ensure_exec_ctx(&exec, &sessions.store, &session_id).await?;
     crate::sftp::audit(&sessions.store, &session_id, "metrics_subscribe", "").await;
-    let rt = sftp.rt();
+    let rt = exec.rt();
     let join = rt.spawn(async move {
-        // Monitor 租约（C9 过渡保留，PR-14 迁入 Exec Transport 后删除）：
-        // 监控期间 ctx 不被 TTL 回收
-        let _lease = ctx.lease(crate::sftp::SftpLeaseKind::Monitor);
         let mut collector = core_monitor::MetricsCollector::new();
         let mut errs = 0u32;
         loop {
+            // Monitor 配额（PR-14：保留最低额度，防 MCP 突发 exec 饿死采样）
+            let _permit = ctx.acquire_monitor().await;
             match collector.collect(ctx.conn()).await {
                 Ok(snap) => {
                     errs = 0;

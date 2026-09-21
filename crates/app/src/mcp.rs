@@ -32,10 +32,6 @@ use serde_json::{json, Value};
 use tokio::sync::watch;
 
 use core_sftp::OnExists;
-use core_ssh::{
-    ConnClass, ConnectOptions, HostKeyCheck, HostKeyDecision, HostKeyPrompt, KeepaliveConfig,
-    KnownHostsPolicy, SshConnection,
-};
 use core_store::Store;
 
 /// 默认监听端口（设置键 mcp.port 未配时）
@@ -249,10 +245,12 @@ impl McpManager {
     }
 
     /// 启动服务（已有实例先停）。绑定失败返回清晰错误，不 panic。
+    #[allow(clippy::too_many_arguments)]
     pub async fn start(
         self: &Arc<Self>,
         store: Arc<Store>,
         sftp: Arc<crate::sftp::SftpManagerState>,
+        exec: Arc<crate::exec::ExecManagerState>,
         terms: Arc<crate::mcp_terminal::McpTerminalState>,
         port: u16,
         token: String,
@@ -262,6 +260,7 @@ impl McpManager {
         let state = Arc::new(ServerState {
             store,
             sftp,
+            exec,
             terms: terms.clone(),
             token: token.clone(),
             perms,
@@ -344,6 +343,7 @@ pub async fn boot_from_settings(
     mgr: Arc<McpManager>,
     store: Arc<Store>,
     sftp: Arc<crate::sftp::SftpManagerState>,
+    exec: Arc<crate::exec::ExecManagerState>,
     terms: Arc<crate::mcp_terminal::McpTerminalState>,
 ) {
     let cfg = match read_mcp_config(&store).await {
@@ -358,7 +358,7 @@ pub async fn boot_from_settings(
     }
     let token = ensure_token(&store, cfg.token).await;
     if let Err(e) = mgr
-        .start(store, sftp, terms, cfg.port, token, cfg.perms)
+        .start(store, sftp, exec, terms, cfg.port, token, cfg.perms)
         .await
     {
         tracing::error!(error = %e, "MCP 服务启动失败");
@@ -369,6 +369,7 @@ pub async fn restart_from_settings(
     mgr: &Arc<McpManager>,
     store: Arc<Store>,
     sftp: Arc<crate::sftp::SftpManagerState>,
+    exec: Arc<crate::exec::ExecManagerState>,
     terms: Arc<crate::mcp_terminal::McpTerminalState>,
 ) -> Result<Value, String> {
     mgr.stop().await;
@@ -377,7 +378,7 @@ pub async fn restart_from_settings(
         let token = ensure_token(&store, cfg.token).await;
         // 绑定失败直接回报前端，同时把 token 记入状态便于排查
         mgr.inner.lock().token = token.clone();
-        mgr.start(store, sftp, terms, cfg.port, token, cfg.perms)
+        mgr.start(store, sftp, exec, terms, cfg.port, token, cfg.perms)
             .await?;
     }
     Ok(mgr.status())
@@ -393,12 +394,14 @@ pub async fn mcp_restart(
     state: tauri::State<'_, Arc<McpManager>>,
     sessions: tauri::State<'_, Arc<crate::sessions::SessionManagerState>>,
     sftp: tauri::State<'_, Arc<crate::sftp::SftpManagerState>>,
+    exec: tauri::State<'_, Arc<crate::exec::ExecManagerState>>,
     terms: tauri::State<'_, Arc<crate::mcp_terminal::McpTerminalState>>,
 ) -> Result<Value, String> {
     restart_from_settings(
         &state,
         sessions.store.clone(),
         sftp.inner().clone(),
+        exec.inner().clone(),
         terms.inner().clone(),
     )
     .await
@@ -409,6 +412,8 @@ struct ServerState {
     store: Arc<Store>,
     /// SFTP 连接池（与 UI 共享；agent 高频小操作复用 Bulk 连接，不反复握手）
     sftp: Arc<crate::sftp::SftpManagerState>,
+    /// Exec Transport 组（ssh_exec 复用；PR-14 起与 Monitor 共享，MCP 配额 4）
+    exec: Arc<crate::exec::ExecManagerState>,
     /// 交互式终端注册表（terminal_* 工具；stop 时 close_all 清场）
     terms: Arc<crate::mcp_terminal::McpTerminalState>,
     token: String,
@@ -840,7 +845,7 @@ async fn call_tool(st: &ServerState, name: &str, args: &Value) -> Value {
             Ok(text) => ok_content(text),
             Err(e) => err_content(e),
         },
-        "ssh_exec" => match ssh_exec_tool(&st.store, args).await {
+        "ssh_exec" => match ssh_exec_tool(st, args).await {
             Ok(text) => ok_content(text),
             Err(e) => err_content(e),
         },
@@ -880,8 +885,9 @@ async fn list_sessions_tool(store: &Arc<Store>) -> Result<String, String> {
     serde_json::to_string_pretty(&json!({ "sessions": items })).map_err(|e| e.to_string())
 }
 
-/// ssh_exec：resolve → 一次性 Bulk 连接 → exec channel 收集 stdout/stderr/exit
-async fn ssh_exec_tool(store: &Arc<Store>, args: &Value) -> Result<String, String> {
+/// ssh_exec：resolve → Exec Transport（PR-14 复用连接，MCP 配额）→ exec channel 收集
+async fn ssh_exec_tool(st: &ServerState, args: &Value) -> Result<String, String> {
+    let store = &st.store;
     let session_id = args
         .get("session_id")
         .and_then(Value::as_str)
@@ -898,21 +904,17 @@ async fn ssh_exec_tool(store: &Arc<Store>, args: &Value) -> Result<String, Strin
         .clamp(1, MAX_TIMEOUT_MS);
 
     let target = crate::sessions::resolve_session_target(store, session_id).await?;
-    let spec = match target {
-        crate::sessions::ResolvedTarget::Ssh(s) => s,
-        crate::sessions::ResolvedTarget::Local(_) => {
-            return Err("本地会话不支持 ssh_exec（仅 SSH 会话）".into());
-        }
-    };
+    if matches!(target, crate::sessions::ResolvedTarget::Local(_)) {
+        return Err("本地会话不支持 ssh_exec（仅 SSH 会话）".into());
+    }
 
-    tracing::info!(
-        session_id,
-        host = %spec.host,
-        timeout_ms,
-        "MCP ssh_exec 开始执行"
-    );
+    tracing::info!(session_id, timeout_ms, "MCP ssh_exec 开始执行");
     let started = Instant::now();
-    let run = ssh_exec_inner(spec, command.to_string());
+    let run = async {
+        let ctx = crate::exec::ensure_exec_ctx(&st.exec, store, session_id).await?;
+        let _permit = ctx.acquire_mcp().await?;
+        ssh_exec_inner(ctx, command.to_string()).await
+    };
     let result = tokio::time::timeout(Duration::from_millis(timeout_ms), run).await;
     let elapsed = started.elapsed().as_millis() as u64;
 
@@ -927,41 +929,10 @@ async fn ssh_exec_tool(store: &Arc<Store>, args: &Value) -> Result<String, Strin
 }
 
 /// 建连 + exec + 输出收集（被外层 timeout 包裹；超时 drop 即断连）
-async fn ssh_exec_inner(
-    spec: crate::terminal::TermOpenSpec,
-    command: String,
-) -> Result<Value, String> {
-    let auth = crate::terminal::auth_method_from(&spec.auth);
-    let jump_chain = crate::terminal::jump_chain_from(&spec.jump_chain);
-    let opts = ConnectOptions {
-        host: spec.host.clone(),
-        port: spec.port,
-        user: spec.user.clone(),
-        auth,
-        jump_chain,
-        // Bulk 语义：不占交互连接，与监控/测试连接一致
-        class: ConnClass::Bulk,
-        window_size: 4 * 1024 * 1024,
-        max_packet_size: 32768,
-        keepalive: KeepaliveConfig::default(),
-        // 无 UI 弹窗通路：已知主机直过；未知/变更 fail-closed 拒绝，
-        // 提示用户先在 mySSH UI 首连确认指纹
-        host_key_check: HostKeyCheck::KnownHosts(KnownHostsPolicy {
-            path: crate::terminal::known_hosts_path(),
-            prompter: Arc::new(|_: HostKeyPrompt| async { HostKeyDecision::Reject }),
-        }),
-        // KI 无应答通路：ki_prompter 缺省时认证失败会原样回报
-        ki_prompter: None,
-    };
-    let conn = SshConnection::connect(opts).await.map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("主机密钥") {
-            format!("{msg}（未知/变更的主机密钥：请先在 mySSH UI 中连接一次该会话以确认指纹）")
-        } else {
-            msg
-        }
-    })?;
-
+async fn ssh_exec_inner(ctx: Arc<crate::exec::ExecCtx>, command: String) -> Result<Value, String> {
+    // Exec Transport 复用连接（PR-14）：建连/host-key/KI 策略由 exec 组工厂统一承载；
+    // 超时 drop 只弃本 channel，共享 Transport 存活
+    let conn = ctx.conn_handle();
     let mut ch = conn
         .open_session_channel()
         .await
@@ -1435,6 +1406,7 @@ mod tests {
         mgr.start(
             store,
             crate::sftp::SftpManagerState::new(),
+            crate::exec::ExecManagerState::new(tokio::runtime::Handle::current()),
             crate::mcp_terminal::McpTerminalState::new(),
             port,
             String::new(), // 测试不启用 token

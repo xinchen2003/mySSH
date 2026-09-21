@@ -43,6 +43,7 @@ pub async fn session_upsert(
     record: SessionRecord,
     state: tauri::State<'_, Arc<SessionManagerState>>,
     sftp_state: tauri::State<'_, Arc<crate::sftp::SftpManagerState>>,
+    exec_state: tauri::State<'_, Arc<crate::exec::ExecManagerState>>,
 ) -> Result<Value, String> {
     let rec = state
         .store
@@ -63,6 +64,7 @@ pub async fn session_upsert(
         .map_err(|e| e.to_string())?;
     // 配置变更使旧 SFTP ctx 组失效（PR-12）：下次 ensure_ctx 按新配置重建
     sftp_state.drop_ctx(&rec.id);
+    exec_state.drop_ctx(&rec.id);
     serde_json::to_value(rec).map_err(|e| e.to_string())
 }
 
@@ -72,6 +74,7 @@ pub async fn session_delete(
     state: tauri::State<'_, Arc<SessionManagerState>>,
     tunnels_state: tauri::State<'_, Arc<crate::tunnels::TunnelManagerState>>,
     sftp_state: tauri::State<'_, Arc<crate::sftp::SftpManagerState>>,
+    exec_state: tauri::State<'_, Arc<crate::exec::ExecManagerState>>,
 ) -> Result<(), String> {
     // 先停运行中隧道（定义还在库中可查），再删会话（FK 级联删定义）
     crate::tunnels::stop_all_session_tunnels(
@@ -88,6 +91,7 @@ pub async fn session_delete(
         .map_err(|e| e.to_string())?;
     // 会话删除同步摘除 SFTP ctx（PR-12）
     sftp_state.drop_ctx(&session_id);
+    exec_state.drop_ctx(&session_id);
     state
         .store
         .audit()

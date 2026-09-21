@@ -3,6 +3,7 @@
 
 mod diagnostics;
 mod encoding;
+mod exec;
 mod files;
 mod fs_limiter;
 mod local_pty;
@@ -54,6 +55,7 @@ pub fn run() {
         last: parking_lot::Mutex::new(std::collections::HashMap::new()),
     });
     let sftp_state = sftp::SftpManagerState::new();
+    let exec_state = exec::ExecManagerState::new(sftp_state.rt());
     let monitor_state = monitor::MonitorState::new();
     let mcp_manager = mcp::McpManager::new();
     let mcp_terms = mcp_terminal::McpTerminalState::new();
@@ -67,6 +69,7 @@ pub fn run() {
         .manage(session_state.clone())
         .manage(tunnel_mgr_state.clone())
         .manage(sftp_state.clone())
+        .manage(exec_state.clone())
         .manage(monitor_state)
         .manage(mcp_manager.clone())
         .manage(mcp_terms.clone())
@@ -89,9 +92,10 @@ pub fn run() {
             // MCP 服务端：按 mcp.enabled/port/token 设置启动（绑定失败仅日志）
             let store = session_state.store.clone();
             let sftp = sftp_state.clone();
+            let exec = exec_state.clone();
             let terms = mcp_terms.clone();
             tauri::async_runtime::spawn(async move {
-                crate::mcp::boot_from_settings(mcp_manager, store, sftp, terms).await;
+                crate::mcp::boot_from_settings(mcp_manager, store, sftp, exec, terms).await;
             });
             let _ = app;
             Ok(())
