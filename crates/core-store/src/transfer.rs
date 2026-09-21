@@ -65,6 +65,29 @@ impl TransferRepo {
         rows.iter().map(row_to_record).collect()
     }
 
+    /// 按主键取单条（PR-13 暂停转存 resume 回退路径）
+    pub async fn get(&self, id: &str) -> Result<Option<TransferRecord>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id,session_id,direction,local,remote,bytes_done,bytes_total,state,error,updated_at
+             FROM transfers WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        row.as_ref().map(row_to_record).transpose()
+    }
+
+    /// 按主键删除（PR-13：被接替重入队的旧 paused 行）
+    pub async fn delete(&self, id: &str) -> Result<(), StoreError> {
+        sqlx::query("DELETE FROM transfers WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
     /// 清理某会话的已完成/已取消历史（保留失败与进行中）
     pub async fn clear_settled(&self, session_id: &str) -> Result<u64, StoreError> {
         let r = sqlx::query(

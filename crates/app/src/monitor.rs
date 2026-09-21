@@ -48,6 +48,9 @@ pub async fn metrics_subscribe(
     crate::sftp::audit(&sessions.store, &session_id, "metrics_subscribe", "").await;
     let rt = sftp.rt();
     let join = rt.spawn(async move {
+        // Monitor 租约（C9 过渡保留，PR-14 迁入 Exec Transport 后删除）：
+        // 监控期间 ctx 不被 TTL 回收
+        let _lease = ctx.lease(crate::sftp::SftpLeaseKind::Monitor);
         let mut collector = core_monitor::MetricsCollector::new();
         let mut errs = 0u32;
         loop {

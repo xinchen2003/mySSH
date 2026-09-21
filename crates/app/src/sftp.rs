@@ -28,6 +28,26 @@ use crate::sessions::SessionManagerState;
 
 static EDIT_SEQ: AtomicU64 = AtomicU64::new(1);
 
+/// 租约类别（PR-13；C9：Monitor 为 PR-14 前过渡，PR-14 迁入 Exec Transport 后删除；
+/// Panel/MCP 浏览类操作只 touch last_used 不持长租约——闲置面板理应被 TTL 回收；
+/// Transfer 租约不走 guard——活跃 transfer id 集合由生命周期回调维护）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SftpLeaseKind {
+    Edit,
+    Monitor,
+}
+
+/// RAII 租约 guard（C9：Drop 自动释放）
+pub(crate) struct SLease {
+    ctx: Arc<SftpCtx>,
+    kind: SftpLeaseKind,
+}
+
+impl Drop for SLease {
+    fn drop(&mut self) {
+        self.ctx.release_lease(self.kind);
+    }
+}
 /// 单会话的 SFTP 上下文（连接 + metadata/data 双 subsystem + 传输队列 + 目录任务调度器）
 ///
 /// PR-11/C8 代际结构：Transport 代际 = 本 ctx（conn 死则 ensure_ctx 整体重建，
@@ -43,6 +63,12 @@ pub struct SftpCtx {
     queue: Arc<TransferQueue>,
     /// DirectoryJob 调度器（PR-8；与 queue 共享执行槽预算）
     jobs: Arc<DirectoryJobScheduler>,
+    /// 长租约计数（Edit/Monitor；RAII guard 释放）
+    leases: Mutex<HashMap<SftpLeaseKind, u32>>,
+    /// 传输租约（活跃 transfer id 集合；生命周期回调按终态/暂停释放）
+    transfer_leases: Mutex<std::collections::HashSet<String>>,
+    /// 最近使用时间（毫秒；TTL sweep 依据）
+    last_used: AtomicU64,
 }
 /// ctx 级单飞槽（PR-12）：复用 SubsystemSlot 状态机——Connecting 单飞、
 /// 恢复任务由槽持有（首 waiter 取消不连累）、失败退避 2s、代际不串扰
@@ -68,6 +94,84 @@ impl SftpCtx {
     pub(crate) async fn meta_client(&self) -> Result<Arc<SftpClient>, String> {
         self.metadata.get().await.map_err(|e| e.to_string())
     }
+
+    /// 取长租约（Edit/Monitor；RAII guard Drop 自动释放，C9）
+    pub(crate) fn lease(self: &Arc<Self>, kind: SftpLeaseKind) -> SLease {
+        *self.leases.lock().entry(kind).or_insert(0) += 1;
+        self.touch();
+        SLease {
+            ctx: self.clone(),
+            kind,
+        }
+    }
+
+    fn release_lease(&self, kind: SftpLeaseKind) {
+        let mut m = self.leases.lock();
+        if let Some(n) = m.get_mut(&kind) {
+            *n = n.saturating_sub(1);
+        }
+    }
+
+    /// 传输租约：生命周期回调按状态挂/摘（Queued/Running 挂，Paused/终态摘——
+    /// 暂停任务转存后不阻止 ctx 回收，PR-13 评审定稿）
+    pub(crate) fn lease_transfer(&self, id: &str) {
+        self.transfer_leases.lock().insert(id.to_string());
+        self.touch();
+    }
+
+    pub(crate) fn release_transfer(&self, id: &str) {
+        self.transfer_leases.lock().remove(id);
+    }
+
+    pub(crate) fn lease_count(&self) -> usize {
+        self.leases
+            .lock()
+            .values()
+            .map(|n| *n as usize)
+            .sum::<usize>()
+            + self.transfer_leases.lock().len()
+    }
+
+    pub(crate) fn touch(&self) {
+        self.last_used.store(now_millis(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn idle_ms(&self) -> u64 {
+        now_millis().saturating_sub(self.last_used.load(Ordering::Relaxed))
+    }
+
+    /// 活跃传输数（Queued/Running 单文件 + 非终态 job；暂停不计——转存语义）。
+    /// 注意：非终态 DirectoryJob（含暂停）阻止回收——job 无落库转存，偏差记录在案。
+    pub(crate) fn active_transfers(&self) -> usize {
+        use core_sftp::TransferState::*;
+        let live = self
+            .queue
+            .list()
+            .iter()
+            .filter(|t| matches!(t.state, Queued | Running))
+            .count();
+        let jobs = self
+            .jobs
+            .list()
+            .iter()
+            .filter(|j| {
+                !matches!(
+                    j.state,
+                    core_sftp::JobState::Completed
+                        | core_sftp::JobState::Failed
+                        | core_sftp::JobState::Canceled
+                )
+            })
+            .count();
+        live + jobs
+    }
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// 元数据操作统一入口（PR-11/C8）：取 metadata 代际 client 执行；
@@ -112,10 +216,13 @@ impl SftpManagerState {
         let rt = rx
             .recv()
             .unwrap_or_else(|_| panic!("bulk runtime failed to start"));
-        Arc::new(Self {
+        let state = Arc::new(Self {
             ctxs: Mutex::new(HashMap::new()),
             rt,
-        })
+        });
+        // PR-13：统一 TTL sweep（60s tick；5min 收 subsystem、10min 摘 ctx、超数 LRU）
+        state.rt.clone().spawn(sweep_loop(state.clone()));
+        state
     }
 
     /// PR-0 可观测性：每会话上下文与传输队列快照
@@ -159,6 +266,118 @@ impl SftpManagerState {
     pub(crate) fn drop_ctx(&self, session_id: &str) {
         self.ctxs.lock().remove(session_id);
     }
+
+    /// 只看一眼当前 ctx（不触发建立；transfer_subscribe 逐 tick 重解析用——
+    /// TTL 回收后新 ctx 上任一命令建立，订阅 loop 必须跟上而不是空转旧 ctx）
+    pub(crate) fn peek_ctx(&self, session_id: &str) -> Option<Arc<SftpCtx>> {
+        let slot = self.ctxs.lock().get(session_id)?.clone();
+        let ctx = slot.ready()?;
+        if ctx.conn().is_closed() {
+            slot.invalidate();
+            return None;
+        }
+        Some(ctx)
+    }
+}
+
+/// TTL 回收决策（纯函数便于单测）：
+/// 有租约/活跃传输 → 保留；闲置 ≥10min → 摘 ctx（Transport 关闭）；
+/// 闲置 ≥5min → 只回收两 subsystem（Transport 保留，下次操作单飞重建）
+#[derive(Debug, PartialEq, Eq)]
+enum SweepAction {
+    Keep,
+    InvalidateSubsys,
+    Reclaim,
+}
+
+const SUBSYS_IDLE_TTL_MS: u64 = 5 * 60 * 1000;
+const CTX_IDLE_TTL_MS: u64 = 10 * 60 * 1000;
+/// ctx 总数上限（超出按最久空闲 LRU 摘除零租约 ctx）
+const MAX_CTX_SLOTS: usize = 32;
+const SWEEP_INTERVAL_SECS: u64 = 60;
+
+fn sweep_decision(lease_count: usize, active: usize, idle_ms: u64) -> SweepAction {
+    if lease_count > 0 || active > 0 {
+        return SweepAction::Keep;
+    }
+    if idle_ms >= CTX_IDLE_TTL_MS {
+        SweepAction::Reclaim
+    } else if idle_ms >= SUBSYS_IDLE_TTL_MS {
+        SweepAction::InvalidateSubsys
+    } else {
+        SweepAction::Keep
+    }
+}
+
+/// 统一 sweep loop（PR-13：不每 ctx 一个 timer；C9——先摘除再锁外关闭）
+async fn sweep_loop(state: Arc<SftpManagerState>) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(SWEEP_INTERVAL_SECS)).await;
+        let mut reclaimed: Vec<Arc<CtxSlot>> = Vec::new();
+        let mut subsys_idle: Vec<Arc<SftpCtx>> = Vec::new();
+        {
+            let mut map = state.ctxs.lock();
+            let mut victims: Vec<String> = Vec::new();
+            let mut lru: Vec<(String, u64)> = Vec::new(); // 可 LRU 摘除的零租约候选 (sid, idle)
+            for (sid, slot) in map.iter() {
+                let Some(ctx) = slot.ready() else {
+                    continue;
+                };
+                let (leases, active, idle) =
+                    (ctx.lease_count(), ctx.active_transfers(), ctx.idle_ms());
+                match sweep_decision(leases, active, idle) {
+                    SweepAction::Keep => {}
+                    SweepAction::InvalidateSubsys => subsys_idle.push(ctx.clone()),
+                    SweepAction::Reclaim => victims.push(sid.clone()),
+                }
+                if leases == 0 && active == 0 {
+                    lru.push((sid.clone(), idle));
+                }
+            }
+            // LRU：摘除 victims 后仍超数 → 追加最久空闲候选
+            let remaining = map.len().saturating_sub(victims.len());
+            if remaining > MAX_CTX_SLOTS {
+                lru.sort_by_key(|e| std::cmp::Reverse(e.1));
+                for (sid, _) in lru.into_iter().take(remaining - MAX_CTX_SLOTS) {
+                    if !victims.contains(&sid) {
+                        victims.push(sid);
+                    }
+                }
+            }
+            for sid in &victims {
+                if let Some(s) = map.remove(sid) {
+                    reclaimed.push(s);
+                }
+            }
+        }
+        // 锁外关闭（C9）：subsystem 代际失效（client Arc 随在途引用自然释放）
+        for ctx in subsys_idle {
+            ctx.metadata.invalidate();
+            ctx.data.invalidate();
+        }
+        // 槽 drop → ctx drop → Transport 关闭（网络 close 不持 Manager 锁）
+        drop(reclaimed);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod sweep_tests {
+    use super::*;
+
+    #[test]
+    fn sweep_decision_matrix() {
+        // 租约/活跃优先于一切
+        assert_eq!(sweep_decision(1, 0, u64::MAX), SweepAction::Keep);
+        assert_eq!(sweep_decision(0, 2, u64::MAX), SweepAction::Keep);
+        // 闲置分级
+        assert_eq!(sweep_decision(0, 0, 60_000), SweepAction::Keep);
+        assert_eq!(
+            sweep_decision(0, 0, SUBSYS_IDLE_TTL_MS),
+            SweepAction::InvalidateSubsys
+        );
+        assert_eq!(sweep_decision(0, 0, CTX_IDLE_TTL_MS), SweepAction::Reclaim);
+    }
 }
 
 /// 取/建会话的 SFTP 上下文（PR-12 单飞：并发 ensure 只握手一次，
@@ -185,7 +404,16 @@ pub(crate) async fn ensure_ctx(
             slot.invalidate();
         }
     }
-    slot.get().await.map_err(|e| e.to_string())
+    let ctx = slot.get().await.map_err(|e| e.to_string())?;
+    ctx.touch();
+    // 传输生命周期回调（PR-13）：租约挂摘 + 终态/暂停落库。
+    // 每次 ensure 幂等重设（同一 ctx 同一闭包语义），替代旧逐命令设置。
+    ctx.queue.set_progress_callback(transfer_lifecycle(
+        Arc::downgrade(&ctx),
+        store.clone(),
+        session_id.to_string(),
+    ));
+    Ok(ctx)
 }
 
 /// 建 ctx 槽：工厂闭包捕获 store/sid/rt——每次重建都重读会话配置
@@ -307,6 +535,9 @@ async fn build_ctx(
         data,
         queue,
         jobs,
+        leases: Mutex::new(HashMap::new()),
+        transfer_leases: Mutex::new(std::collections::HashSet::new()),
+        last_used: AtomicU64::new(now_millis()),
     })
 }
 
@@ -648,11 +879,23 @@ pub async fn local_list(path: String) -> Result<Value, String> {
 
 // ---------- 传输 ----------
 
-/// 进度回调 → 终态落 transfers 表
-fn persist_terminal(store: Arc<Store>, session_id: String) -> core_sftp::ProgressFn {
+/// 传输生命周期回调（PR-13）：租约挂摘（Queued/Running 挂、Paused/终态摘——
+/// 暂停转存后不阻止 ctx 回收）+ 终态与暂停落 transfers 表（暂停行是
+/// ctx 被 TTL 回收后 resume 回退路径的凭据）。
+fn transfer_lifecycle(
+    ctx_weak: std::sync::Weak<SftpCtx>,
+    store: Arc<Store>,
+    session_id: String,
+) -> core_sftp::ProgressFn {
     Arc::new(move |info| {
         use core_sftp::TransferState::*;
-        if !matches!(info.state, Done | Failed | Canceled) {
+        if let Some(ctx) = ctx_weak.upgrade() {
+            match info.state {
+                Queued | Running => ctx.lease_transfer(&info.id),
+                Paused | Done | Failed | Canceled => ctx.release_transfer(&info.id),
+            }
+        }
+        if !matches!(info.state, Done | Failed | Canceled | Paused) {
             return;
         }
         let store = store.clone();
@@ -859,8 +1102,6 @@ pub async fn sftp_upload(
 ) -> Result<Value, String> {
     let policy = parse_on_exists(on_exists)?;
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    ctx.queue
-        .set_progress_callback(persist_terminal(sessions.store.clone(), session_id.clone()));
     let local_path = PathBuf::from(&local);
     let meta = std::fs::metadata(&local_path).map_err(|e| format!("本地路径不可读: {e}"))?;
     let base_name = local_path
@@ -936,8 +1177,6 @@ pub async fn sftp_download(
 ) -> Result<Value, String> {
     let policy = parse_on_exists(on_exists)?;
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    ctx.queue
-        .set_progress_callback(persist_terminal(sessions.store.clone(), session_id.clone()));
     let st = meta(&ctx, |c| {
         let r = &remote;
         async move { c.stat(r).await }
@@ -1148,9 +1387,86 @@ pub async fn transfer_resume(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<(), String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    ctx.queue.resume(&transfer_id).map_err(|e| e.to_string())
+    match ctx.queue.resume(&transfer_id) {
+        Ok(()) => Ok(()),
+        // 任务不在队列（ctx 被 TTL 回收）→ 暂停转存回退：落库凭据 + 目标
+        // 状态校验后重入队（PR-13；校验失败明确报错，由用户选择覆盖/重传）
+        Err(_) => resume_from_stored(&ctx, &sessions.store, &session_id, &transfer_id).await,
+    }
 }
 
+/// 暂停转存回退：读 transfers 表 paused 行，校验目标未变后按断点重入队
+async fn resume_from_stored(
+    ctx: &Arc<SftpCtx>,
+    store: &Arc<Store>,
+    session_id: &str,
+    transfer_id: &str,
+) -> Result<(), String> {
+    let row = store
+        .transfers()
+        .get(transfer_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|r| r.session_id == session_id && r.state == "paused")
+        .ok_or_else(|| format!("传输不存在或不是可恢复的暂停任务: {transfer_id}"))?;
+    let data = ctx.data.get().await.map_err(|e| e.to_string())?;
+    match row.direction.as_str() {
+        "upload" => {
+            // 本地文件必须仍是原大小（改动过就无法按原断点续）
+            let local_size = std::fs::metadata(&row.local)
+                .map_err(|e| format!("本地文件不可读: {e}"))?
+                .len();
+            if local_size != row.bytes_total {
+                return Err(format!(
+                    "本地文件已变更（大小 {local_size} ≠ 暂停时 {}），无法续传——请重新上传",
+                    row.bytes_total
+                ));
+            }
+            // 远端尺寸不得超过暂停时已确认偏移（超过 = 远端被改写过）
+            if let Ok(st) = data.stat(&row.remote).await {
+                if st.size > row.bytes_done {
+                    return Err(format!(
+                        "远端文件已变更（大小 {} > 暂停时已确认 {}），无法续传——请覆盖重传",
+                        st.size, row.bytes_done
+                    ));
+                }
+            }
+            ctx.queue
+                .enqueue_upload(
+                    PathBuf::from(&row.local),
+                    row.remote.clone(),
+                    row.bytes_total,
+                    OnExists::Resume,
+                )
+                .await;
+        }
+        "download" => {
+            // 远端必须仍是原大小（改动过断点偏移就不可信）
+            let st = data
+                .stat(&row.remote)
+                .await
+                .map_err(|e| format!("远端文件不可读: {e}"))?;
+            if st.size != row.bytes_total {
+                return Err(format!(
+                    "远端文件已变更（大小 {} ≠ 暂停时 {}），无法续传——请删除后重新下载",
+                    st.size, row.bytes_total
+                ));
+            }
+            ctx.queue
+                .enqueue_download(
+                    row.remote.clone(),
+                    PathBuf::from(&row.local),
+                    row.bytes_total,
+                    OnExists::Resume,
+                )
+                .await;
+        }
+        other => return Err(format!("未知传输方向: {other}")),
+    }
+    // 新任务接替：删除旧 paused 行（避免 transfer_list 出现重复条目）
+    let _ = store.transfers().delete(transfer_id).await;
+    Ok(())
+}
 #[tauri::command]
 pub async fn transfer_cancel(
     session_id: String,
@@ -1291,9 +1607,10 @@ pub async fn transfer_subscribe(
     state: tauri::State<'_, Arc<SftpManagerState>>,
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<(), String> {
-    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    let queue = ctx.queue.clone();
-    let jobs = ctx.jobs.clone();
+    // 首帧前确保 ctx 存在（订阅即面板活跃语义）；loop 内逐 tick 重解析——
+    // TTL 回收旧 ctx 后，任一命令建立的新 ctx 必须被订阅跟上（PR-13）
+    let _ = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    let state = state.inner().clone();
     static GENERATION_SEQ: AtomicU64 = AtomicU64::new(1);
     tauri::async_runtime::spawn(async move {
         let generation = GENERATION_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -1325,20 +1642,23 @@ pub async fn transfer_subscribe(
             rate_book.insert(key.to_string(), (now, bytes));
             r
         };
-        // 当前全量实体（transfer 键 "t:<id>"，job 键 "j:<id>"）
+        // 当前全量实体（transfer 键 "t:<id>"，job 键 "j:<id>"）；
+        // ctx 可能被 TTL 回收/重建：逐 tick peek，无 ctx 则投影为空（心跳保活）
         let collect = |rate_book: &mut HashMap<String, (Instant, u64)>| {
             let now = Instant::now();
             let mut cur: Vec<(String, &'static str, Value)> = Vec::new();
-            for t in queue.list() {
-                let rate = rate_of(rate_book, &format!("t:{}", t.id), now, t.bytes_done);
-                let mut v = transfer_to_json(&t);
-                v["rate"] = json!(rate);
-                cur.push((format!("t:{}", t.id), "transfer", v));
-            }
-            for j in jobs.list() {
-                let key = format!("j:{}", j.id);
-                let rate = rate_of(rate_book, &key, now, j.bytes_done);
-                cur.push((key, "job", job_to_json(&j, rate)));
+            if let Some(ctx) = state.peek_ctx(&session_id) {
+                for t in ctx.queue.list() {
+                    let rate = rate_of(rate_book, &format!("t:{}", t.id), now, t.bytes_done);
+                    let mut v = transfer_to_json(&t);
+                    v["rate"] = json!(rate);
+                    cur.push((format!("t:{}", t.id), "transfer", v));
+                }
+                for j in ctx.jobs.list() {
+                    let key = format!("j:{}", j.id);
+                    let rate = rate_of(rate_book, &key, now, j.bytes_done);
+                    cur.push((key, "job", job_to_json(&j, rate)));
+                }
             }
             cur
         };
@@ -1473,13 +1793,16 @@ pub async fn sftp_edit_open(
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
-    // 长生命周期监视回路持当前代际 client；死亡后下次写入失败由 meta 路径重建
+    // 长生命周期监视回路持当前代际 client；死亡后下次写入失败由 meta 路径重建。
+    // Edit 租约（PR-13）：直编期间 ctx 不被 TTL 回收；guard 随监视任务结束释放
     let client = ctx.metadata.get().await.map_err(|e| e.to_string())?;
+    let lease = ctx.lease(SftpLeaseKind::Edit);
     let local_w = local.clone();
     let remote_w = remote.clone();
     let store = sessions.store.clone();
     let sid = session_id.clone();
     tauri::async_runtime::spawn(async move {
+        let _lease = lease;
         let mut last_mtime = std::fs::metadata(&local_w).and_then(|m| m.modified()).ok();
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
