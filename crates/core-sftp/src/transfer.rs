@@ -179,9 +179,12 @@ pub struct TransferQueue {
 }
 
 const CHUNK: usize = 256 * 1024;
-/// 下载 read-ahead 流水线深度（PR-16 P4-1）：在途窗口 = DEPTH × CHUNK = 2MiB。
-/// 先取保守值；P4-2 参数矩阵（effective_packet × in_flight × RTT）出数据后再调
-const READ_AHEAD_DEPTH: usize = 8;
+/// 下载 read-ahead 流水线深度（PR-16 P4-1/P4-2）：在途窗口 = DEPTH × CHUNK = 4MiB。
+/// 参数矩阵数据（bench_perf，RTT 50/200ms × depth 4/8/16 × chunk 64K/256K）：
+/// 吞吐 ≈ depth×chunk/RTT 线性——depth 8→16 在 50ms RTT 下 30→61MiB/s、
+/// 200ms 下 9→18MiB/s，近似翻倍；chunk 已对齐 256K 服务端包上限不再加大。
+/// 内存代价：单下载在途 4MiB × 3 执行槽 = 12MiB，可接受
+const READ_AHEAD_DEPTH: usize = 16;
 
 /// 锁中毒自愈（panic 现场已恢复，数据本身无损坏语义）
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

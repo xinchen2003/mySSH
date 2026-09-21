@@ -1,0 +1,35 @@
+   Compiling core-sftp v0.1.0 (D:\develop\claudeCode\mySSH\crates\core-sftp)
+    Finished `release` profile [optimized + debuginfo] target(s) in 40.55s
+     Running `target\release\examples\bench_perf.exe`
+
+== RTT 矩阵（32MiB 下载；串行 vs 生产流水线 8×256KiB）==
+  RTT_ms   serial_MiB    pipelined      加速比
+       0          8.0        159.5    19.8x
+      50          3.8         24.8     6.5x
+     100          2.0         13.7     7.0x
+     200          1.1          7.8     7.0x
+
+== 参数矩阵（32MiB；depth × chunk × RTT，MiB/s）==
+  RTT_ms    depth  chunk_K      MiB_s
+      50        4       64        3.9
+      50        4      256       13.4
+      50        8       64        8.0
+      50        8      256       29.7
+      50       16       64       15.6
+      50       16      256       50.8
+     200        4       64        1.1
+     200        4      256        4.5
+     200        8       64        2.2
+     200        8      256        8.8
+     200       16       64        4.4
+     200       16      256       17.8
+
+== list 隔离（200 项目录，50 次采样，P95 ms）==
+[dbg] meta_slot.get...
+[dbg] baseline list...
+[dbg] baseline done 141.5
+[dbg] during list...
+[dbg] during done 141.0
+[dbg] download joined
+baseline_p95=141.5ms  during_transfer_p95=141.0ms  ratio=1.00x
+PR-11 验收（≤2x）: PASS
