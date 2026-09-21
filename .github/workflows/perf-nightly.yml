@@ -1,0 +1,24 @@
+name: perf-nightly
+
+# PR-18 Nightly 层：性能报告套件（报告态）。先积累数据，稳定后再转硬门禁
+# （计划约束：禁止在共享 Runner 对 P95 延迟类指标设硬失败——故本工作流永不失败）。
+
+on:
+  schedule:
+    - cron: '0 18 * * *' # UTC 18:00 = 北京 02:00
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: run nightly perf suite
+        run: node scripts/perf-nightly.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-nightly
+          path: perf/nightly-*.json
+          retention-days: 90
