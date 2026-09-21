@@ -33,8 +33,13 @@ pub type SlotProbe<C> = Arc<dyn Fn(Arc<C>) -> BoxFut<Result<(), SftpError>> + Se
 type SlotOutcome<C> = Result<Arc<C>, String>;
 
 enum SlotState<C> {
-    /// 无 client（初始 / 上次重建失败）：下次取用发起新代际连接
+    /// 无 client（初始 / 上次重建失败且未设退避）：下次取用发起新代际连接
     Empty,
+    /// 上次连接失败 + 退避窗口（PR-12：不缓存失败，窗口内直接报错防连续捶打死服务）
+    Failed {
+        at: std::time::Instant,
+        error: String,
+    },
     /// 恢复中（首开/探活/重建）：结果经 watch 广播给全部 waiter
     Recovering {
         rx: tokio::sync::watch::Receiver<Option<SlotOutcome<C>>>,
@@ -55,6 +60,8 @@ pub struct SubsystemSlot<C> {
     /// 可疑标记：任一操作失败后置位；下次取用触发探活
     suspect: AtomicBool,
     seq: AtomicU64,
+    /// 连接失败退避窗口毫秒（0 = 立即重试；PR-12 ctx 级槽设 2s）
+    retry_backoff: AtomicU64,
 }
 
 impl<C: Send + Sync + 'static> SubsystemSlot<C> {
@@ -73,7 +80,45 @@ impl<C: Send + Sync + 'static> SubsystemSlot<C> {
             state: Mutex::new(SlotState::Empty),
             suspect: AtomicBool::new(false),
             seq: AtomicU64::new(0),
+            retry_backoff: AtomicU64::new(0),
         })
+    }
+
+    /// 连接失败退避窗口（PR-12 ctx 级槽；默认 0 = 失败后可立即重试）
+    pub fn set_retry_backoff(&self, d: std::time::Duration) {
+        self.retry_backoff
+            .store(d.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// 当前 Ready client（无则 None；不触发恢复）
+    pub fn ready(&self) -> Option<Arc<C>> {
+        match &*lock(&self.state) {
+            SlotState::Ready { client, .. } => Some(client.clone()),
+            _ => None,
+        }
+    }
+
+    /// 主动失效（如底层 Transport 已断）：Ready → Empty，下次取用重建；
+    /// Recovering/Failed 不动（在途恢复不被打断，退避语义保留）
+    pub fn invalidate(&self) {
+        let mut st = lock(&self.state);
+        if matches!(&*st, SlotState::Ready { .. }) {
+            *st = SlotState::Empty;
+        }
+    }
+
+    /// 槽状态名（perf 观测用）
+    pub fn state_name(&self) -> &'static str {
+        match &*lock(&self.state) {
+            SlotState::Empty => "empty",
+            SlotState::Failed { .. } => "failed",
+            SlotState::Recovering { .. } => "connecting",
+            SlotState::Ready { .. } => "ready",
+        }
+    }
+
+    fn backoff(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.retry_backoff.load(Ordering::Relaxed))
     }
 
     /// 操作失败上报：标可疑，下次取用先探活再决定保留/重建
@@ -107,6 +152,7 @@ impl<C: Send + Sync + 'static> SubsystemSlot<C> {
             Return(Arc<C>),
             Recover(Option<(u64, Arc<C>)>),
             Wait(tokio::sync::watch::Receiver<Option<SlotOutcome<C>>>),
+            Fail(String),
         }
         let mut rx = {
             let mut st = lock(&self.state);
@@ -118,6 +164,13 @@ impl<C: Send + Sync + 'static> SubsystemSlot<C> {
                     Act::Recover(Some((*generation, client.clone())))
                 }
                 SlotState::Empty => Act::Recover(None),
+                SlotState::Failed { at, error } => {
+                    if at.elapsed() < self.backoff() {
+                        Act::Fail(error.clone())
+                    } else {
+                        Act::Recover(None)
+                    }
+                }
                 SlotState::Recovering { rx } => Act::Wait(rx.clone()),
             };
             match act {
@@ -130,6 +183,7 @@ impl<C: Send + Sync + 'static> SubsystemSlot<C> {
                     rx
                 }
                 Act::Wait(rx) => rx,
+                Act::Fail(e) => return Err(SftpError::Subsystem(e)),
             }
         };
         loop {
@@ -191,7 +245,15 @@ impl<C: Send + Sync + 'static> SubsystemSlot<C> {
                     let _ = tx.send(Some(Ok(client)));
                 }
                 Done::Failed(e) => {
-                    *st = SlotState::Empty;
+                    let backoff = me.backoff();
+                    if backoff.is_zero() {
+                        *st = SlotState::Empty;
+                    } else {
+                        *st = SlotState::Failed {
+                            at: std::time::Instant::now(),
+                            error: e.clone(),
+                        };
+                    }
                     let _ = tx.send(Some(Err(e)));
                 }
             }
@@ -361,5 +423,49 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         gate.notify_waiters();
         assert_eq!(*h2.await.unwrap().unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn failed_backoff_suppresses_then_allows_retry() {
+        let (slot, fake) = fake_slot(None);
+        slot.set_retry_backoff(std::time::Duration::from_millis(50));
+        fake.fail_connect.store(true, Ordering::Relaxed);
+        assert!(slot.get().await.is_err());
+        assert_eq!(fake.connects.load(Ordering::Relaxed), 1);
+        assert_eq!(slot.state_name(), "failed");
+        // 退避窗口内：直接报错不重连（不捶打死服务）
+        assert!(slot.get().await.is_err());
+        assert_eq!(fake.connects.load(Ordering::Relaxed), 1);
+        // 窗口过后允许重连
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        fake.fail_connect.store(false, Ordering::Relaxed);
+        slot.get().await.unwrap();
+        assert_eq!(fake.connects.load(Ordering::Relaxed), 2);
+        assert_eq!(slot.state_name(), "ready");
+    }
+
+    #[tokio::test]
+    async fn invalidate_ready_forces_new_generation() {
+        let (slot, fake) = fake_slot(None);
+        slot.get().await.unwrap();
+        let gen = slot.generation();
+        slot.invalidate();
+        assert_eq!(slot.state_name(), "empty");
+        slot.get().await.unwrap();
+        assert_eq!(fake.connects.load(Ordering::Relaxed), 2);
+        assert_eq!(slot.generation(), gen + 1);
+    }
+
+    #[tokio::test]
+    async fn ready_accessor_does_not_trigger_recover() {
+        let (slot, fake) = fake_slot(None);
+        assert!(slot.ready().is_none());
+        assert_eq!(
+            fake.connects.load(Ordering::Relaxed),
+            0,
+            "ready() 不得触发连接"
+        );
+        slot.get().await.unwrap();
+        assert!(slot.ready().is_some());
     }
 }

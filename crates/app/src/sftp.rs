@@ -19,7 +19,8 @@ use tauri::ipc::Channel;
 
 use core_sftp::{
     rename_candidate, DirEntry, DirectoryJobScheduler, EntryKind, FileTerminal, JobRoot,
-    JobSnapshot, JobSpec, OnExists, SftpClient, SftpSlot, TransferDirection, TransferQueue,
+    JobSnapshot, JobSpec, OnExists, SftpClient, SftpSlot, SubsystemSlot, TransferDirection,
+    TransferQueue,
 };
 use core_store::Store;
 
@@ -43,9 +44,12 @@ pub struct SftpCtx {
     /// DirectoryJob 调度器（PR-8；与 queue 共享执行槽预算）
     jobs: Arc<DirectoryJobScheduler>,
 }
+/// ctx 级单飞槽（PR-12）：复用 SubsystemSlot 状态机——Connecting 单飞、
+/// 恢复任务由槽持有（首 waiter 取消不连累）、失败退避 2s、代际不串扰
+type CtxSlot = SubsystemSlot<SftpCtx>;
 
 pub struct SftpManagerState {
-    ctxs: Mutex<HashMap<String, Arc<SftpCtx>>>,
+    ctxs: Mutex<HashMap<String, Arc<CtxSlot>>>,
     rt: tokio::runtime::Handle,
 }
 
@@ -119,7 +123,10 @@ impl SftpManagerState {
         let ctxs = self.ctxs.lock();
         let sessions: Vec<Value> = ctxs
             .iter()
-            .map(|(id, ctx)| {
+            .map(|(id, slot)| {
+                let Some(ctx) = slot.ready() else {
+                    return json!({ "sessionId": id, "slotState": slot.state_name() });
+                };
                 let tasks = ctx.queue.list();
                 let (mut queued, mut running, mut paused) = (0usize, 0usize, 0usize);
                 for t in &tasks {
@@ -132,6 +139,8 @@ impl SftpManagerState {
                 }
                 json!({
                     "sessionId": id,
+                    "slotState": slot.state_name(),
+                    "ctxGen": slot.generation(),
                     "tasks": tasks.len(),
                     "queued": queued,
                     "running": running,
@@ -144,20 +153,86 @@ impl SftpManagerState {
             .collect();
         json!({ "contexts": ctxs.len(), "sessions": sessions })
     }
+
+    /// 会话配置变更/删除时摘除 ctx 槽（PR-12：旧组随配置失效；
+    /// 槽 drop → ctx drop → Transport 与两 subsystem 关闭）
+    pub(crate) fn drop_ctx(&self, session_id: &str) {
+        self.ctxs.lock().remove(session_id);
+    }
 }
 
-/// 取/建会话的 SFTP 上下文（Bulk 连接 + SFTP 子系统通道，bulk-rt 上建立）
+/// 取/建会话的 SFTP 上下文（PR-12 单飞：并发 ensure 只握手一次，
+/// 连接任务由槽持有，失败 2s 退避后可重连，代际不串扰）
 pub(crate) async fn ensure_ctx(
     state: &Arc<SftpManagerState>,
     store: &Arc<Store>,
     session_id: &str,
 ) -> Result<Arc<SftpCtx>, String> {
-    if let Some(ctx) = state.ctxs.lock().get(session_id) {
-        if !ctx.conn.is_closed() {
-            return Ok(ctx.clone());
+    let slot = {
+        let mut map = state.ctxs.lock();
+        match map.get(session_id) {
+            Some(s) => s.clone(),
+            None => {
+                let s = new_ctx_slot(state, store, session_id);
+                map.insert(session_id.to_string(), s.clone());
+                s
+            }
         }
-        state.ctxs.lock().remove(session_id); // 死连接剔除，重建
+    };
+    // Transport 死亡即时代际失效（C8）：摘除 Ready，下次取用走单飞重建
+    if let Some(ctx) = slot.ready() {
+        if ctx.conn().is_closed() {
+            slot.invalidate();
+        }
     }
+    slot.get().await.map_err(|e| e.to_string())
+}
+
+/// 建 ctx 槽：工厂闭包捕获 store/sid/rt——每次重建都重读会话配置
+/// （配置变更经 drop_ctx 摘除旧槽后，新槽工厂拿到新配置）
+fn new_ctx_slot(
+    state: &Arc<SftpManagerState>,
+    store: &Arc<Store>,
+    session_id: &str,
+) -> Arc<CtxSlot> {
+    let rt = state.rt.clone();
+    let store_f = store.clone();
+    let sid = session_id.to_string();
+    let slot = SubsystemSlot::new(
+        "sftp-ctx",
+        rt.clone(),
+        Arc::new(move || {
+            let store = store_f.clone();
+            let sid = sid.clone();
+            let rt = rt.clone();
+            Box::pin(async move {
+                build_ctx(&store, &sid, &rt)
+                    .await
+                    .map_err(core_sftp::SftpError::Subsystem)
+            })
+        }),
+        // 探活 = Transport 存活性检查（无 RPC 成本）
+        Arc::new(|ctx| {
+            Box::pin(async move {
+                if ctx.conn().is_closed() {
+                    Err(core_sftp::SftpError::Subsystem("transport closed".into()))
+                } else {
+                    Ok(())
+                }
+            })
+        }),
+    );
+    slot.set_retry_backoff(std::time::Duration::from_secs(2));
+    slot
+}
+
+/// 完整 ctx 构建（连接 + 双 subsystem + 队列 + 调度器 + 落库/audit 接线），
+/// 在 bulk-rt 上由槽的恢复任务执行——所有 waiter 拿到同一份接线完毕的 ctx
+async fn build_ctx(
+    store: &Arc<Store>,
+    session_id: &str,
+    rt: &tokio::runtime::Handle,
+) -> Result<SftpCtx, String> {
     let spec = crate::sessions::resolve_session_spec(store, session_id).await?;
     if matches!(spec.auth, crate::terminal::AuthSpec::KeyboardInteractive)
         || spec
@@ -168,66 +243,48 @@ pub(crate) async fn ensure_ctx(
         return Err("keyboard-interactive 不适用于 SFTP 后台连接（请改用密钥/agent）".into());
     }
     let auth = crate::terminal::auth_method_from(&spec.auth);
-    let rt = state.rt.clone();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    rt.spawn(async move {
-        let result = async {
-            let conn = core_ssh::SshConnection::connect(core_ssh::ConnectOptions {
-                host: spec.host.clone(),
-                port: spec.port,
-                user: spec.user.clone(),
-                auth,
-                jump_chain: crate::terminal::jump_chain_from(&spec.jump_chain),
-                class: core_ssh::ConnClass::Bulk,
-                window_size: 16 * 1024 * 1024,
-                max_packet_size: 32768,
-                keepalive: core_ssh::KeepaliveConfig::default(),
-                host_key_check: crate::tunnels::tunnel_host_key_check(),
-                ki_prompter: None,
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-            // PR-11：同 Transport 两条 SFTP subsystem——metadata（浏览/元操作）
-            // 与 data（传输数据面）各自独立代际，subsystem 级单飞重建（C8）
-            let conn = Arc::new(conn);
-            let handle = tokio::runtime::Handle::current();
-            let metadata = SftpSlot::open_sftp("metadata", conn.clone(), handle.clone())
-                .await
-                .map_err(|e| e.to_string())?;
-            let data = SftpSlot::open_sftp("data", conn.clone(), handle.clone())
-                .await
-                .map_err(|e| e.to_string())?;
-            let queue = Arc::new(TransferQueue::new(data.clone(), 3, handle.clone()));
-            let jobs = DirectoryJobScheduler::new(
-                data.clone(),
-                handle,
-                queue.permits_handle(),
-                crate::fs_limiter::scan_permits(),
-            );
-            Ok::<_, String>(SftpCtx {
-                conn,
-                metadata,
-                data,
-                queue,
-                jobs,
-            })
-        }
-        .await;
-        let _ = tx.send(result);
-    });
-    let ctx = Arc::new(rx.await.map_err(|_| "bulk-rt 连接任务丢失".to_string())??);
+    let conn = core_ssh::SshConnection::connect(core_ssh::ConnectOptions {
+        host: spec.host.clone(),
+        port: spec.port,
+        user: spec.user.clone(),
+        auth,
+        jump_chain: crate::terminal::jump_chain_from(&spec.jump_chain),
+        class: core_ssh::ConnClass::Bulk,
+        window_size: 16 * 1024 * 1024,
+        max_packet_size: 32768,
+        keepalive: core_ssh::KeepaliveConfig::default(),
+        host_key_check: crate::tunnels::tunnel_host_key_check(),
+        ki_prompter: None,
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    // PR-11：同 Transport 两条 SFTP subsystem——metadata（浏览/元操作）
+    // 与 data（传输数据面）各自独立代际，subsystem 级单飞重建（C8）
+    let conn = Arc::new(conn);
+    let handle = tokio::runtime::Handle::current();
+    let metadata = SftpSlot::open_sftp("metadata", conn.clone(), handle.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    let data = SftpSlot::open_sftp("data", conn.clone(), handle.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    let queue = Arc::new(TransferQueue::new(data.clone(), 3, handle.clone()));
+    let jobs = DirectoryJobScheduler::new(
+        data.clone(),
+        handle,
+        queue.permits_handle(),
+        crate::fs_limiter::scan_permits(),
+    );
     // DirectoryJob 接线（ADR 0001 边 ⑤⑥）：writer 批量落库（fire-and-forget）+ job 终态 audit
     let (wtx, wrx) = tokio::sync::mpsc::channel::<FileTerminal>(4096);
-    state
-        .rt
-        .spawn(history_writer(store.clone(), session_id.to_string(), wrx));
-    ctx.jobs.set_file_terminal_callback(Arc::new(move |rec| {
+    rt.spawn(history_writer(store.clone(), session_id.to_string(), wrx));
+    jobs.set_file_terminal_callback(Arc::new(move |rec| {
         let _ = wtx.try_send(rec); // 满则丢弃文件级记录（红线：SQLite 慢不卡传输）
     }));
     {
         let store = store.clone();
         let sid = session_id.to_string();
-        ctx.jobs.set_job_terminal_callback(Arc::new(move |snap| {
+        jobs.set_job_terminal_callback(Arc::new(move |snap| {
             let store = store.clone();
             let sid = sid.clone();
             let detail = format!(
@@ -244,19 +301,13 @@ pub(crate) async fn ensure_ctx(
             });
         }));
     }
-    // 并发建连去重：等待 rx 期间可能有别的调用已建好并插入（SFTP 打开瞬间
-    // sftp_list / transfer_list / transfer_subscribe 并发触发）。若不检查，
-    // 后插入者覆盖 map，而先返回的调用方（如 transfer_subscribe 推送循环）
-    // 永久持有孤儿 ctx 的空 queue —— 订阅帧恒空、前端传输面板无任何反馈。
-    let mut map = state.ctxs.lock();
-    if let Some(existing) = map.get(session_id) {
-        if !existing.conn.is_closed() {
-            return Ok(existing.clone()); // 多余的自建 ctx 随 drop 关闭连接
-        }
-    }
-    map.insert(session_id.to_string(), ctx.clone());
-    drop(map);
-    Ok(ctx)
+    Ok(SftpCtx {
+        conn,
+        metadata,
+        data,
+        queue,
+        jobs,
+    })
 }
 
 // ---------- 浏览与元操作 ----------
