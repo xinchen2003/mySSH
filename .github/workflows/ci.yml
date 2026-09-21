@@ -97,6 +97,20 @@ jobs:
           path: spike/results/*.json
           retention-days: 30
 
+  perf-gate:
+    # PR-18 性能门禁（PR 级微基准）：纯内存/回环、release、median。
+    # 阈值按开发机首测 ×约 2 倍裕度校准；共享 Runner 性能未定标，
+    # 先 continue-on-error 出报告积累数据（计划约束：禁止共享 Runner 硬失败
+    # P95 类指标），稳定后再转硬门禁。
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: run perf gate
+        run: node scripts/perf-gate.mjs
+
   e2e-linux:
     # 轴一 1.3：真机 OpenSSH 容器 E2E——连接/键入回显、SFTP 回环、known_hosts、su 密码应答
     runs-on: ubuntu-latest
