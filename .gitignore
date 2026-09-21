@@ -12,3 +12,4 @@ perf/
 
 # 设计规格/验收证据等内部文档不入库（本地保留）
 docs/
+bench_perf.out
