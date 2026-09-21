@@ -1064,20 +1064,23 @@ async fn sftp_tool_inner(st: &ServerState, name: &str, args: &Value) -> Result<S
     match name {
         "sftp_home" => {
             let (_sid, ctx) = sftp_ctx(st, args, name).await?;
-            let home = crate::sftp::resolve_home_abs(ctx.client()).await?;
+            let mc = ctx.meta_client().await?;
+            let home = crate::sftp::resolve_home_abs(&mc).await?;
             Ok(json!({ "path": home }).to_string())
         }
         "sftp_list" => {
             let (_sid, ctx) = sftp_ctx(st, args, name).await?;
             let path = req_str(args, "path", name)?;
-            let entries = ctx.client().list(path).await.map_err(|e| e.to_string())?;
+            let p = path.to_string();
+            let entries = crate::sftp::meta(&ctx, |c| async move { c.list(&p).await }).await?;
             let items: Vec<Value> = entries.iter().map(crate::sftp::entry_to_json).collect();
             Ok(json!({ "path": path, "entries": items }).to_string())
         }
         "sftp_stat" => {
             let (_sid, ctx) = sftp_ctx(st, args, name).await?;
             let path = req_str(args, "path", name)?;
-            let e = ctx.client().lstat(path).await.map_err(|e| e.to_string())?;
+            let p = path.to_string();
+            let e = crate::sftp::meta(&ctx, |c| async move { c.lstat(&p).await }).await?;
             Ok(crate::sftp::entry_to_json(&e).to_string())
         }
         "sftp_read" => {
@@ -1089,11 +1092,8 @@ async fn sftp_tool_inner(st: &ServerState, name: &str, args: &Value) -> Result<S
                 .and_then(Value::as_u64)
                 .unwrap_or(SFTP_READ_DEFAULT_CAP)
                 .clamp(1, SFTP_IO_MAX);
-            let f = ctx
-                .client()
-                .open_read(path)
-                .await
-                .map_err(|e| e.to_string())?;
+            let p = path.to_string();
+            let f = crate::sftp::meta(&ctx, |c| async move { c.open_read(&p).await }).await?;
             let mut buf = Vec::new();
             f.take(max + 1)
                 .read_to_end(&mut buf)
@@ -1122,10 +1122,9 @@ async fn sftp_tool_inner(st: &ServerState, name: &str, args: &Value) -> Result<S
                     SFTP_IO_MAX
                 ));
             }
-            ctx.client()
-                .overwrite(path, content.as_bytes())
-                .await
-                .map_err(|e| e.to_string())?;
+            let p = path.to_string();
+            let bytes = content.as_bytes();
+            crate::sftp::meta(&ctx, move |c| async move { c.overwrite(&p, bytes).await }).await?;
             mcp_audit(
                 st,
                 &sid,
@@ -1138,7 +1137,8 @@ async fn sftp_tool_inner(st: &ServerState, name: &str, args: &Value) -> Result<S
         "sftp_mkdir" => {
             let (sid, ctx) = sftp_ctx(st, args, name).await?;
             let path = req_str(args, "path", name)?;
-            ctx.client().mkdir(path).await.map_err(|e| e.to_string())?;
+            let p = path.to_string();
+            crate::sftp::meta(&ctx, move |c| async move { c.mkdir(&p).await }).await?;
             mcp_audit(st, &sid, "mcp_sftp_mkdir", &json!({ "path": path })).await;
             Ok(json!({ "ok": true, "path": path }).to_string())
         }
@@ -1149,26 +1149,28 @@ async fn sftp_tool_inner(st: &ServerState, name: &str, args: &Value) -> Result<S
                 .get("recursive")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let meta = ctx.client().lstat(path).await.map_err(|e| e.to_string())?;
-            match meta.kind {
+            let p = path.to_string();
+            let st_meta = crate::sftp::meta(&ctx, {
+                let p = p.clone();
+                move |c| async move { c.lstat(&p).await }
+            })
+            .await?;
+            match st_meta.kind {
                 core_sftp::EntryKind::Dir => {
                     if recursive {
-                        ctx.client()
-                            .remove_recursive(path)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        crate::sftp::meta(
+                            &ctx,
+                            move |c| async move { c.remove_recursive(&p).await },
+                        )
+                        .await?;
                     } else {
-                        ctx.client()
-                            .remove_dir(path)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        crate::sftp::meta(&ctx, move |c| async move { c.remove_dir(&p).await })
+                            .await?;
                     }
                 }
-                _ => ctx
-                    .client()
-                    .remove_file(path)
-                    .await
-                    .map_err(|e| e.to_string())?,
+                _ => {
+                    crate::sftp::meta(&ctx, move |c| async move { c.remove_file(&p).await }).await?
+                }
             }
             mcp_audit(
                 st,
@@ -1183,10 +1185,9 @@ async fn sftp_tool_inner(st: &ServerState, name: &str, args: &Value) -> Result<S
             let (sid, ctx) = sftp_ctx(st, args, name).await?;
             let from = req_str(args, "from", name)?;
             let to = req_str(args, "to", name)?;
-            ctx.client()
-                .rename(from, to)
-                .await
-                .map_err(|e| e.to_string())?;
+            let f = from.to_string();
+            let t = to.to_string();
+            crate::sftp::meta(&ctx, move |c| async move { c.rename(&f, &t).await }).await?;
             mcp_audit(
                 st,
                 &sid,
@@ -1202,10 +1203,8 @@ async fn sftp_tool_inner(st: &ServerState, name: &str, args: &Value) -> Result<S
             let mode_raw = req_str(args, "mode", name)?;
             let mode = u32::from_str_radix(mode_raw, 8)
                 .map_err(|_| format!("mode 需为八进制字符串（如 755），收到: {mode_raw}"))?;
-            ctx.client()
-                .chmod(path, mode)
-                .await
-                .map_err(|e| e.to_string())?;
+            let p = path.to_string();
+            crate::sftp::meta(&ctx, move |c| async move { c.chmod(&p, mode).await }).await?;
             mcp_audit(
                 st,
                 &sid,
@@ -1250,7 +1249,8 @@ async fn sftp_tool_inner(st: &ServerState, name: &str, args: &Value) -> Result<S
             let remote = req_str(args, "remote_path", name)?;
             let local = req_str(args, "local_path", name)?;
             // 预检远端存在性与大小（入队需要 bytes_total；缺失/超限在入队前报错）
-            let meta = ctx.client().stat(remote).await.map_err(|e| e.to_string())?;
+            let r = remote.to_string();
+            let meta = crate::sftp::meta(&ctx, move |c| async move { c.stat(&r).await }).await?;
             if meta.kind == core_sftp::EntryKind::Dir {
                 return Err(format!("远端路径是目录（目录下载请用 UI）：{remote}"));
             }

@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, Notify, Semaphore};
 
 use crate::transfer::{download_once, upload_once, TransferInner};
 use crate::{
-    EntryKind, OnExists, SftpClient, SftpError, TransferDirection, TransferId, TransferInfo,
+    EntryKind, OnExists, SftpError, SftpSlot, TransferDirection, TransferId, TransferInfo,
     TransferState,
 };
 
@@ -245,7 +245,8 @@ impl JobInner {
 
 /// 每会话（SftpCtx）一个的目录任务调度器
 pub struct DirectoryJobScheduler {
-    sftp: Arc<SftpClient>,
+    /// 数据面 subsystem 槽（PR-11/C8）：扫描/传输每次操作经 get() 取当前代际
+    data: Arc<SftpSlot>,
     rt: tokio::runtime::Handle,
     /// 执行槽：与 TransferQueue 共享同一信号量（ADR：job 与单文件传输同预算）
     permits: Arc<Semaphore>,
@@ -265,24 +266,24 @@ type JobTerminalFn = Arc<dyn Fn(JobSnapshot) + Send + Sync>;
 
 impl DirectoryJobScheduler {
     pub fn new(
-        sftp: Arc<SftpClient>,
+        data: Arc<SftpSlot>,
         rt: tokio::runtime::Handle,
         permits: Arc<Semaphore>,
         scan_io: Arc<Semaphore>,
     ) -> Arc<Self> {
-        Self::with_caps(sftp, rt, permits, scan_io, SchedulerCaps::default())
+        Self::with_caps(data, rt, permits, scan_io, SchedulerCaps::default())
     }
 
     /// 测试用：缩小容量压测边界（生产走 `new`）
     pub fn with_caps(
-        sftp: Arc<SftpClient>,
+        data: Arc<SftpSlot>,
         rt: tokio::runtime::Handle,
         permits: Arc<Semaphore>,
         scan_io: Arc<Semaphore>,
         caps: SchedulerCaps,
     ) -> Arc<Self> {
         Arc::new(Self {
-            sftp,
+            data,
             rt,
             permits,
             scan_io,
@@ -547,10 +548,11 @@ fn refresh_phase(job: &JobInner) {
 /// 冲突解析（与 app 层 resolve_remote_target/resolve_local_target 同语义，
 /// 移入 worker 逐文件执行；Ok(None) = skip）
 async fn resolve_remote(
-    sftp: &Arc<SftpClient>,
+    data: &Arc<SftpSlot>,
     target: &str,
     policy: OnExists,
 ) -> Result<Option<(String, OnExists)>, SftpError> {
+    let sftp = data.get().await?;
     if sftp.stat(target).await.is_err() {
         return Ok(Some((target.to_string(), policy.runtime())));
     }
@@ -743,29 +745,38 @@ impl Coordinator {
         let tx = self.page_tx.clone();
         match self.job.direction {
             TransferDirection::Download => {
-                let sftp = self.sched.sftp.clone();
+                let data = self.sched.data.clone();
                 self.sched.rt.spawn(async move {
-                    let msg = match sftp.list(&dir.remote).await {
-                        Ok(entries) => {
-                            let mut lanes = Lanes::default();
-                            let mut skipped = 0u64;
-                            for e in entries {
-                                match e.kind {
-                                    EntryKind::File => lanes.files.push_back((e.name, e.size)),
-                                    EntryKind::Dir => lanes.dirs.push_back(e.name),
-                                    // symlink/特殊文件不跟随（ADR 决策 7：防环）
-                                    EntryKind::Symlink | EntryKind::Other => skipped += 1,
-                                }
-                            }
-                            ScanMsg::Listed {
-                                parent: dir,
-                                lanes,
-                                skipped,
-                            }
-                        }
+                    let msg = match data.get().await {
                         Err(e) => ScanMsg::DirFailed {
                             parent: dir,
                             error: e.to_string(),
+                        },
+                        Ok(sftp) => match sftp.list(&dir.remote).await {
+                            Ok(entries) => {
+                                let mut lanes = Lanes::default();
+                                let mut skipped = 0u64;
+                                for e in entries {
+                                    match e.kind {
+                                        EntryKind::File => lanes.files.push_back((e.name, e.size)),
+                                        EntryKind::Dir => lanes.dirs.push_back(e.name),
+                                        // symlink/特殊文件不跟随（ADR 决策 7：防环）
+                                        EntryKind::Symlink | EntryKind::Other => skipped += 1,
+                                    }
+                                }
+                                ScanMsg::Listed {
+                                    parent: dir,
+                                    lanes,
+                                    skipped,
+                                }
+                            }
+                            Err(e) => {
+                                data.record_error();
+                                ScanMsg::DirFailed {
+                                    parent: dir,
+                                    error: e.to_string(),
+                                }
+                            }
                         },
                     };
                     let _ = tx.send(msg).await;
@@ -774,13 +785,19 @@ impl Coordinator {
             }
             TransferDirection::Upload => {
                 // mkdir 关：父目录远端 mkdir 先于其文件入 ready（幂等忽略已存在）
-                let sftp = self.sched.sftp.clone();
+                let data = self.sched.data.clone();
                 let sem = self.sched.scan_io.clone();
                 self.sched.rt.spawn(async move {
-                    let mkdir_err = match sftp.mkdir(&dir.remote).await {
-                        Ok(()) => None,
-                        Err(e) if e.to_string().contains("Failure") => None,
+                    let mkdir_err = match data.get().await {
                         Err(e) => Some(e.to_string()),
+                        Ok(sftp) => match sftp.mkdir(&dir.remote).await {
+                            Ok(()) => None,
+                            Err(e) if e.to_string().contains("Failure") => None,
+                            Err(e) => {
+                                data.record_error();
+                                Some(e.to_string())
+                            }
+                        },
                     };
                     if let Some(e) = mkdir_err {
                         let _ = tx
@@ -913,7 +930,7 @@ impl Worker {
         // 冲突解析（逐文件；skip 计 skipped）
         let resolved = match self.job.direction {
             TransferDirection::Upload => {
-                resolve_remote(&self.sched.sftp, &task.remote, self.job.policy)
+                resolve_remote(&self.sched.data, &task.remote, self.job.policy)
                     .await
                     .map(|o| o.map(|(remote, mode)| (task.local.clone(), remote, mode)))
             }
@@ -987,11 +1004,12 @@ impl Worker {
             };
             lock(&self.job.current).insert(self.idx, display);
             self.job.active.fetch_add(1, Ordering::Relaxed);
-            let result = match self.job.direction {
-                TransferDirection::Download => {
-                    download_once(self.sched.sftp.clone(), t.clone()).await
-                }
-                TransferDirection::Upload => upload_once(self.sched.sftp.clone(), t.clone()).await,
+            let result = match self.sched.data.get().await {
+                Ok(client) => match self.job.direction {
+                    TransferDirection::Download => download_once(client, t.clone()).await,
+                    TransferDirection::Upload => upload_once(client, t.clone()).await,
+                },
+                Err(e) => Err(e),
             };
             self.job.active.fetch_sub(1, Ordering::Relaxed);
             lock(&self.job.current).remove(&self.idx);
@@ -1015,6 +1033,8 @@ impl Worker {
                     if self.job.pause.load(Ordering::Relaxed) {
                         continue; // 暂停中断不算失败：等恢复后从断点重跑（不占 permit）
                     }
+                    // 真实失败：标 data 代际可疑，下次取用先探活、死了则单飞重建（C8）
+                    self.sched.data.record_error();
                     attempt += 1;
                     if attempt > MAX_FILE_RETRIES {
                         self.job.bytes_done.fetch_add(bytes, Ordering::Relaxed);

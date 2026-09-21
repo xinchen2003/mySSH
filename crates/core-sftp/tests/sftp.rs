@@ -518,9 +518,8 @@ async fn transfer_upload_download_integrity() {
     let root = temp_root("xfer");
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
     let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
-        sftp,
+        make_slot(conn).await,
         3,
         tokio::runtime::Handle::current(),
     ));
@@ -573,9 +572,8 @@ async fn download_resumes_from_local_offset() {
     std::fs::write(root.join("full.bin"), pattern(200_000)).unwrap();
     let port = start_sftp_server(root).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
     let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
-        sftp,
+        make_slot(conn).await,
         2,
         tokio::runtime::Handle::current(),
     ));
@@ -607,9 +605,8 @@ async fn pause_then_cancel_slow_upload() {
     let root = temp_root("slow");
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
     let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
-        sftp,
+        make_slot(conn).await,
         2,
         tokio::runtime::Handle::current(),
     ));
@@ -685,9 +682,8 @@ async fn retry_rejects_non_terminal_then_reruns() {
     let root = temp_root("retry");
     let port = start_sftp_server(root).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
     let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
-        sftp,
+        make_slot(conn).await,
         2,
         tokio::runtime::Handle::current(),
     ));
@@ -734,9 +730,8 @@ async fn remove_rejects_non_terminal() {
     let root = temp_root("rm");
     let port = start_sftp_server(root).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
     let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
-        sftp,
+        make_slot(conn).await,
         2,
         tokio::runtime::Handle::current(),
     ));
@@ -769,9 +764,8 @@ async fn clear_where_only_removes_matching_terminal() {
     let root = temp_root("clear");
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
     let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
-        sftp,
+        make_slot(conn).await,
         2,
         tokio::runtime::Handle::current(),
     ));
@@ -834,9 +828,8 @@ async fn pause_all_resume_all_flip_states() {
     let root = temp_root("pauseall");
     let port = start_sftp_server(root).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
     let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
-        sftp,
+        make_slot(conn).await,
         2,
         tokio::runtime::Handle::current(),
     ));
@@ -893,9 +886,8 @@ async fn paused_tasks_release_permits_for_queued_transfer() {
     let root = temp_root("permit");
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
     let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
-        sftp,
+        make_slot(conn).await,
         3,
         tokio::runtime::Handle::current(),
     ));
@@ -989,11 +981,22 @@ fn job_caps() -> SchedulerCaps {
     }
 }
 
+/// PR-11：数据面 slot 构造（queue/scheduler 现收 SftpSlot；断言仍可用裸 client）
+async fn make_slot(conn: core_ssh::SshConnection) -> std::sync::Arc<core_sftp::SftpSlot> {
+    core_sftp::SftpSlot::open_sftp(
+        "data",
+        std::sync::Arc::new(conn),
+        tokio::runtime::Handle::current(),
+    )
+    .await
+    .expect("sftp slot")
+}
+
 fn make_scheduler(
-    sftp: std::sync::Arc<core_sftp::SftpClient>,
+    data: std::sync::Arc<core_sftp::SftpSlot>,
 ) -> std::sync::Arc<DirectoryJobScheduler> {
     DirectoryJobScheduler::with_caps(
-        sftp,
+        data,
         tokio::runtime::Handle::current(),
         std::sync::Arc::new(tokio::sync::Semaphore::new(3)),
         std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
@@ -1057,8 +1060,7 @@ async fn job_upload_wide_tree_bounded() {
     let root = temp_root("job-up-remote");
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
-    let sched = make_scheduler(sftp);
+    let sched = make_scheduler(make_slot(conn).await);
 
     let local = temp_root("job-up-local").join("tree");
     let total = build_tree(&local, 50, 20, 64); // 1000 文件 / 50 目录，caps 全面饱和
@@ -1099,8 +1101,7 @@ async fn job_download_nested_then_skip_rerun() {
     }
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
-    let sched = make_scheduler(sftp);
+    let sched = make_scheduler(make_slot(conn).await);
 
     let local = temp_root("job-down-local");
     let id = sched.submit(JobSpec {
@@ -1142,8 +1143,7 @@ async fn job_cancel_during_scan() {
     build_tree(&root, 100, 20, 64); // 2000 文件，扫描持续足够久
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
-    let sched = make_scheduler(sftp);
+    let sched = make_scheduler(make_slot(conn).await);
 
     let id = sched.submit(JobSpec {
         direction: core_sftp::TransferDirection::Download,
@@ -1167,8 +1167,7 @@ async fn job_pause_resume_upload() {
     let root = temp_root("job-pause-remote");
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
-    let sched = make_scheduler(sftp);
+    let sched = make_scheduler(make_slot(conn).await);
 
     let local = temp_root("job-pause-local").join("tree");
     let total = build_tree(&local, 20, 10, 1024 * 64); // 200 × 64KB
@@ -1236,8 +1235,7 @@ async fn job_symlink_not_followed() {
     let root = temp_root("job-sym-remote");
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
-    let sched = make_scheduler(sftp);
+    let sched = make_scheduler(make_slot(conn).await);
     let id = sched.submit(JobSpec {
         direction: core_sftp::TransferDirection::Upload,
         roots: vec![JobRoot {
@@ -1270,11 +1268,10 @@ async fn job_depth_guard() {
     let root = temp_root("job-deep-remote");
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
     let mut caps = job_caps();
     caps.max_depth = 2; // tree(0) → a(1) → b(2) → c(3 被拦)
     let sched = DirectoryJobScheduler::with_caps(
-        sftp,
+        make_slot(conn).await,
         tokio::runtime::Handle::current(),
         std::sync::Arc::new(tokio::sync::Semaphore::new(3)),
         std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
@@ -1301,8 +1298,7 @@ async fn job_retry_terminal_reruns() {
     let root = temp_root("job-retry-remote");
     let port = start_sftp_server(root.clone()).await;
     let conn = connect(port).await;
-    let sftp = std::sync::Arc::new(core_sftp::SftpClient::open(&conn).await.expect("sftp"));
-    let sched = make_scheduler(sftp);
+    let sched = make_scheduler(make_slot(conn).await);
 
     let local = temp_root("job-retry-local").join("tree");
     let total = build_tree(&local, 2, 3, 64);
@@ -1325,4 +1321,80 @@ async fn job_retry_terminal_reruns() {
     assert_eq!(j2.completed_files, total);
     // 终态可移除；进行中拒绝（前面 job_cancel 用例已覆盖进行中 remove 拒绝前的 cancel 路径）
     assert!(sched.remove(&id2).is_ok());
+}
+
+/// PR-11/C8：同 Transport 两条 subsystem——大文件传输占满 data 时，
+/// metadata 浏览操作在独立通道上必须照常成功（功能性隔离证明；
+/// 量化指标「list P95 劣化 ≤2×」属基准范畴，由 PR-16 参数实验覆盖）。
+#[tokio::test]
+async fn slot_dual_subsystem_metadata_during_transfer() {
+    let root = temp_root("slot-remote");
+    std::fs::write(root.join("big.bin"), pattern(8 * 1024 * 1024)).unwrap();
+    let port = start_sftp_server(root.clone()).await;
+    let conn = std::sync::Arc::new(connect(port).await);
+    let rt = tokio::runtime::Handle::current();
+    let metadata = core_sftp::SftpSlot::open_sftp("metadata", conn.clone(), rt.clone())
+        .await
+        .expect("metadata slot");
+    let data = core_sftp::SftpSlot::open_sftp("data", conn.clone(), rt.clone())
+        .await
+        .expect("data slot");
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(data, 3, rt));
+
+    let local = temp_root("slot-local").join("big.bin");
+    let total = 8 * 1024 * 1024u64;
+    let id = q
+        .enqueue_download(
+            "/big.bin".into(),
+            local.clone(),
+            total,
+            core_sftp::OnExists::Overwrite,
+        )
+        .await;
+
+    // 传输进行中并发 20 次 metadata list：独立 subsystem 不得被数据面拖死
+    let meta = async {
+        for _ in 0..20 {
+            let c = metadata.get().await.expect("metadata client");
+            let es = c.list("/").await.expect("list during transfer");
+            assert!(es.iter().any(|e| e.name == "big.bin"));
+        }
+    };
+    let ((), info) = tokio::join!(meta, wait_done(&q, &id));
+    assert_eq!(
+        info.state,
+        core_sftp::TransferState::Done,
+        "{:?}",
+        info.error
+    );
+    assert_eq!(std::fs::read(&local).unwrap(), pattern(8 * 1024 * 1024));
+}
+
+/// PR-11/C8：metadata 代际重建不影响 data（metadata 探活/重建期间
+/// data 上的传输 client 不被替换、不中断）。
+#[tokio::test]
+async fn slot_metadata_recover_does_not_touch_data() {
+    let root = temp_root("slot-iso-remote");
+    std::fs::write(root.join("a.bin"), pattern(1000)).unwrap();
+    let port = start_sftp_server(root.clone()).await;
+    let conn = std::sync::Arc::new(connect(port).await);
+    let rt = tokio::runtime::Handle::current();
+    let metadata = core_sftp::SftpSlot::open_sftp("metadata", conn.clone(), rt.clone())
+        .await
+        .expect("metadata slot");
+    let data = core_sftp::SftpSlot::open_sftp("data", conn.clone(), rt.clone())
+        .await
+        .expect("data slot");
+
+    let data_client = data.get().await.expect("data client");
+    let data_gen = data.generation();
+    // metadata 标可疑 → 下次取用探活（探活通过保留原代际）
+    metadata.record_error();
+    metadata.get().await.expect("metadata recover");
+    // data 完全不受影响：代际不变、client 实例不变、操作正常
+    assert_eq!(data.generation(), data_gen);
+    let again = data.get().await.expect("data client again");
+    assert!(std::sync::Arc::ptr_eq(&data_client, &again));
+    let es = again.list("/").await.expect("data list");
+    assert!(es.iter().any(|e| e.name == "a.bin"));
 }

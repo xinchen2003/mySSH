@@ -9,6 +9,7 @@ mod client;
 mod error;
 mod job;
 mod shellint;
+mod slot;
 mod transfer;
 
 pub use client::{DirEntry, EntryKind, SftpClient};
@@ -18,6 +19,7 @@ pub use job::{
     SchedulerCaps,
 };
 pub use shellint::{add_integration, has_integration, remove_integration, SCRIPT, SCRIPT_REL};
+pub use slot::{SftpSlot, SubsystemSlot};
 pub use transfer::{
     rename_candidate, OnExists, ProgressFn, TransferId, TransferInfo, TransferQueue, TransferState,
 };

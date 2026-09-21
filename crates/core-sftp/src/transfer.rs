@@ -10,7 +10,7 @@
 //!   （否则最后若干包可能未落地——集成测试踩过）
 //! - 进度经回调外发（app 层接 Channel 推送 UI）；速率由调用方按采样算
 
-use crate::{SftpClient, SftpError, TransferDirection};
+use crate::{SftpClient, SftpError, SftpSlot, TransferDirection};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -166,8 +166,9 @@ impl TransferInner {
 pub type ProgressFn = Arc<dyn Fn(TransferInfo) + Send + Sync>;
 
 pub struct TransferQueue {
-    sftp: Arc<SftpClient>,
-    /// 传输任务落点（app 传 bulk-rt 的 Handle，保 runtime 分离铁律）
+    /// 数据面 subsystem 槽（PR-11/C8）：每次尝试经 get() 取当前代际 client，
+    /// data 代际重建后重试自动落到新 client；失败经 record_error 上报可疑
+    data: Arc<SftpSlot>,
     rt: tokio::runtime::Handle,
     /// 执行槽（DirectoryJob worker 与单文件传输共享同一并发预算，ADR 0001）
     pub(crate) permits: Arc<Semaphore>,
@@ -185,9 +186,9 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl TransferQueue {
-    pub fn new(sftp: Arc<SftpClient>, max_concurrent: usize, rt: tokio::runtime::Handle) -> Self {
+    pub fn new(data: Arc<SftpSlot>, max_concurrent: usize, rt: tokio::runtime::Handle) -> Self {
         Self {
-            sftp,
+            data,
             rt,
             permits: Arc::new(Semaphore::new(max_concurrent.max(1))),
             transfers: Mutex::new(HashMap::new()),
@@ -347,9 +348,12 @@ impl TransferQueue {
             }
             lock(&t.info).state = TransferState::Running;
             self.emit(&t);
-            let result = match direction {
-                TransferDirection::Download => download_once(self.sftp.clone(), t.clone()).await,
-                TransferDirection::Upload => upload_once(self.sftp.clone(), t.clone()).await,
+            let result = match self.data.get().await {
+                Ok(client) => match direction {
+                    TransferDirection::Download => download_once(client, t.clone()).await,
+                    TransferDirection::Upload => upload_once(client, t.clone()).await,
+                },
+                Err(e) => Err(e),
             };
             // 执行单元结束（完成/中断/失败）：立即释放 permit，后续去向均不持有它
             drop(permit);
@@ -367,6 +371,8 @@ impl TransferQueue {
                     if t.pause.load(Ordering::Relaxed) {
                         continue;
                     }
+                    // 真实失败：标 data 代际可疑，下次取用先探活、死了则单飞重建（C8）
+                    self.data.record_error();
                     let over = {
                         let mut info = lock(&t.info);
                         info.retries += 1;

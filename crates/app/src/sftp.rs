@@ -19,7 +19,7 @@ use tauri::ipc::Channel;
 
 use core_sftp::{
     rename_candidate, DirEntry, DirectoryJobScheduler, EntryKind, FileTerminal, JobRoot,
-    JobSnapshot, JobSpec, OnExists, SftpClient, TransferDirection, TransferQueue,
+    JobSnapshot, JobSpec, OnExists, SftpClient, SftpSlot, TransferDirection, TransferQueue,
 };
 use core_store::Store;
 
@@ -27,11 +27,18 @@ use crate::sessions::SessionManagerState;
 
 static EDIT_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// 单会话的 SFTP 上下文（连接 + 客户端 + 传输队列 + 目录任务调度器）
+/// 单会话的 SFTP 上下文（连接 + metadata/data 双 subsystem + 传输队列 + 目录任务调度器）
+///
+/// PR-11/C8 代际结构：Transport 代际 = 本 ctx（conn 死则 ensure_ctx 整体重建，
+/// 两 slot 随之失效）；Metadata/Data 代际各自独立（slot 内单飞探活重建），
+/// metadata 重建不影响 data 上的在途传输，data 重建由传输重试落新代际。
 pub struct SftpCtx {
-    /// 保活：conn 在则通道在
-    _conn: core_ssh::SshConnection,
-    client: Arc<SftpClient>,
+    /// 保活 + 监控复用（通道复用，不占交互连接）
+    conn: Arc<core_ssh::SshConnection>,
+    /// 浏览/元数据操作专用 subsystem
+    metadata: Arc<SftpSlot>,
+    /// 传输数据面专用 subsystem（queue 与 DirectoryJob 共用）
+    data: Arc<SftpSlot>,
     queue: Arc<TransferQueue>,
     /// DirectoryJob 调度器（PR-8；与 queue 共享执行槽预算）
     jobs: Arc<DirectoryJobScheduler>,
@@ -45,16 +52,35 @@ pub struct SftpManagerState {
 impl SftpCtx {
     /// 监控复用同一 Bulk 连接（通道复用，不占交互连接）
     pub(crate) fn conn(&self) -> &core_ssh::SshConnection {
-        &self._conn
-    }
-    /// MCP SFTP 工具复用（与 UI 共享 Bulk 连接池，避免 agent 高频小操作反复握手）
-    pub(crate) fn client(&self) -> &Arc<SftpClient> {
-        &self.client
+        &self.conn
     }
 
     /// MCP 传输工具复用（与 UI 同一队列：进度进 UI 传输面板、终态落 transfers 表）
     pub(crate) fn queue(&self) -> &Arc<TransferQueue> {
         &self.queue
+    }
+
+    /// 取 metadata 代际 client（多操作块一次取用；单操作优先走 meta() 记可疑）
+    pub(crate) async fn meta_client(&self) -> Result<Arc<SftpClient>, String> {
+        self.metadata.get().await.map_err(|e| e.to_string())
+    }
+}
+
+/// 元数据操作统一入口（PR-11/C8）：取 metadata 代际 client 执行；
+/// 失败即向 slot 上报可疑——下次取用先探活，探活失败单飞重建新代际
+/// （远端业务错误探活通过则保留原代际，不引发重建）。
+pub(crate) async fn meta<T, F, Fut>(ctx: &SftpCtx, f: F) -> Result<T, String>
+where
+    F: FnOnce(Arc<SftpClient>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, core_sftp::SftpError>>,
+{
+    let client = ctx.metadata.get().await.map_err(|e| e.to_string())?;
+    match f(client).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            ctx.metadata.record_error();
+            Err(e.to_string())
+        }
     }
 }
 
@@ -110,6 +136,9 @@ impl SftpManagerState {
                     "queued": queued,
                     "running": running,
                     "paused": paused,
+                    // PR-11/C8：subsystem 代际（重建次数可观测）
+                    "metaGen": ctx.metadata.generation(),
+                    "dataGen": ctx.data.generation(),
                 })
             })
             .collect();
@@ -124,7 +153,7 @@ pub(crate) async fn ensure_ctx(
     session_id: &str,
 ) -> Result<Arc<SftpCtx>, String> {
     if let Some(ctx) = state.ctxs.lock().get(session_id) {
-        if !ctx._conn.is_closed() {
+        if !ctx.conn.is_closed() {
             return Ok(ctx.clone());
         }
         state.ctxs.lock().remove(session_id); // 死连接剔除，重建
@@ -158,21 +187,27 @@ pub(crate) async fn ensure_ctx(
             })
             .await
             .map_err(|e| e.to_string())?;
-            let client = Arc::new(SftpClient::open(&conn).await.map_err(|e| e.to_string())?);
-            let queue = Arc::new(TransferQueue::new(
-                client.clone(),
-                3,
-                tokio::runtime::Handle::current(),
-            ));
+            // PR-11：同 Transport 两条 SFTP subsystem——metadata（浏览/元操作）
+            // 与 data（传输数据面）各自独立代际，subsystem 级单飞重建（C8）
+            let conn = Arc::new(conn);
+            let handle = tokio::runtime::Handle::current();
+            let metadata = SftpSlot::open_sftp("metadata", conn.clone(), handle.clone())
+                .await
+                .map_err(|e| e.to_string())?;
+            let data = SftpSlot::open_sftp("data", conn.clone(), handle.clone())
+                .await
+                .map_err(|e| e.to_string())?;
+            let queue = Arc::new(TransferQueue::new(data.clone(), 3, handle.clone()));
             let jobs = DirectoryJobScheduler::new(
-                client.clone(),
-                tokio::runtime::Handle::current(),
+                data.clone(),
+                handle,
                 queue.permits_handle(),
                 crate::fs_limiter::scan_permits(),
             );
             Ok::<_, String>(SftpCtx {
-                _conn: conn,
-                client,
+                conn,
+                metadata,
+                data,
                 queue,
                 jobs,
             })
@@ -215,7 +250,7 @@ pub(crate) async fn ensure_ctx(
     // 永久持有孤儿 ctx 的空 queue —— 订阅帧恒空、前端传输面板无任何反馈。
     let mut map = state.ctxs.lock();
     if let Some(existing) = map.get(session_id) {
-        if !existing._conn.is_closed() {
+        if !existing.conn.is_closed() {
             return Ok(existing.clone()); // 多余的自建 ctx 随 drop 关闭连接
         }
     }
@@ -252,7 +287,7 @@ pub async fn sftp_list(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<Value, String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    let entries = ctx.client.list(&path).await.map_err(|e| e.to_string())?;
+    let entries = meta(&ctx, |c| async move { c.list(&path).await }).await?;
     Ok(json!({ "entries": entries.iter().map(entry_to_json).collect::<Vec<_>>() }))
 }
 
@@ -264,7 +299,7 @@ pub async fn sftp_stat(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<Value, String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    let e = ctx.client.stat(&path).await.map_err(|e| e.to_string())?;
+    let e = meta(&ctx, |c| async move { c.stat(&path).await }).await?;
     Ok(entry_to_json(&e))
 }
 
@@ -276,7 +311,11 @@ pub async fn sftp_mkdir(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<(), String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    ctx.client.mkdir(&path).await.map_err(|e| e.to_string())?;
+    meta(&ctx, |c| {
+        let p = &path;
+        async move { c.mkdir(p).await }
+    })
+    .await?;
     audit(&sessions.store, &session_id, "sftp_mkdir", &path).await;
     Ok(())
 }
@@ -289,10 +328,11 @@ pub async fn sftp_delete(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<(), String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    ctx.client
-        .remove_recursive(&path)
-        .await
-        .map_err(|e| e.to_string())?;
+    meta(&ctx, |c| {
+        let p = &path;
+        async move { c.remove_recursive(p).await }
+    })
+    .await?;
     audit(&sessions.store, &session_id, "sftp_delete", &path).await;
     Ok(())
 }
@@ -306,10 +346,12 @@ pub async fn sftp_rename(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<(), String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    ctx.client
-        .rename(&from, &to)
-        .await
-        .map_err(|e| e.to_string())?;
+    meta(&ctx, |c| {
+        let f = &from;
+        let t = &to;
+        async move { c.rename(f, t).await }
+    })
+    .await?;
     audit(
         &sessions.store,
         &session_id,
@@ -329,10 +371,11 @@ pub async fn sftp_chmod(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<(), String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    ctx.client
-        .chmod(&path, mode)
-        .await
-        .map_err(|e| e.to_string())?;
+    meta(&ctx, |c| {
+        let p = &path;
+        async move { c.chmod(p, mode).await }
+    })
+    .await?;
     audit(
         &sessions.store,
         &session_id,
@@ -353,15 +396,19 @@ pub async fn sftp_touch(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<(), String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    if ctx.client.stat(&path).await.is_ok() {
+    // stat 探测是"不存在即可建"的正常流程（失败不记可疑）；open_write_at 是真操作
+    let mc = ctx.metadata.get().await.map_err(|e| e.to_string())?;
+    if mc.stat(&path).await.is_ok() {
         return Err(format!("目标已存在: {path}"));
     }
     use tokio::io::AsyncWriteExt;
-    let mut f = ctx
-        .client
-        .open_write_at(&path, 0)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut f = match mc.open_write_at(&path, 0).await {
+        Ok(f) => f,
+        Err(e) => {
+            ctx.metadata.record_error();
+            return Err(e.to_string());
+        }
+    };
     f.shutdown().await.map_err(|e| e.to_string())?;
     audit(&sessions.store, &session_id, "sftp_touch", &path).await;
     Ok(())
@@ -388,7 +435,8 @@ pub async fn sftp_home(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<String, String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    resolve_home_abs(&ctx.client).await
+    let mc = ctx.metadata.get().await.map_err(|e| e.to_string())?;
+    resolve_home_abs(&mc).await
 }
 
 // ---------- Shell 集成（OSC 7 目录上报） ----------
@@ -420,9 +468,10 @@ pub async fn shell_integration_status(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<Value, String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    let home = resolve_home_abs(&ctx.client).await?;
-    let bash = read_rc_file(&ctx.client, &format!("{home}/.bashrc")).await?;
-    let zsh = read_rc_file(&ctx.client, &format!("{home}/.zshrc")).await?;
+    let mc = ctx.metadata.get().await.map_err(|e| e.to_string())?;
+    let home = resolve_home_abs(&mc).await?;
+    let bash = read_rc_file(&mc, &format!("{home}/.bashrc")).await?;
+    let zsh = read_rc_file(&mc, &format!("{home}/.zshrc")).await?;
     let enabled = [&bash, &zsh]
         .into_iter()
         .flatten()
@@ -440,25 +489,28 @@ pub async fn shell_integration_set(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<Value, String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    let home = resolve_home_abs(&ctx.client).await?;
+    let mc = ctx.metadata.get().await.map_err(|e| e.to_string())?;
+    // 本块真操作失败统一记可疑（lstat 探测属正常流程，不记）
+    let rec = |e: core_sftp::SftpError| {
+        ctx.metadata.record_error();
+        e.to_string()
+    };
+    let home = resolve_home_abs(&mc).await?;
     let mut targets = vec![format!("{home}/.bashrc")];
     let zshrc = format!("{home}/.zshrc");
-    if ctx.client.lstat(&zshrc).await.is_ok() {
+    if mc.lstat(&zshrc).await.is_ok() {
         targets.push(zshrc);
     }
     let mut touched: Vec<String> = Vec::new();
     for path in &targets {
-        let content = read_rc_file(&ctx.client, path).await?.unwrap_or_default();
+        let content = read_rc_file(&mc, path).await?.unwrap_or_default();
         let next = if enable {
             core_sftp::add_integration(&content)
         } else {
             core_sftp::remove_integration(&content)
         };
         if next != content {
-            ctx.client
-                .overwrite(path, next.as_bytes())
-                .await
-                .map_err(|e| e.to_string())?;
+            mc.overwrite(path, next.as_bytes()).await.map_err(&rec)?;
             touched.push(path.clone());
         }
     }
@@ -467,21 +519,17 @@ pub async fn shell_integration_set(
     let script = format!("{home}/{}", core_sftp::SCRIPT_REL);
     if enable {
         let dir = format!("{home}/.myssh");
-        if ctx.client.lstat(&dir).await.is_err() {
-            ctx.client.mkdir(&dir).await.map_err(|e| e.to_string())?;
+        if mc.lstat(&dir).await.is_err() {
+            mc.mkdir(&dir).await.map_err(&rec)?;
         }
-        ctx.client
-            .overwrite(&script, core_sftp::SCRIPT.as_bytes())
+        mc.overwrite(&script, core_sftp::SCRIPT.as_bytes())
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(&rec)?;
         touched.push(script);
-    } else if ctx.client.lstat(&script).await.is_ok() {
-        ctx.client
-            .remove_file(&script)
-            .await
-            .map_err(|e| e.to_string())?;
+    } else if mc.lstat(&script).await.is_ok() {
+        mc.remove_file(&script).await.map_err(&rec)?;
         // 目录空则顺带收掉；非空（用户自己放了东西）remove_dir 会失败，忽略
-        let _ = ctx.client.remove_dir(&format!("{home}/.myssh")).await;
+        let _ = mc.remove_dir(&format!("{home}/.myssh")).await;
         touched.push(script);
     }
     audit(
@@ -701,7 +749,9 @@ async fn resolve_remote_target(
     target: &str,
     policy: OnExists,
 ) -> Result<Option<(String, OnExists)>, String> {
-    if ctx.client.stat(target).await.is_err() {
+    // stat 探测是冲突解析的正常流程（失败=目标不存在，不记可疑）
+    let mc = ctx.metadata.get().await.map_err(|e| e.to_string())?;
+    if mc.stat(target).await.is_err() {
         // 不存在（或不可 stat）：直接入队，运行期续传逻辑自负盈亏
         return Ok(Some((target.to_string(), policy.runtime())));
     }
@@ -711,7 +761,7 @@ async fn resolve_remote_target(
         OnExists::Rename => {
             for n in 1..1000 {
                 let cand = rename_candidate(target, n);
-                if ctx.client.stat(&cand).await.is_err() {
+                if mc.stat(&cand).await.is_err() {
                     return Ok(Some((cand, OnExists::Resume)));
                 }
             }
@@ -768,9 +818,8 @@ pub async fn sftp_upload(
         .unwrap_or_else(|| "unnamed".into());
     if meta.is_dir() {
         let remote_root = format!("{remote}/{base_name}");
-        // 根目录远端 mkdir 保持同步（旧行为：根建不起来直接报错；子目录 mkdir 在任务内）
-        ctx.client
-            .mkdir(&remote_root)
+        let mc = ctx.metadata.get().await.map_err(|e| e.to_string())?;
+        mc.mkdir(&remote_root)
             .await
             .or_else(|e| {
                 if e.to_string().contains("Failure") {
@@ -838,7 +887,11 @@ pub async fn sftp_download(
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
     ctx.queue
         .set_progress_callback(persist_terminal(sessions.store.clone(), session_id.clone()));
-    let st = ctx.client.stat(&remote).await.map_err(|e| e.to_string())?;
+    let st = meta(&ctx, |c| {
+        let r = &remote;
+        async move { c.stat(r).await }
+    })
+    .await?;
     let base_name = st.name.clone();
     let local_base = PathBuf::from(&local);
     if st.kind == EntryKind::Dir {
@@ -1335,7 +1388,11 @@ pub async fn sftp_edit_open(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<Value, String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    let st = ctx.client.stat(&remote).await.map_err(|e| e.to_string())?;
+    let st = meta(&ctx, |c| {
+        let r = &remote;
+        async move { c.stat(r).await }
+    })
+    .await?;
     if st.kind == EntryKind::Dir {
         return Err("不能编辑目录".into());
     }
@@ -1365,8 +1422,8 @@ pub async fn sftp_edit_open(
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
-    // 回传监视
-    let client = ctx.client.clone();
+    // 长生命周期监视回路持当前代际 client；死亡后下次写入失败由 meta 路径重建
+    let client = ctx.metadata.get().await.map_err(|e| e.to_string())?;
     let local_w = local.clone();
     let remote_w = remote.clone();
     let store = sessions.store.clone();
