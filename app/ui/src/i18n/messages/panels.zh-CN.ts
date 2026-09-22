@@ -161,7 +161,7 @@ export const zhPanels = {
   'panels.pauseAll': '全部暂停',
   'panels.resumeAll': '全部继续',
   'panels.clearCompleted': '清除已完成',
-  'panels.clearFailed': '清除失败',
+  'panels.clearFailed': '清除失败/已取消',
   'panels.closeTransferManager': '关闭传输管理',
   'panels.transferSummary': '{count} 项 · {done} / {total}',
   'panels.transferSummaryRate': '{count} 项 · {done} / {total} · {rate}/s',

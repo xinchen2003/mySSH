@@ -276,6 +276,8 @@ interface TransferStore {
   loadHistory(): Promise<void>;
   /** 清空全部历史记录 */
   clearHistory(): Promise<void>;
+  /** 历史回放行的本地移除：DB 行删除无事件流，transfer_remove 成功后前端自行下账 */
+  dropTransfer(sessionId: string, id: string): void;
 }
 
 export const useTransferStore = create<TransferStore>((set, get) => ({
@@ -422,6 +424,17 @@ export const useTransferStore = create<TransferStore>((set, get) => ({
         .notify(tNow('state.clearHistoryFailed', { error: String(e) }), 'error');
     }
   },
+  dropTransfer: (sessionId, id) =>
+    set((s) => {
+      const cur = s.bySession[sessionId];
+      if (!cur) return {};
+      const bySession = {
+        ...s.bySession,
+        [sessionId]: cur.filter((t) => t.id !== id),
+      };
+      publishActive(bySession, s.jobsBySession);
+      return { bySession };
+    }),
 }));
 
 /** 传输控制命令（暂停/继续/取消/重试/移除/清理）；统一报错通知 */

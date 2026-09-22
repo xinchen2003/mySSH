@@ -402,12 +402,18 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
             ⓘ
           </button>
         )}
-        {!t.history && terminal && (
+        {terminal && (
           <button
             className={btn}
             title={tr('panels.removeFromQueue')}
             aria-label={tr('panels.removeFromQueue')}
-            onClick={() => void transferCmd(sessionId, 'transfer_remove', { transferId: t.id })}
+            onClick={() =>
+              void (async () => {
+                await transferCmd(sessionId, 'transfer_remove', { transferId: t.id });
+                // 历史回放行不在队列、无事件流：删除后前端自行下账，否则看着像删不掉
+                if (t.history) useTransferStore.getState().dropTransfer(sessionId, t.id);
+              })()
+            }
           >
             🗑
           </button>

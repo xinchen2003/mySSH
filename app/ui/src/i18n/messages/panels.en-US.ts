@@ -168,7 +168,7 @@ export const enPanels: Record<keyof typeof zhPanels, string> = {
   'panels.pauseAll': 'Pause All',
   'panels.resumeAll': 'Resume All',
   'panels.clearCompleted': 'Clear Completed',
-  'panels.clearFailed': 'Clear Failed',
+  'panels.clearFailed': 'Clear Failed/Canceled',
   'panels.closeTransferManager': 'Close Transfer Manager',
   'panels.transferSummary': '{count} items · {done} / {total}',
   'panels.transferSummaryRate': '{count} items · {done} / {total} · {rate}/s',

@@ -143,6 +143,8 @@ export function SettingsDialog() {
   const toggleSettings = useAppStore((s) => s.toggleSettings);
   const t = useT();
   const [tab, setTab] = useState<NavTab>('general');
+  /** 诊断包时间范围（'1h'|'24h'|'7d'|'all'），默认 24h——全量导出随日志积累越来越大 */
+  const [diagRange, setDiagRange] = useState('24h');
 
   const theme = typeof settings['theme'] === 'string' ? settings['theme'] : 'one-dark';
   const lang = settings['ui.language'] === 'en-US' ? 'en-US' : 'zh-CN';
@@ -315,26 +317,45 @@ export function SettingsDialog() {
                 <h3 className="mb-1.5 font-semibold text-neutral-200">
                   {t('dialogs.diagSection')}
                 </h3>
-                <button
-                  className="rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-700"
-                  onClick={() => {
-                    void (async () => {
-                      const path = await save({
-                        defaultPath: 'myssh-diagnostics.zip',
-                        filters: [{ name: 'ZIP', extensions: ['zip'] }],
-                      });
-                      if (!path) return;
-                      try {
-                        await invoke('export_diagnostics', { path });
-                        notify(t('dialogs.diagExported', { path }), 'success');
-                      } catch (e) {
-                        notify(t('dialogs.diagFailed', { msg: String(e) }), 'error');
-                      }
-                    })();
-                  }}
-                >
-                  {t('dialogs.diagExport')}
-                </button>
+                <div className="flex items-center gap-2">
+                  <label htmlFor="set-diag-range" className="text-neutral-500">
+                    {t('dialogs.diagRange')}
+                  </label>
+                  <select
+                    id="set-diag-range"
+                    className="rounded border border-neutral-700 bg-neutral-800 px-1.5 py-1 text-xs text-neutral-300"
+                    value={diagRange}
+                    onChange={(e) => setDiagRange(e.target.value)}
+                  >
+                    <option value="1h">{t('dialogs.diagRange1h')}</option>
+                    <option value="24h">{t('dialogs.diagRange24h')}</option>
+                    <option value="7d">{t('dialogs.diagRange7d')}</option>
+                    <option value="all">{t('dialogs.diagRangeAll')}</option>
+                  </select>
+                  <button
+                    className="rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-700"
+                    onClick={() => {
+                      void (async () => {
+                        const path = await save({
+                          defaultPath: 'myssh-diagnostics.zip',
+                          filters: [{ name: 'ZIP', extensions: ['zip'] }],
+                        });
+                        if (!path) return;
+                        const span = { '1h': 3600, '24h': 86400, '7d': 604800 }[diagRange];
+                        const sinceEpoch =
+                          span === undefined ? null : Math.floor(Date.now() / 1000) - span;
+                        try {
+                          await invoke('export_diagnostics', { path, sinceEpoch });
+                          notify(t('dialogs.diagExported', { path }), 'success');
+                        } catch (e) {
+                          notify(t('dialogs.diagFailed', { msg: String(e) }), 'error');
+                        }
+                      })();
+                    }}
+                  >
+                    {t('dialogs.diagExport')}
+                  </button>
+                </div>
                 <p className="mt-1 text-xs text-neutral-500">{t('dialogs.diagHint')}</p>
               </section>
             </>

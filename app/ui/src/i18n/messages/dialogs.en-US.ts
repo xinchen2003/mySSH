@@ -147,6 +147,11 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
     'Bundles logs and system info into a zip; logs may contain host addresses and usernames — review before sharing.',
   'dialogs.diagExported': 'Diagnostics exported: {path}',
   'dialogs.diagFailed': 'Diagnostics export failed: {msg}',
+  'dialogs.diagRange': 'Time range',
+  'dialogs.diagRange1h': 'Last hour',
+  'dialogs.diagRange24h': 'Last 24 hours',
+  'dialogs.diagRange7d': 'Last 7 days',
+  'dialogs.diagRangeAll': 'All',
   'dialogs.downloadDirSection': 'Download Folder',
   'dialogs.downloadDirHint':
     'When set, SFTP download actions always target this folder; leave empty to follow the local pane.',

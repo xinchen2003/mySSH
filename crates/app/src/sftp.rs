@@ -1514,6 +1514,7 @@ pub async fn transfer_retry(
 }
 
 /// 移除单条终态传输记录（进行中拒绝）。
+/// 队列与 transfers 表同步删——只删内存，下次 transfer_list 合并历史即复活。
 /// 连带清理：未完成的下载在本地留有残件（断点续传以目标文件本体为残件），
 /// 移除任务即删残件；已完成的下载与上传的本地源文件绝不动。
 #[tauri::command]
@@ -1524,15 +1525,96 @@ pub async fn transfer_remove(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<(), String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    let partial = ctx.queue.get(&transfer_id).and_then(|t| {
-        (t.direction == TransferDirection::Download && t.state != TransferState::Done)
-            .then(|| t.local.clone())
-    });
-    ctx.queue.remove(&transfer_id).map_err(|e| e.to_string())?;
-    if let Some(path) = partial {
-        remove_partial_file(path).await;
+    if let Some(t) = ctx.queue.get(&transfer_id) {
+        let partial = (t.direction == TransferDirection::Download
+            && t.state != TransferState::Done)
+            .then(|| t.local.clone());
+        ctx.queue.remove(&transfer_id).map_err(|e| e.to_string())?;
+        if let Some(path) = partial {
+            remove_partial_file(path).await;
+        }
+    } else {
+        // 历史回放行（上次运行的终态记录，不在内存队列）：按库记录清理残件
+        let rec = sessions
+            .store
+            .transfers()
+            .get(&transfer_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("传输不存在: {transfer_id}"))?;
+        if rec.direction == "download" && rec.state != "done" {
+            remove_partial_file(PathBuf::from(&rec.local)).await;
+        }
     }
+    sessions
+        .store
+        .transfers()
+        .delete(&transfer_id)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// 批量清理终态传输：filter ∈ "done"|"failed"（failed 含 canceled），返回移除数。
+/// 队列与 transfers 表同步删（含历史回放行）——只清内存会在下次 transfer_list 复活。
+#[tauri::command]
+pub async fn transfer_clear(
+    session_id: String,
+    filter: String,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
+    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+) -> Result<u32, String> {
+    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    let pred: fn(core_sftp::TransferState) -> bool = match filter.as_str() {
+        "done" => |s| s == core_sftp::TransferState::Done,
+        "failed" => |s| {
+            matches!(
+                s,
+                core_sftp::TransferState::Failed | core_sftp::TransferState::Canceled
+            )
+        },
+        _ => return Err(format!("未知清理过滤: {filter}（仅支持 done/failed）")),
+    };
+    let removed = ctx.queue.clear_where(pred);
+    // 与 transfer_remove 同规：清掉的未完成下载连带删本地残件
+    for t in &removed {
+        if t.direction == TransferDirection::Download && t.state != TransferState::Done {
+            remove_partial_file(t.local.clone()).await;
+        }
+    }
+    // DB 侧同步：队列移除的 + 历史回放行一并删库，否则下次 transfer_list 合并即复活
+    let db_hit = |s: &str| {
+        if filter == "done" {
+            s == "done"
+        } else {
+            s == "failed" || s == "canceled"
+        }
+    };
+    let mut total = removed.len();
+    for r in sessions
+        .store
+        .transfers()
+        .for_session(&session_id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        if !db_hit(&r.state) {
+            continue;
+        }
+        if !removed.iter().any(|t| t.id == r.id) {
+            total += 1;
+            if r.direction == "download" && r.state != "done" {
+                remove_partial_file(PathBuf::from(&r.local)).await;
+            }
+        }
+        sessions
+            .store
+            .transfers()
+            .delete(&r.id)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(total as u32)
 }
 
 /// 删除未完成下载的本地残件：文件不在（用户已手动清理）不算错误，其余失败只记日志
@@ -1558,33 +1640,6 @@ pub async fn transfer_prioritize(
     ctx.queue
         .prioritize(&transfer_id)
         .map_err(|e| e.to_string())
-}
-
-/// 批量清理终态传输：filter ∈ "done"|"failed"，返回移除数
-#[tauri::command]
-pub async fn transfer_clear(
-    session_id: String,
-    filter: String,
-    state: tauri::State<'_, Arc<SftpManagerState>>,
-    sessions: tauri::State<'_, Arc<SessionManagerState>>,
-) -> Result<u32, String> {
-    let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    let removed = match filter.as_str() {
-        "done" => ctx
-            .queue
-            .clear_where(|s| s == core_sftp::TransferState::Done),
-        "failed" => ctx
-            .queue
-            .clear_where(|s| s == core_sftp::TransferState::Failed),
-        _ => return Err(format!("未知清理过滤: {filter}（仅支持 done/failed）")),
-    };
-    // 与 transfer_remove 同规：清掉的未完成下载连带删本地残件
-    for t in &removed {
-        if t.direction == TransferDirection::Download && t.state != TransferState::Done {
-            remove_partial_file(t.local.clone()).await;
-        }
-    }
-    Ok(removed.len() as u32)
 }
 
 #[tauri::command]
