@@ -13,7 +13,7 @@
 use crate::{SftpClient, SftpError, SftpSlot, TransferDirection};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 pub type TransferId = String;
@@ -138,8 +138,11 @@ pub(crate) struct TransferInner {
     bytes_done: AtomicU64,
     pause: AtomicBool,
     cancel: AtomicBool,
-    /// 优先调度（传输管理「优先下载」）：置位即入优先账，过闸即摘
-    priority: AtomicBool,
+    /// 优先账（传输管理「优先下载」）：0=无，1=排队让行账（执行槽空出时先行），
+    /// 2=运行优先账（普通任务在分块边界让出带宽）。加账/还账见 TransferQueue。
+    priority: AtomicU8,
+    /// 队列级运行优先账计数（让行判定用）；job transient 无队列账可查 → None 不让行
+    priority_running: Option<Arc<AtomicUsize>>,
 }
 
 impl TransferInner {
@@ -150,7 +153,8 @@ impl TransferInner {
             bytes_done: AtomicU64::new(0),
             pause: AtomicBool::new(false),
             cancel: AtomicBool::new(false),
-            priority: AtomicBool::new(false),
+            priority: AtomicU8::new(0),
+            priority_running: None,
         })
     }
 
@@ -163,6 +167,21 @@ impl TransferInner {
     /// 结束时的实际字节量（含续传偏移；job 计数用）
     pub(crate) fn final_bytes(&self) -> u64 {
         self.bytes_done.load(Ordering::Relaxed)
+    }
+
+    /// 运行中让行：有持运行优先账的任务时，普通任务在分块边界让出带宽——
+    /// 200ms 粒度自旋，与队列让行闸同手法。取消/暂停置位则退出，交由既有中断检查处理。
+    pub(crate) async fn yield_to_priority(&self) {
+        let Some(counter) = &self.priority_running else {
+            return;
+        };
+        while self.priority.load(Ordering::Relaxed) == 0
+            && counter.load(Ordering::Relaxed) > 0
+            && !self.cancel.load(Ordering::Relaxed)
+            && !self.pause.load(Ordering::Relaxed)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
     }
 }
 
@@ -179,8 +198,11 @@ pub struct TransferQueue {
     pub(crate) permits: Arc<core_policy::Budget>,
     transfers: Mutex<HashMap<TransferId, Arc<TransferInner>>>,
     id_seq: AtomicU64,
-    /// 优先账：当前持有 priority 标记且未过闸的任务数；>0 时普通任务让行
+    /// 排队让行账：持优先标记且未过闸的任务数；>0 时普通任务在执行槽前让行
     priority_waiting: AtomicUsize,
+    /// 运行优先账：持优先标记且运行中的任务数；>0 时普通任务在分块边界让行。
+    /// Arc 共享给各 TransferInner 做让行判定（job transient 持 None 不参与）
+    priority_running: Arc<AtomicUsize>,
     max_retries: u32,
     on_progress: Mutex<Option<ProgressFn>>,
 }
@@ -208,6 +230,7 @@ impl TransferQueue {
             id_seq: AtomicU64::new(1),
             max_retries: 2,
             priority_waiting: AtomicUsize::new(0),
+            priority_running: Arc::new(AtomicUsize::new(0)),
             on_progress: Mutex::new(None),
         }
     }
@@ -229,7 +252,7 @@ impl TransferQueue {
     fn snapshot(t: &Arc<TransferInner>) -> TransferInfo {
         let mut info = lock(&t.info).clone();
         info.bytes_done = t.bytes_done.load(Ordering::Relaxed);
-        info.priority = t.priority.load(Ordering::Relaxed);
+        info.priority = t.priority.load(Ordering::Relaxed) != 0;
         info
     }
 
@@ -276,7 +299,8 @@ impl TransferQueue {
             bytes_done: AtomicU64::new(0),
             pause: AtomicBool::new(false),
             cancel: AtomicBool::new(false),
-            priority: AtomicBool::new(false),
+            priority: AtomicU8::new(0),
+            priority_running: Some(self.priority_running.clone()),
         });
         lock(&self.transfers).insert(id.clone(), inner.clone());
         (id, inner)
@@ -345,36 +369,49 @@ impl TransferQueue {
         let direction = lock(&t.info).direction;
         loop {
             if t.cancel.load(Ordering::Relaxed) {
-                // 优先账还账：持标记被取消时不得泄漏计数（会让普通任务永久让行）
-                if t.priority.swap(false, Ordering::Relaxed) {
-                    self.priority_waiting.fetch_sub(1, Ordering::Relaxed);
-                }
+                // 账-锁顺序（防泄漏）：终态先落 info.state（prioritize 持 info 锁
+                // 读状态+加账，看到终态即拒），再还账——「还账后加账」交错不可能发生
                 lock(&t.info).state = TransferState::Canceled;
+                self.repay_priority(&t);
                 self.emit(&t);
                 return;
             }
             // 非暂停等待（200ms 粒度；不持 permit，不占并发额度）
             if t.pause.load(Ordering::Relaxed) {
                 lock(&t.info).state = TransferState::Paused;
+                // 暂停期间不占运行优先账（否则其他运行中任务干等）；
+                // 恢复后过闸时 1→2 转回运行账
+                if t.priority
+                    .compare_exchange(2, 1, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    self.priority_running.fetch_sub(1, Ordering::Relaxed);
+                    self.priority_waiting.fetch_add(1, Ordering::Relaxed);
+                }
                 self.emit(&t);
                 while t.pause.load(Ordering::Relaxed) && !t.cancel.load(Ordering::Relaxed) {
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
                 continue; // 回顶部：cancel 分支或重新竞争 permit
             }
-            // 优先级闸（传输管理「优先下载」）：有持标记的排队任务时普通任务
+            // 优先级闸（传输管理「优先下载」）：有持让行账的排队任务时普通任务
             // 让行——200ms 粒度自旋，与暂停等待同手法（不持 permit、不占额度）。
             // 让行期间被暂停/取消则退出自旋，交由下方二次确认/顶部分支处理。
-            while !t.priority.load(Ordering::Relaxed)
+            while t.priority.load(Ordering::Relaxed) == 0
                 && self.priority_waiting.load(Ordering::Relaxed) > 0
                 && !t.pause.load(Ordering::Relaxed)
                 && !t.cancel.load(Ordering::Relaxed)
             {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
-            // 过闸即摘标记还账：先 swap 再 acquire，失败重试环内不再重复扣减
-            if t.priority.swap(false, Ordering::Relaxed) {
+            // 过闸：让行账(1) → 运行账(2)。失败重试环内账已是 2 → CAS 失败不动账；
+            // 普通任务账为 0 → 同样不动账
+            if t.priority
+                .compare_exchange(1, 2, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
                 self.priority_waiting.fetch_sub(1, Ordering::Relaxed);
+                self.priority_running.fetch_add(1, Ordering::Relaxed);
             }
             let permit = self.permits.acquire().await;
             // acquire 等待期间可能被暂停/取消：二次确认，避免持 permit 进传输
@@ -396,6 +433,7 @@ impl TransferQueue {
             match result {
                 Ok(()) => {
                     lock(&t.info).state = TransferState::Done;
+                    self.repay_priority(&t);
                     self.emit(&t);
                     return;
                 }
@@ -417,6 +455,7 @@ impl TransferQueue {
                     };
                     if over {
                         lock(&t.info).state = TransferState::Failed;
+                        self.repay_priority(&t);
                         self.emit(&t);
                         return;
                     }
@@ -465,22 +504,57 @@ impl TransferQueue {
         })
     }
 
-    /// 优先调度：仅 Queued 可标记；持标记任务在执行槽空出时先行，普通任务让行。
-    /// 重复标记幂等（swap 命中已置位则不再加账）。对 Running/Paused/终态报错——
-    /// 抢占运行中任务语义过重，不做。
+    /// 优先账归还：按账所在计数器精确归还（1=排队让行账，2=运行优先账）。
+    /// 仅在 run_transfer 终态分支调用（单任务单 owner），与 prioritize 加账的
+    /// 交错安全由「终态先落 info.state」保证。
+    fn repay_priority(&self, t: &TransferInner) {
+        match t.priority.swap(0, Ordering::Relaxed) {
+            1 => {
+                self.priority_waiting.fetch_sub(1, Ordering::Relaxed);
+            }
+            2 => {
+                self.priority_running.fetch_sub(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
+
+    /// 优先调度（传输管理「优先下载/上传」）：
+    /// - Queued/Paused → 入让行账(1)：执行槽空出时先于普通任务起跑（不抢占）
+    /// - Running → 入运行账(2)：普通运行中任务在分块边界让出带宽
+    ///
+    /// 重复标记幂等（CAS 未命中 0 不动账）；终态报错。
+    /// 竞态：持 info 锁读状态+加账；终态分支先落 state 再 repay，
+    /// 故「repay 后 prioritize 又加账」的泄漏交错不可能发生。
     pub fn prioritize(&self, id: &str) -> Result<(), SftpError> {
         self.with(id, |t| {
-            let state = lock(&t.info).state;
-            if state != TransferState::Queued {
-                return Err(SftpError::RemotePath {
+            // 持 info 锁贯穿 读状态+CAS 加账：终态分支「先落 state 再 repay」
+            // 与本锁互斥 → 「repay 后又加账」的计数泄漏交错不可能发生
+            let info = lock(&t.info);
+            match info.state {
+                TransferState::Queued | TransferState::Paused => {
+                    if t.priority
+                        .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        self.priority_waiting.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Ok(())
+                }
+                TransferState::Running => {
+                    if t.priority
+                        .compare_exchange(0, 2, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        self.priority_running.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Ok(())
+                }
+                _ => Err(SftpError::RemotePath {
                     path: id.to_string(),
-                    reason: format!("仅排队中的传输可优先（当前: {}）", state.as_str()),
-                });
+                    reason: format!("终态传输不可优先（当前: {}）", info.state.as_str()),
+                }),
             }
-            if !t.priority.swap(true, Ordering::Relaxed) {
-                self.priority_waiting.fetch_add(1, Ordering::Relaxed);
-            }
-            Ok(())
         })?
     }
     /// 重试：仅 Failed/Canceled 可重跑。重置为 Queued 后 respawn run_transfer，
@@ -638,6 +712,8 @@ pub(crate) async fn download_once(
                         total: lock(&t.info).bytes_total,
                     });
                 }
+                // 运行中让行：有运行优先任务时普通任务让出带宽
+                t.yield_to_priority().await;
                 let n = src
                     .read(&mut buf)
                     .await
@@ -755,6 +831,8 @@ async fn pipelined_body(
                 total,
             });
         }
+        // 运行中让行：有运行优先任务时普通任务让出带宽（在途读自然排空一轮）
+        t.yield_to_priority().await;
         match in_flight.join_next().await {
             Some(Ok(Ok((at, want, data)))) => {
                 if data.is_empty() {
@@ -844,6 +922,8 @@ pub(crate) async fn upload_once(
                 total: lock(&t.info).bytes_total,
             });
         }
+        // 运行中让行：有运行优先任务时普通任务让出带宽
+        t.yield_to_priority().await;
         let n = src.read(&mut buf).await.map_err(|e| SftpError::LocalIo {
             path: local.display().to_string(),
             reason: e.to_string(),

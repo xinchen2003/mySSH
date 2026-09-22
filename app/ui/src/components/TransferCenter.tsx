@@ -296,7 +296,7 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const reveal = () => revealLocal(t.local, notify, (e) => tr('panels.revealFailed', { error: e }));
   const menuItems: MenuItem[] = [
-    ...(!t.history && t.state === 'queued'
+    ...(!t.history && (t.state === 'queued' || t.state === 'running')
       ? [
           {
             label:
@@ -326,7 +326,7 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
         <span title={t.direction === 'upload' ? tr('panels.upload') : tr('panels.download')}>
           {t.direction === 'upload' ? '⬆' : '⬇'}
         </span>
-        {!t.history && t.priority && t.state === 'queued' && (
+        {!t.history && t.priority && (t.state === 'queued' || t.state === 'running') && (
           <span className="shrink-0 text-amber-400" title={tr('panels.prioritized')}>
             ⚡
           </span>

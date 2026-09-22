@@ -152,6 +152,7 @@ export const enDialogs: Record<keyof typeof zhDialogs, string> = {
     'When set, SFTP download actions always target this folder; leave empty to follow the local pane.',
   'dialogs.browse': 'Browse…',
   'dialogs.clearDownloadDir': 'Clear',
+  'dialogs.browseFailed': 'Failed to open folder picker: {error}',
   'dialogs.mcpToolPerms': 'Tool permissions',
   'dialogs.mcpAllowListSessions': 'list_sessions (list saved sessions)',
   'dialogs.mcpAllowSshExec': 'ssh_exec (run remote commands)',

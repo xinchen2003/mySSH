@@ -286,8 +286,12 @@ export function SettingsDialog() {
                     className="rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-700"
                     onClick={() => {
                       void (async () => {
-                        const dir = await open({ directory: true });
-                        if (typeof dir === 'string') setSetting('sftp.downloadDir', dir);
+                        try {
+                          const dir = await open({ directory: true });
+                          if (typeof dir === 'string') setSetting('sftp.downloadDir', dir);
+                        } catch (e) {
+                          notify(t('dialogs.browseFailed', { error: String(e) }), 'error');
+                        }
                       })();
                     }}
                   >

@@ -824,7 +824,7 @@ async fn clear_where_only_removes_matching_terminal() {
 }
 
 /// 优先下载（prioritize）：单执行槽下被标记的排队任务先于普通任务起跑；
-/// 重复标记幂等；运行中/终态任务拒绝标记。
+/// 重复标记幂等；运行中任务也可标记（运行优先账）；终态拒绝。
 #[tokio::test]
 async fn prioritize_queued_transfer_runs_ahead() {
     use core_sftp::{OnExists, TransferState};
@@ -865,12 +865,13 @@ async fn prioritize_queued_transfer_runs_ahead() {
     }
     let (b, c) = (bc[0].clone(), bc[1].clone());
 
-    // 优先 C：重复标记幂等；Running 的 A 拒绝；B 未标记
+    // 优先 C：重复标记幂等；Running 的 A 也可标记（入运行优先账）；B 未标记
     q.prioritize(&c).unwrap();
     q.prioritize(&c).unwrap();
     assert!(q.get(&c).unwrap().priority);
     assert!(!q.get(&b).unwrap().priority);
-    assert!(q.prioritize(&a).is_err(), "Running 不可优先");
+    q.prioritize(&a).unwrap();
+    assert!(q.get(&a).unwrap().priority, "Running 可优先");
 
     wait_done(&q, &a).await;
     wait_done(&q, &b).await;
@@ -918,6 +919,51 @@ async fn prioritize_then_cancel_releases_lane() {
     wait_done(&q, &a).await;
     wait_done(&q, &b).await;
     assert_eq!(q.get(&b).unwrap().state, TransferState::Done);
+}
+
+/// 运行中优先：被标记的运行中任务持运行优先账，普通运行中任务在分块边界
+/// 让行（每块 200ms）——同速任务下被优先者必先完成
+#[tokio::test]
+async fn prioritize_running_transfer_throttles_others() {
+    use core_sftp::{OnExists, TransferState};
+    let root = temp_root("prio-run");
+    let port = start_sftp_server(root.clone()).await;
+    let conn = connect(port).await;
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        make_slot(conn).await,
+        2, // 双执行槽：A、B 并发跑
+        tokio::runtime::Handle::current(),
+    ));
+    let order = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let o = order.clone();
+    q.set_progress_callback(std::sync::Arc::new(move |info| {
+        if info.state == TransferState::Done {
+            o.lock().push(info.id.clone());
+        }
+    }));
+
+    // A、B 同速慢上传（各 16 块 × 50ms ≈ 800ms）；无优先时几乎同时完成
+    let local = temp_root("prio-run-local");
+    let pa = local.join("a.SLOW.bin");
+    std::fs::write(&pa, pattern(4 * 1024 * 1024)).unwrap();
+    let a = q
+        .enqueue_upload(pa, "/a.SLOW.bin".into(), 4 * 1024 * 1024, OnExists::Resume)
+        .await;
+    let pb = local.join("b.SLOW.bin");
+    std::fs::write(&pb, pattern(4 * 1024 * 1024)).unwrap();
+    let b = q
+        .enqueue_upload(pb, "/b.SLOW.bin".into(), 4 * 1024 * 1024, OnExists::Resume)
+        .await;
+    wait_state(&q, &a, TransferState::Running).await;
+    wait_state(&q, &b, TransferState::Running).await;
+
+    // 运行中标记 A：B 起每块让行 200ms → A 先完成（B 此时不足半程，余量 ≫ 时序抖动）
+    q.prioritize(&a).unwrap();
+    assert!(q.get(&a).unwrap().priority);
+
+    wait_done(&q, &a).await;
+    wait_done(&q, &b).await;
+    assert_eq!(order.lock().as_slice(), &[a, b], "A 应先于让行的 B 完成");
 }
 
 #[tokio::test]

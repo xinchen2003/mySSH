@@ -1546,7 +1546,7 @@ async fn remove_partial_file(path: PathBuf) {
     .await;
 }
 
-/// 优先调度排队中的传输（执行槽空出时先行；不改变并发上限，不抢占运行中任务）
+/// 优先调度：排队任务执行槽空出时先行；运行中任务获得带宽倾斜（普通任务分块边界让行）
 #[tauri::command]
 pub async fn transfer_prioritize(
     session_id: String,

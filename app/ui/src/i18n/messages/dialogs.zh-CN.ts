@@ -152,6 +152,7 @@ export const zhDialogs = {
     '设置后，SFTP 下载按钮与右键下载固定落到该目录；留空则跟随本地栏当前目录。',
   'dialogs.browse': '浏览…',
   'dialogs.clearDownloadDir': '清除',
+  'dialogs.browseFailed': '打开目录选择框失败：{error}',
   'dialogs.mcpAllowSftpTransfer': 'SFTP 上传/下载（读写本地文件）',
   'dialogs.mcpHint':
     'AI 客户端（如 Claude Code）接入：POST http://127.0.0.1:<端口>/mcp，请求头 Authorization: Bearer <令牌>。勾选启用后自动生成令牌；仅监听本机回环。',
