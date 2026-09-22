@@ -156,6 +156,13 @@ export const enPanels: Record<keyof typeof zhPanels, string> = {
   'panels.resume': 'Resume',
   'panels.viewError': 'View Error',
   'panels.removeFromQueue': 'Remove From Queue',
+  'panels.revealLocal': 'Reveal in Explorer',
+  'panels.revealFailed': 'Failed to reveal: {error}',
+  'panels.prioritizeDownload': 'Prioritize Download',
+  'panels.prioritizeUpload': 'Prioritize Upload',
+  'panels.prioritized': 'Prioritized — runs ahead when a slot frees',
+  'panels.noDownloadDir':
+    'No download folder: open a folder in the local pane first, or set a default download folder in Settings',
   'panels.lastTime': 'Last',
   'panels.transferManager': 'Transfer Manager',
   'panels.pauseAll': 'Pause All',

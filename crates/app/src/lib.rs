@@ -165,6 +165,7 @@ pub fn run() {
             sftp::transfer_cancel,
             sftp::transfer_retry,
             sftp::transfer_remove,
+            sftp::transfer_prioritize,
             sftp::transfer_clear,
             sftp::transfer_pause_all,
             sftp::transfer_resume_all,

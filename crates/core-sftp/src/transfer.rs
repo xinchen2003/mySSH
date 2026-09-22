@@ -13,7 +13,7 @@
 use crate::{SftpClient, SftpError, SftpSlot, TransferDirection};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 pub type TransferId = String;
@@ -124,6 +124,8 @@ pub struct TransferInfo {
     pub bytes_total: u64,
     /// 冲突策略（入队时解析后的运行期语义：resume/overwrite）
     pub on_exists: OnExists,
+    /// 优先调度标记（prioritize 后普通任务让行；通过优先级闸即清）
+    pub priority: bool,
     /// 已自动重试次数
     pub retries: u32,
     pub error: Option<String>,
@@ -136,6 +138,8 @@ pub(crate) struct TransferInner {
     bytes_done: AtomicU64,
     pause: AtomicBool,
     cancel: AtomicBool,
+    /// 优先调度（传输管理「优先下载」）：置位即入优先账，过闸即摘
+    priority: AtomicBool,
 }
 
 impl TransferInner {
@@ -146,6 +150,7 @@ impl TransferInner {
             bytes_done: AtomicU64::new(0),
             pause: AtomicBool::new(false),
             cancel: AtomicBool::new(false),
+            priority: AtomicBool::new(false),
         })
     }
 
@@ -174,6 +179,8 @@ pub struct TransferQueue {
     pub(crate) permits: Arc<core_policy::Budget>,
     transfers: Mutex<HashMap<TransferId, Arc<TransferInner>>>,
     id_seq: AtomicU64,
+    /// 优先账：当前持有 priority 标记且未过闸的任务数；>0 时普通任务让行
+    priority_waiting: AtomicUsize,
     max_retries: u32,
     on_progress: Mutex<Option<ProgressFn>>,
 }
@@ -200,6 +207,7 @@ impl TransferQueue {
             transfers: Mutex::new(HashMap::new()),
             id_seq: AtomicU64::new(1),
             max_retries: 2,
+            priority_waiting: AtomicUsize::new(0),
             on_progress: Mutex::new(None),
         }
     }
@@ -221,6 +229,7 @@ impl TransferQueue {
     fn snapshot(t: &Arc<TransferInner>) -> TransferInfo {
         let mut info = lock(&t.info).clone();
         info.bytes_done = t.bytes_done.load(Ordering::Relaxed);
+        info.priority = t.priority.load(Ordering::Relaxed);
         info
     }
 
@@ -260,12 +269,14 @@ impl TransferQueue {
                 bytes_done: 0,
                 bytes_total,
                 on_exists,
+                priority: false,
                 retries: 0,
                 error: None,
             }),
             bytes_done: AtomicU64::new(0),
             pause: AtomicBool::new(false),
             cancel: AtomicBool::new(false),
+            priority: AtomicBool::new(false),
         });
         lock(&self.transfers).insert(id.clone(), inner.clone());
         (id, inner)
@@ -334,6 +345,10 @@ impl TransferQueue {
         let direction = lock(&t.info).direction;
         loop {
             if t.cancel.load(Ordering::Relaxed) {
+                // 优先账还账：持标记被取消时不得泄漏计数（会让普通任务永久让行）
+                if t.priority.swap(false, Ordering::Relaxed) {
+                    self.priority_waiting.fetch_sub(1, Ordering::Relaxed);
+                }
                 lock(&t.info).state = TransferState::Canceled;
                 self.emit(&t);
                 return;
@@ -346,6 +361,20 @@ impl TransferQueue {
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
                 continue; // 回顶部：cancel 分支或重新竞争 permit
+            }
+            // 优先级闸（传输管理「优先下载」）：有持标记的排队任务时普通任务
+            // 让行——200ms 粒度自旋，与暂停等待同手法（不持 permit、不占额度）。
+            // 让行期间被暂停/取消则退出自旋，交由下方二次确认/顶部分支处理。
+            while !t.priority.load(Ordering::Relaxed)
+                && self.priority_waiting.load(Ordering::Relaxed) > 0
+                && !t.pause.load(Ordering::Relaxed)
+                && !t.cancel.load(Ordering::Relaxed)
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            // 过闸即摘标记还账：先 swap 再 acquire，失败重试环内不再重复扣减
+            if t.priority.swap(false, Ordering::Relaxed) {
+                self.priority_waiting.fetch_sub(1, Ordering::Relaxed);
             }
             let permit = self.permits.acquire().await;
             // acquire 等待期间可能被暂停/取消：二次确认，避免持 permit 进传输
@@ -435,6 +464,25 @@ impl TransferQueue {
             t.pause.store(false, Ordering::Relaxed);
         })
     }
+
+    /// 优先调度：仅 Queued 可标记；持标记任务在执行槽空出时先行，普通任务让行。
+    /// 重复标记幂等（swap 命中已置位则不再加账）。对 Running/Paused/终态报错——
+    /// 抢占运行中任务语义过重，不做。
+    pub fn prioritize(&self, id: &str) -> Result<(), SftpError> {
+        self.with(id, |t| {
+            let state = lock(&t.info).state;
+            if state != TransferState::Queued {
+                return Err(SftpError::RemotePath {
+                    path: id.to_string(),
+                    reason: format!("仅排队中的传输可优先（当前: {}）", state.as_str()),
+                });
+            }
+            if !t.priority.swap(true, Ordering::Relaxed) {
+                self.priority_waiting.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(())
+        })?
+    }
     /// 重试：仅 Failed/Canceled 可重跑。重置为 Queued 后 respawn run_transfer，
     /// 断点由 download_once/upload_once 的既有续传逻辑自动沿用（无需显式传断点）。
     pub fn retry(self: &Arc<Self>, id: &str) -> Result<(), SftpError> {
@@ -488,15 +536,25 @@ impl TransferQueue {
         Ok(())
     }
 
-    /// 批量移除满足条件的终态条目（非终态一律跳过），返回移除数
-    pub fn clear_where(&self, pred: impl Fn(TransferState) -> bool) -> u32 {
+    /// 批量移除满足条件的终态条目（非终态一律跳过），返回被移除条目快照
+    /// （app 层据此清理未完成下载的本地残件）
+    pub fn clear_where(&self, pred: impl Fn(TransferState) -> bool) -> Vec<TransferInfo> {
         let mut map = lock(&self.transfers);
-        let before = map.len();
-        map.retain(|_, t| {
-            let s = lock(&t.info).state;
-            !(s.is_terminal() && pred(s))
-        });
-        (before - map.len()) as u32
+        let keys: Vec<TransferId> = map
+            .iter()
+            .filter(|(_, t)| {
+                let s = lock(&t.info).state;
+                s.is_terminal() && pred(s)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        let mut removed = Vec::with_capacity(keys.len());
+        for k in keys {
+            if let Some(t) = map.remove(&k) {
+                removed.push(Self::snapshot(&t));
+            }
+        }
+        removed
     }
 
     /// 暂停全部 Queued/Running（终态与已暂停不受影响）

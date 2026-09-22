@@ -975,6 +975,7 @@ impl Worker {
                 bytes_done: 0,
                 bytes_total: task.size,
                 on_exists: mode,
+                priority: false,
                 retries: attempt,
                 error: None,
             };

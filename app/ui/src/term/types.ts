@@ -114,6 +114,8 @@ export interface TransferView {
   bytesDone: number;
   bytesTotal: number;
   retries: number;
+  /** 优先调度标记（传输管理「优先下载」；过闸即由后端摘除） */
+  priority?: boolean;
   error?: string | null;
   rate?: number;
   /** 历史记录（上次运行终态，非本次运行） */

@@ -147,6 +147,11 @@ export const zhDialogs = {
   'dialogs.diagHint': '打包日志与系统信息为 zip；日志可能含主机地址与用户名，发送前请自行审阅。',
   'dialogs.diagExported': '诊断包已导出：{path}',
   'dialogs.diagFailed': '诊断包导出失败：{msg}',
+  'dialogs.downloadDirSection': '下载目录',
+  'dialogs.downloadDirHint':
+    '设置后，SFTP 下载按钮与右键下载固定落到该目录；留空则跟随本地栏当前目录。',
+  'dialogs.browse': '浏览…',
+  'dialogs.clearDownloadDir': '清除',
   'dialogs.mcpAllowSftpTransfer': 'SFTP 上传/下载（读写本地文件）',
   'dialogs.mcpHint':
     'AI 客户端（如 Claude Code）接入：POST http://127.0.0.1:<端口>/mcp，请求头 Authorization: Bearer <令牌>。勾选启用后自动生成令牌；仅监听本机回环。',

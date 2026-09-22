@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../state/app-store';
 import {
   retryHistoryTransfer,
@@ -8,6 +9,7 @@ import {
 } from '../state/transfer-store';
 import type { TransferHistoryView, TransferJobView, TransferView } from '../term/types';
 import { ConfirmDialog } from './ConfirmDialog';
+import { ContextMenu, type MenuItem } from './ContextMenu';
 import { useT, type MsgKey } from '../i18n';
 
 /** 传输管理中心（批次六 5）：跨 session 聚合全部传输任务。
@@ -194,6 +196,15 @@ function baseName(path: string): string {
   return norm.split('/').pop() || path;
 }
 
+/** 在资源管理器中定位本地路径（上传=源文件，下载=目标文件，两侧都是本机路径） */
+function revealLocal(
+  path: string,
+  notify: (msg: string, level: 'error') => void,
+  failMsg: (e: string) => string,
+): void {
+  void invoke('open_in_explorer', { path }).catch((e) => notify(failMsg(String(e)), 'error'));
+}
+
 /** 历史记录行（失败/取消可一键重试续传；其余终态只读） */
 function HistoryRow({ h, serverName }: { h: TransferHistoryView; serverName: string }) {
   const t = useT();
@@ -235,6 +246,18 @@ function HistoryRow({ h, serverName }: { h: TransferHistoryView; serverName: str
           ↻
         </button>
       )}
+      <button
+        className="shrink-0 rounded px-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+        title={t('panels.revealLocal')}
+        aria-label={t('panels.revealLocal')}
+        onClick={() =>
+          revealLocal(h.local, useAppStore.getState().notify, (e) =>
+            t('panels.revealFailed', { error: e }),
+          )
+        }
+      >
+        📂
+      </button>
       <span className="w-20 shrink-0 text-right text-neutral-400">{time}</span>
     </div>
   );
@@ -269,16 +292,45 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
   const dst = t.direction === 'upload' ? t.remote : t.local;
   const terminal = t.state === 'done' || t.state === 'failed' || t.state === 'canceled';
   const btn = 'rounded px-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200';
+  const notify = useAppStore((s) => s.notify);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const reveal = () => revealLocal(t.local, notify, (e) => tr('panels.revealFailed', { error: e }));
+  const menuItems: MenuItem[] = [
+    ...(!t.history && t.state === 'queued'
+      ? [
+          {
+            label:
+              t.direction === 'upload'
+                ? tr('panels.prioritizeUpload')
+                : tr('panels.prioritizeDownload'),
+            icon: '⚡',
+            disabled: t.priority === true,
+            onSelect: () =>
+              void transferCmd(sessionId, 'transfer_prioritize', { transferId: t.id }),
+          },
+        ]
+      : []),
+    { label: tr('panels.revealLocal'), icon: '📂', onSelect: reveal },
+  ];
   return (
     <div
       className={`myssh-row-in -mx-1 rounded px-1 ${
         flash === 'done' ? 'myssh-flash-done' : flash === 'failed' ? 'myssh-flash-fail' : ''
       }`}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setMenu({ x: e.clientX, y: e.clientY });
+      }}
     >
       <div className="flex items-center gap-2 py-0.5 text-neutral-400">
         <span title={t.direction === 'upload' ? tr('panels.upload') : tr('panels.download')}>
           {t.direction === 'upload' ? '⬆' : '⬇'}
         </span>
+        {!t.history && t.priority && t.state === 'queued' && (
+          <span className="shrink-0 text-amber-400" title={tr('panels.prioritized')}>
+            ⚡
+          </span>
+        )}
         <span className="min-w-0 flex-1 truncate text-neutral-200" title={`${src}\n→ ${dst}`}>
           {baseName(src)} → {baseName(dst)}
         </span>
@@ -360,9 +412,20 @@ function TransferRow({ t, sessionId }: { t: TransferView; sessionId: string }) {
             🗑
           </button>
         )}
+        <button
+          className={btn}
+          title={tr('panels.revealLocal')}
+          aria-label={tr('panels.revealLocal')}
+          onClick={reveal}
+        >
+          📂
+        </button>
         {t.history && <span className="shrink-0 text-neutral-400">{tr('panels.lastTime')}</span>}
       </div>
       {showErr && t.error && <div className="ml-6 break-all py-0.5 text-red-400">{t.error}</div>}
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+      )}
     </div>
   );
 }

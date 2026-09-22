@@ -1058,11 +1058,23 @@ export function SftpPanel({ tabId }: { tabId: string }) {
 
   const uploadPaths = (paths: string[]) => uploadPathsTo(paths, remotePath);
 
-  const downloadPaths = (paths: string[]) => downloadPathsTo(paths, localPath || '');
+  // 下载落点：设置里配了默认下载目录则固定落该目录（显式配置优先于本地栏），
+  // 否则跟随本地栏当前目录；两者皆无（本地栏停在盘符枚举页）→ 提示，不再静默落 cwd
+  const downloadPaths = (paths: string[]) => {
+    const cfg = appSettings['sftp.downloadDir'];
+    const dir = typeof cfg === 'string' && cfg ? cfg : localPath;
+    if (!dir) {
+      notify(t('panels.noDownloadDir'), 'warning');
+      return;
+    }
+    downloadPathsTo(paths, dir);
+  };
 
+  // 拖拽落到本地栏 = 显式指定落点，始终用本地栏当前目录（不受默认下载目录配置影响）
   const transferDrop = (toSide: Side) => (paths: string[]) => {
     if (toSide === 'remote') uploadPaths(paths);
-    else downloadPaths(paths);
+    else if (localPath) downloadPathsTo(paths, localPath);
+    else notify(t('panels.noDownloadDir'), 'warning');
   };
 
   /** 栏间拖拽落到目录行：进该子目录（批次六 1b） */

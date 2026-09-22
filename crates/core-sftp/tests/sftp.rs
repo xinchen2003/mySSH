@@ -798,9 +798,9 @@ async fn clear_where_only_removes_matching_terminal() {
     wait_done(&q, &id_canceled).await;
 
     // failed 过滤：无匹配 → 0
-    assert_eq!(q.clear_where(|s| s == TransferState::Failed), 0);
+    assert!(q.clear_where(|s| s == TransferState::Failed).is_empty());
     // done 过滤：仅清 Done，Canceled 保留
-    assert_eq!(q.clear_where(|s| s == TransferState::Done), 1);
+    assert_eq!(q.clear_where(|s| s == TransferState::Done).len(), 1);
     assert!(q.get(&id_done).is_none());
     assert!(q.get(&id_canceled).is_some());
 
@@ -815,12 +815,109 @@ async fn clear_where_only_removes_matching_terminal() {
             core_sftp::OnExists::Resume,
         )
         .await;
-    assert_eq!(q.clear_where(|_| true), 1, "只应清掉 Canceled 一条");
+    assert_eq!(q.clear_where(|_| true).len(), 1, "只应清掉 Canceled 一条");
     assert!(q.get(&id_running).is_some(), "进行中条目不得被清理");
 
     q.cancel(&id_running).unwrap();
     wait_done(&q, &id_running).await;
-    assert_eq!(q.clear_where(|s| s.is_terminal()), 1);
+    assert_eq!(q.clear_where(|s| s.is_terminal()).len(), 1);
+}
+
+/// 优先下载（prioritize）：单执行槽下被标记的排队任务先于普通任务起跑；
+/// 重复标记幂等；运行中/终态任务拒绝标记。
+#[tokio::test]
+async fn prioritize_queued_transfer_runs_ahead() {
+    use core_sftp::{OnExists, TransferState};
+    let root = temp_root("prio");
+    let port = start_sftp_server(root.clone()).await;
+    let conn = connect(port).await;
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        make_slot(conn).await,
+        1, // 单执行槽：完成顺序完全可观测
+        tokio::runtime::Handle::current(),
+    ));
+    let order = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let o = order.clone();
+    q.set_progress_callback(std::sync::Arc::new(move |info| {
+        if info.state == TransferState::Done {
+            o.lock().push(info.id.clone());
+        }
+    }));
+
+    // A 慢速上传占住唯一执行槽（16 块 × 50ms ≈ 800ms 窗口）
+    let local = temp_root("prio-local");
+    let pa = local.join("a.SLOW.bin");
+    std::fs::write(&pa, pattern(4 * 1024 * 1024)).unwrap();
+    let a = q
+        .enqueue_upload(pa, "/a.SLOW.bin".into(), 4 * 1024 * 1024, OnExists::Resume)
+        .await;
+    wait_state(&q, &a, TransferState::Running).await;
+
+    // B、C 排队（小块秒完）
+    let mut bc = Vec::new();
+    for name in ["b.bin", "c.bin"] {
+        let p = local.join(name);
+        std::fs::write(&p, pattern(1024)).unwrap();
+        bc.push(
+            q.enqueue_upload(p, format!("/{name}"), 1024, OnExists::Resume)
+                .await,
+        );
+    }
+    let (b, c) = (bc[0].clone(), bc[1].clone());
+
+    // 优先 C：重复标记幂等；Running 的 A 拒绝；B 未标记
+    q.prioritize(&c).unwrap();
+    q.prioritize(&c).unwrap();
+    assert!(q.get(&c).unwrap().priority);
+    assert!(!q.get(&b).unwrap().priority);
+    assert!(q.prioritize(&a).is_err(), "Running 不可优先");
+
+    wait_done(&q, &a).await;
+    wait_done(&q, &b).await;
+    wait_done(&q, &c).await;
+    assert_eq!(order.lock().as_slice(), &[a, c, b], "C 应插队在 B 前完成");
+}
+
+/// 持优先标记的排队任务被取消：优先账必须还账，否则普通任务永久让行
+#[tokio::test]
+async fn prioritize_then_cancel_releases_lane() {
+    use core_sftp::{OnExists, TransferState};
+    let root = temp_root("prio-cancel");
+    let port = start_sftp_server(root.clone()).await;
+    let conn = connect(port).await;
+    let q = std::sync::Arc::new(core_sftp::TransferQueue::new(
+        make_slot(conn).await,
+        1,
+        tokio::runtime::Handle::current(),
+    ));
+
+    let local = temp_root("prio-cancel-local");
+    let pa = local.join("a.SLOW.bin");
+    std::fs::write(&pa, pattern(4 * 1024 * 1024)).unwrap();
+    let a = q
+        .enqueue_upload(pa, "/a.SLOW.bin".into(), 4 * 1024 * 1024, OnExists::Resume)
+        .await;
+    wait_state(&q, &a, TransferState::Running).await;
+
+    let pc = local.join("c.bin");
+    std::fs::write(&pc, pattern(1024)).unwrap();
+    let c = q
+        .enqueue_upload(pc, "/c.bin".into(), 1024, OnExists::Resume)
+        .await;
+    let pb = local.join("b.bin");
+    std::fs::write(&pb, pattern(1024)).unwrap();
+    let b = q
+        .enqueue_upload(pb, "/b.bin".into(), 1024, OnExists::Resume)
+        .await;
+
+    q.prioritize(&c).unwrap();
+    q.cancel(&c).unwrap();
+    wait_done(&q, &c).await;
+
+    // 若取消未还账，B 将永久卡在优先级闸（wait_done 10s 超时即暴露）
+    wait_done(&q, &a).await;
+    wait_done(&q, &b).await;
+    assert_eq!(q.get(&b).unwrap().state, TransferState::Done);
 }
 
 #[tokio::test]

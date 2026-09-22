@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAppStore } from '../state/app-store';
 import { invoke } from '@tauri-apps/api/core';
-import { save } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { BUILTIN_THEMES, SYSTEM_DEFAULTS } from '../term/themes';
 import { KEY_ACTIONS, keymapFromSettings, type KeymapScheme } from '../term/keymap';
@@ -262,6 +262,48 @@ export function SettingsDialog() {
                   />
                   <span className="text-neutral-500">{t('dialogs.clickToConnectHint')}</span>
                 </label>
+              </section>
+
+              <section>
+                <h3 className="mb-1.5 font-semibold text-neutral-200">
+                  {t('dialogs.downloadDirSection')}
+                </h3>
+                <div className="flex items-center gap-2">
+                  <span
+                    className="min-w-0 flex-1 truncate rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-xs text-neutral-300"
+                    title={
+                      typeof settings['sftp.downloadDir'] === 'string'
+                        ? settings['sftp.downloadDir']
+                        : undefined
+                    }
+                  >
+                    {typeof settings['sftp.downloadDir'] === 'string' &&
+                    settings['sftp.downloadDir']
+                      ? (settings['sftp.downloadDir'] as string)
+                      : '—'}
+                  </span>
+                  <button
+                    className="rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-700"
+                    onClick={() => {
+                      void (async () => {
+                        const dir = await open({ directory: true });
+                        if (typeof dir === 'string') setSetting('sftp.downloadDir', dir);
+                      })();
+                    }}
+                  >
+                    {t('dialogs.browse')}
+                  </button>
+                  {typeof settings['sftp.downloadDir'] === 'string' &&
+                    !!settings['sftp.downloadDir'] && (
+                      <button
+                        className="rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-700"
+                        onClick={() => setSetting('sftp.downloadDir', '')}
+                      >
+                        {t('dialogs.clearDownloadDir')}
+                      </button>
+                    )}
+                </div>
+                <p className="mt-1 text-xs text-neutral-500">{t('dialogs.downloadDirHint')}</p>
               </section>
 
               {/* 轴一 1.2：一键导出诊断包（日志可能含主机地址/用户名，文案提示用户自审） */}
