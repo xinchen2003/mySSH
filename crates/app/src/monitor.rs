@@ -1,6 +1,7 @@
 //! 监控命令族：metrics_subscribe / metrics_unsubscribe（M4）。
 //!
-//! - 复用 SFTP 的 Bulk 连接（同连接开独立 exec channel，不占交互连接）
+//! - 走 exec ctx 的 Bulk 连接（ensure_exec_ctx 按会话惰性建独立 Transport，
+//!   不复用 SFTP 连接——基于隧道的会话因此各多占一条隧道 TCP 连接）
 //! - 采集循环跑在 bulk-rt；每轮一个 snapshot 经 ipc::Channel 推给前端
 //! - 降级：NoProcfs 推一次 error 即退出；其余错误连错 3 轮退出，前端可重订
 

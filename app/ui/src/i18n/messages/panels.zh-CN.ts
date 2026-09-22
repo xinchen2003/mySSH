@@ -223,6 +223,8 @@ export const zhPanels = {
   'panels.colStartMode': '启动方式',
   'panels.colRate': '速率',
   'panels.colConns': '连接',
+  'panels.colConnsHint':
+    '隧道上活跃 TCP 连接数：除终端会话外，还含本应用按需建立的后台连接（每会话至多 +2：SFTP 数据面、监控/exec），关闭面板后经空闲回收才下降',
   'panels.colError': '错误',
   'panels.colActions': '操作',
   'panels.connCount': '{count} 连接',

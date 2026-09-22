@@ -109,7 +109,9 @@ export function TunnelPanel() {
                 <th className="pr-3 text-left font-normal">{t('panels.colStatus')}</th>
                 <th className="pr-3 text-left font-normal">{t('panels.colStartMode')}</th>
                 <th className="pr-3 text-left font-normal">{t('panels.colRate')}</th>
-                <th className="pr-3 text-left font-normal">{t('panels.colConns')}</th>
+                <th className="pr-3 text-left font-normal" title={t('panels.colConnsHint')}>
+                  {t('panels.colConns')}
+                </th>
                 <th className="pr-3 text-left font-normal">{t('panels.colError')}</th>
                 <th className="text-left font-normal">{t('panels.colActions')}</th>
               </tr>

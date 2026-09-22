@@ -233,6 +233,8 @@ export const enPanels: Record<keyof typeof zhPanels, string> = {
   'panels.colStartMode': 'Start Mode',
   'panels.colRate': 'Rate',
   'panels.colConns': 'Connections',
+  'panels.colConnsHint':
+    'Live TCP connections on this tunnel: besides terminal sessions, includes on-demand background connections of this app (up to +2 per session: SFTP data plane, monitor/exec); released via idle reclaim after panels close',
   'panels.colError': 'Error',
   'panels.colActions': 'Actions',
   'panels.connCount': '{count} conn',
