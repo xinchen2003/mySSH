@@ -1617,6 +1617,16 @@ fn chunk_frames(frame_type: &str, generation: u64, events: &[TransferEvent]) -> 
     }
     frames
 }
+/// 首帧 snapshot 是代际握手：为空也必须发一帧，否则前端永远学不到
+/// generation，后续事件帧全部判 stale-generation 丢弃（UI 零反馈）。
+fn snapshot_frames(generation: u64, events: &[TransferEvent]) -> Vec<Value> {
+    let frames = chunk_frames("snapshot", generation, events);
+    if frames.is_empty() {
+        vec![json!({ "type": "snapshot", "generation": generation, "events": [] })]
+    } else {
+        frames
+    }
+}
 
 /// 进度订阅（PR-9 增量事件协议 + snapshot 重同步）：
 /// 首帧 snapshot（每实体当前 eventSeq），之后 500ms tick-diff 只发变化的 upsert/remove；
@@ -1698,7 +1708,7 @@ pub async fn transfer_subscribe(
                 }
             })
             .collect();
-        for frame in chunk_frames("snapshot", generation, &snapshot) {
+        for frame in snapshot_frames(generation, &snapshot) {
             if events.send(frame).is_err() {
                 return;
             }
@@ -1904,5 +1914,19 @@ mod tests {
         assert_eq!(frames[0]["events"].as_array().unwrap().len(), 2);
         // 空事件 → 零帧
         assert!(chunk_frames("events", 7, &[]).is_empty());
+    }
+
+    /// 空 snapshot 也必须发帧（代际握手）：订阅时队列为空是常态，缺帧会让
+    /// 前端 generation 停在 0，后续事件帧全部判 stale-generation 丢弃。
+    #[test]
+    fn snapshot_frames_emits_handshake_when_empty() {
+        let frames = snapshot_frames(7, &[]);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0]["type"], "snapshot");
+        assert_eq!(frames[0]["generation"], 7);
+        assert_eq!(frames[0]["events"].as_array().unwrap().len(), 0);
+        // 非空时透传 chunk_frames 语义（含拆帧）
+        let events: Vec<TransferEvent> = (0..300).map(|i| ev(&format!("t:{i}"), 8)).collect();
+        assert_eq!(snapshot_frames(7, &events).len(), 2);
     }
 }
