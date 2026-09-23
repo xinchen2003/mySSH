@@ -48,4 +48,4 @@ sysinfo = "0.39.6"
 
 [dev-dependencies]
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
-tokio = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "test-util"] }
