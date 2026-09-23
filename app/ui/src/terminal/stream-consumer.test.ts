@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { FRAME_HEADER_LEN, StreamConsumer } from './stream-consumer';
+import { StreamConsumer } from './stream-consumer';
+import { FRAME_HEADER_LEN } from './stream-protocol';
 
 /** 可控 rAF：收集回调手动驱动消费循环 */
 let rafQueue: FrameRequestCallback[] = [];
@@ -63,6 +64,19 @@ describe('StreamConsumer PR-6 累计 ACK 协议', () => {
     runRaf();
     expect(write).toHaveBeenCalledTimes(1);
     expect(write.mock.calls[0][0].length).toBe(100);
+  });
+
+  it('gap 帧：记协议异常日志，payload 照常入队渲染（缺段不可恢复但不静默）', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const write = vi.fn((_data: Uint8Array, _cb: () => void) => undefined);
+    const c = new StreamConsumer(7, write, vi.fn());
+    c.push(frame(7, 0, 0, 100));
+    c.push(frame(7, 1, 200, 50)); // startOffset 200 ≠ lastEnd 100 → gap
+    runRaf();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][0].length).toBe(150);
+    warn.mockRestore();
   });
 
   it('dispose 后迟到的 write 回调不回传 credit（旧 callback 不污染新流）', () => {

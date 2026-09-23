@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tauri::ipc::{Channel, Response};
-use tokio::sync::{oneshot, Semaphore};
+use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
 use core_ssh::{
@@ -28,123 +28,14 @@ use core_ssh::{
 const AGG_WINDOW: Duration = Duration::from_millis(8);
 /// 单次推送上限（规格书第 2 条）
 const AGG_CAP: usize = 256 * 1024;
-/// 前端未确认字节数上限（信用背压；超出即停止从 SSH 读取）
-const CREDIT_HIGH: u32 = 8 * 1024 * 1024;
 /// 弹窗等待上限：超时按拒绝/取消处理，避免悬挂连接
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// 帧头长度：streamEpoch | frameSeq | startOffset | endOffset（各 u64 LE，PR-6/C4）
-const FRAME_HEADER_LEN: usize = 32;
-
-/// 单代际（streamEpoch）终端信用状态（PR-6 累计 ACK 协议）：
-/// - epoch 随数据 Channel 创建定死（term_open 入参），代际内 sent/acked 单调增；
-/// - sent range 登记先于 send（C4）；send 失败即断代——不回滚、不复用 offset、
-///   同 epoch 不再发送，失败批次既不回补信用也不接受其 ACK；
-/// - ACK 只接受当前 epoch：`incoming <= acked_total` 丢弃；`incoming > sent_total` 钳制。
-struct CreditState {
-    /// 本代际标识（前端建数据 Channel 时生成，随 term_open 传入）
-    epoch: u64,
-    /// 已登记发送的字节总量（send 失败也不回滚）
-    sent_total: AtomicU64,
-    /// 前端已确认消费的字节总量（累计 ACK，单调增）
-    acked_total: AtomicU64,
-    /// 下一帧序号（单写者：读循环）
-    frame_seq: AtomicU64,
-    /// send 失败断代标记：本代际不再发送任何数据
-    broken: AtomicBool,
-    /// 信用闸：可用 permit = 前端还可接收的字节数
-    credits: Semaphore,
-}
-
-impl CreditState {
-    fn new(epoch: u64) -> Self {
-        Self {
-            epoch,
-            sent_total: AtomicU64::new(0),
-            acked_total: AtomicU64::new(0),
-            frame_seq: AtomicU64::new(0),
-            broken: AtomicBool::new(false),
-            credits: Semaphore::new(CREDIT_HIGH as usize),
-        }
-    }
-
-    fn is_broken(&self) -> bool {
-        self.broken.load(Ordering::Acquire)
-    }
-
-    /// 在途未确认字节数（perf 观测）
-    fn outstanding(&self) -> u64 {
-        self.sent_total
-            .load(Ordering::Acquire)
-            .saturating_sub(self.acked_total.load(Ordering::Acquire))
-    }
-
-    /// flush 路径（单写者=读循环）：分配 frameSeq/offset → 登记 sent range → 组帧。
-    /// None = 已断代或 offset 溢出（溢出同时断代，不回绕）。
-    fn alloc_frame(&self, payload: Vec<u8>) -> Option<Vec<u8>> {
-        if self.is_broken() {
-            return None;
-        }
-        let start = self.sent_total.load(Ordering::Acquire);
-        let Some(end) = start.checked_add(payload.len() as u64) else {
-            // u64 边界（实际不可达：8MB 窗口下需 EB 级输出）：断代处理
-            self.broken.store(true, Ordering::Release);
-            return None;
-        };
-        let seq = self.frame_seq.fetch_add(1, Ordering::AcqRel);
-        // C4 顺序：登记先于 send——send 失败不回滚
-        self.sent_total.store(end, Ordering::Release);
-        let mut frame = Vec::with_capacity(FRAME_HEADER_LEN + payload.len());
-        frame.extend_from_slice(&self.epoch.to_le_bytes());
-        frame.extend_from_slice(&seq.to_le_bytes());
-        frame.extend_from_slice(&start.to_le_bytes());
-        frame.extend_from_slice(&end.to_le_bytes());
-        frame.extend_from_slice(&payload);
-        Some(frame)
-    }
-
-    /// send 失败：断代（C4：不回滚、不复用 offset、不允许同 epoch 继续发送）
-    fn mark_broken(&self) {
-        self.broken.store(true, Ordering::Release);
-    }
-
-    /// 累计 ACK（term_credit 路径）：返回新增信用字节数；0 = 忽略。
-    /// 旧 epoch / 断代 / 重复或倒退 ACK 一律丢弃；incoming > sent 钳制并记协议异常。
-    fn ack(&self, epoch: u64, incoming: u64) -> u64 {
-        if epoch != self.epoch || self.is_broken() {
-            return 0;
-        }
-        let mut cur = self.acked_total.load(Ordering::Acquire);
-        loop {
-            if incoming <= cur {
-                return 0;
-            }
-            let sent = self.sent_total.load(Ordering::Acquire);
-            if incoming > sent {
-                tracing::warn!(epoch, incoming, sent, "终端 ACK 超过已发送量，按钳制处理");
-            }
-            let newly = (incoming - cur).min(sent.saturating_sub(cur));
-            if newly == 0 {
-                return 0;
-            }
-            match self.acked_total.compare_exchange_weak(
-                cur,
-                cur + newly,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    self.credits.add_permits(newly as usize);
-                    return newly;
-                }
-                Err(actual) => cur = actual,
-            }
-        }
-    }
-}
+// 帧格式/信用协议（CreditState、FRAME_HEADER_LEN、CREDIT_HIGH）已迁 stream_protocol.rs（卡 1）
 
 // 连接类型（AuthSpec/TermOpenSpec/JumpHopSpec）与建连 helper 已迁 connect.rs（卡 5）
 use crate::connect::{auth_method_from, jump_chain_from, known_hosts_path, TermOpenSpec};
+use crate::stream_protocol::CreditState;
 
 /// 后台 tab 环形缓冲上限（PR-17 二期资源表 term.ring.cap 行）
 const RING_CAP: usize = 1024 * 1024;
@@ -416,7 +307,7 @@ impl TerminalManager {
                     "focused": s.focused.load(Ordering::Relaxed),
                     "ringBytes": s.ring.len(),
                     "ringTruncated": s.ring.truncated.load(Ordering::Relaxed),
-                    "creditAvailable": s.credit.credits.available_permits(),
+                    "creditAvailable": s.credit.available_credit(),
                     "streamBroken": s.credit.is_broken(),
                 })
             })
@@ -1186,21 +1077,16 @@ async fn flush(
         return;
     }
     if focused.load(Ordering::Acquire) {
-        // 前台：等待前端信用——背压点；等待期间读取循环挂起。
-        // permit 必须 forget，否则 drop 即归还，闸门形同虚设（实测踩中）。
-        match credit.credits.acquire_many(buf.len() as u32).await {
-            Ok(permit) => permit.forget(),
-            Err(_) => return, // 信号量关闭（会话拆除）：丢弃残余数据
+        // 前台：等待前端信用——背压点；等待期间读取循环挂起
+        if !credit.acquire_credit(buf.len() as u32).await {
+            return; // 信号量关闭（会话拆除）：丢弃残余数据
         }
     } else {
         // 后台 tab（PR-17 二期）：有信用直发；耗尽不等待（不反压远端进程），
         // 转 ring buffer——覆盖最旧字节必计 truncated，回前台提示并回放（C11）
-        match credit.credits.try_acquire_many(buf.len() as u32) {
-            Ok(permit) => permit.forget(),
-            Err(_) => {
-                ring.push(&buf);
-                return;
-            }
+        if !credit.try_acquire_credit(buf.len() as u32) {
+            ring.push(&buf);
+            return;
         }
     }
     send_frame(data_ch, credit, buf);
@@ -1221,12 +1107,7 @@ async fn drain_ring(
             "\r\n\x1b[1;33m[myssh] 后台输出已截断 {truncated} 字节（过载保护） \
              / background output truncated {truncated} bytes (overload protection)\x1b[0m\r\n"
         );
-        if credit
-            .credits
-            .acquire_many(notice.len() as u32)
-            .await
-            .is_ok()
-        {
+        if credit.acquire_credit(notice.len() as u32).await {
             send_frame(data_ch, credit, notice.into_bytes());
         }
     }
@@ -1235,9 +1116,8 @@ async fn drain_ring(
         if chunk.is_empty() {
             break;
         }
-        match credit.credits.acquire_many(chunk.len() as u32).await {
-            Ok(permit) => permit.forget(),
-            Err(_) => return, // 会话拆除
+        if !credit.acquire_credit(chunk.len() as u32).await {
+            return; // 会话拆除
         }
         send_frame(data_ch, credit, chunk);
     }
@@ -1316,122 +1196,5 @@ mod tests {
         );
         // 不做注释/变量解释：# 开头照发（v1 纯下发语义）
         assert_eq!(macro_lines("# not a comment"), vec!["# not a comment"]);
-    }
-
-    // ---- PR-6 累计 ACK 协议（CreditState）----
-
-    fn decode_frame(frame: &[u8]) -> (u64, u64, u64, u64, &[u8]) {
-        let g = |i: usize| {
-            let mut b = [0u8; 8];
-            b.copy_from_slice(&frame[i..i + 8]);
-            u64::from_le_bytes(b)
-        };
-        (g(0), g(8), g(16), g(24), &frame[FRAME_HEADER_LEN..])
-    }
-
-    /// 消耗 n 字节信用（模拟 flush 前 acquire+forget）
-    fn consume_credit(c: &CreditState, n: u32) {
-        match c.credits.try_acquire_many(n) {
-            Ok(permit) => permit.forget(),
-            Err(_) => panic!("信用应充足"),
-        }
-    }
-
-    /// 组帧（应成功；None 即断代/溢出，属本组测试的失败信号）
-    fn must_frame(c: &CreditState, payload: Vec<u8>) -> Vec<u8> {
-        match c.alloc_frame(payload) {
-            Some(f) => f,
-            None => panic!("alloc_frame 应成功"),
-        }
-    }
-
-    #[test]
-    fn credit_frame_header_layout_and_register() {
-        let c = CreditState::new(7);
-        let f0 = must_frame(&c, vec![1, 2, 3]);
-        let (epoch, seq, start, end, payload) = decode_frame(&f0);
-        assert_eq!((epoch, seq, start, end), (7, 0, 0, 3));
-        assert_eq!(payload, &[1, 2, 3]);
-        // 第二帧：seq/offset 接续
-        let (_, seq1, start1, end1, _) = decode_frame(&must_frame(&c, vec![4]));
-        assert_eq!((seq1, start1, end1), (1, 3, 4));
-        // sent range 先于 send 登记（C4）
-        assert_eq!(c.sent_total.load(Ordering::Relaxed), 4);
-        assert_eq!(c.outstanding(), 4);
-    }
-
-    #[test]
-    fn credit_ack_stale_epoch_dropped() {
-        let c = CreditState::new(7);
-        consume_credit(&c, 100);
-        must_frame(&c, vec![0; 100]);
-        // attach 换代后旧 callback 的迟到 ACK（旧 epoch）：无条件丢弃，不回补信用
-        assert_eq!(c.ack(8, 100), 0);
-        assert_eq!(c.credits.available_permits(), CREDIT_HIGH as usize - 100);
-        assert_eq!(c.outstanding(), 100);
-    }
-
-    #[test]
-    fn credit_ack_cumulative_release() {
-        let c = CreditState::new(7);
-        consume_credit(&c, 300);
-        must_frame(&c, vec![0; 100]);
-        must_frame(&c, vec![0; 200]);
-        // 累计 ACK：一次确认到 300 → 回补全部 300 permits
-        assert_eq!(c.ack(7, 300), 300);
-        assert_eq!(c.credits.available_permits(), CREDIT_HIGH as usize);
-        assert_eq!(c.outstanding(), 0);
-        // 新 epoch（WebView 重载后从零开始）：新代际计数独立，正常放行
-        let c2 = CreditState::new(8);
-        consume_credit(&c2, 50);
-        must_frame(&c2, vec![0; 50]);
-        assert_eq!(c2.ack(8, 50), 50);
-        assert_eq!(c2.credits.available_permits(), CREDIT_HIGH as usize);
-    }
-
-    #[test]
-    fn credit_ack_duplicate_or_regressed_ignored() {
-        let c = CreditState::new(7);
-        consume_credit(&c, 300);
-        must_frame(&c, vec![0; 300]);
-        assert_eq!(c.ack(7, 200), 200);
-        // 同 epoch 重复 ACK / 倒退 ACK：忽略
-        assert_eq!(c.ack(7, 200), 0);
-        assert_eq!(c.ack(7, 150), 0);
-        assert_eq!(c.outstanding(), 100);
-        assert_eq!(c.credits.available_permits(), CREDIT_HIGH as usize - 100);
-    }
-
-    #[test]
-    fn credit_ack_beyond_sent_clamped() {
-        let c = CreditState::new(7);
-        consume_credit(&c, 100);
-        must_frame(&c, vec![0; 100]);
-        // ACK 超过已发送量：钳制到 sent_total
-        assert_eq!(c.ack(7, 1_000_000), 100);
-        assert_eq!(c.credits.available_permits(), CREDIT_HIGH as usize);
-    }
-
-    #[test]
-    fn credit_send_failure_breaks_epoch() {
-        let c = CreditState::new(7);
-        consume_credit(&c, 100);
-        must_frame(&c, vec![0; 100]);
-        c.mark_broken();
-        // 断代后不允许同 epoch 继续发送
-        assert!(c.alloc_frame(vec![1]).is_none());
-        // send 失败批次的迟到 ACK 不得回补信用（该批次未被前端消费）
-        assert_eq!(c.ack(7, 100), 0);
-        assert_eq!(c.credits.available_permits(), CREDIT_HIGH as usize - 100);
-    }
-
-    #[test]
-    fn credit_offset_overflow_breaks_epoch() {
-        let c = CreditState::new(7);
-        c.sent_total.store(u64::MAX - 10, Ordering::Relaxed);
-        // u64 边界：不回绕，断代
-        assert!(c.alloc_frame(vec![0; 20]).is_none());
-        assert!(c.is_broken());
-        assert_eq!(c.ack(7, u64::MAX), 0);
     }
 }

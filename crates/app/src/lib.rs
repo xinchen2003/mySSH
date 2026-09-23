@@ -17,6 +17,7 @@ mod perf;
 mod sessions;
 mod settings;
 mod sftp;
+mod stream_protocol;
 mod terminal;
 mod transfer_ledger;
 mod tunnels;
