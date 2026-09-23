@@ -228,7 +228,7 @@ impl TransferQueue {
             permits: core_policy::Budget::new("sftp.exec", max_concurrent.max(1)),
             transfers: Mutex::new(HashMap::new()),
             id_seq: AtomicU64::new(1),
-            max_retries: 2,
+            max_retries: crate::executor::DEFAULT_MAX_RETRIES,
             priority_waiting: AtomicUsize::new(0),
             priority_running: Arc::new(AtomicUsize::new(0)),
             on_progress: Mutex::new(None),
@@ -358,113 +358,27 @@ impl TransferQueue {
         id
     }
 
-    /// 通用执行器：非暂停等待 → 并发闸 → 断点重试环。
-    ///
-    /// P1-8 不变量：暂停自旋与重试退避一律不持有 permit（先 acquire 后自旋会让
-    /// 3 个暂停任务占满并发闸、饿死正常任务）。传输中途暂停在 chunk 边界经
-    /// Interrupted 中断、释放 permit 后回非暂停等待；resume 后重新竞争 permit，
+    /// 通用执行器：编排骨架（暂停/取消等待、permit 取还、错误三分、重试退避）
+    /// 在 executor.rs（卡 4）；此处仅 queue 侧差异面：registry 常驻状态机 + emit +
+    /// priority 让行账。P1-8 不变量（暂停/退避不持 permit）由 executor 拥有。
     /// 断点由 download_once/upload_once 的续传逻辑从已确认偏移恢复
     /// （上传=远端 stat 的 ACK 连续前缀，下载=本地文件已写长度）。
     async fn run_transfer(&self, t: Arc<TransferInner>) {
         let direction = lock(&t.info).direction;
-        loop {
-            if t.cancel.load(Ordering::Relaxed) {
-                // 账-锁顺序（防泄漏）：终态先落 info.state（prioritize 持 info 锁
-                // 读状态+加账，看到终态即拒），再还账——「还账后加账」交错不可能发生
-                lock(&t.info).state = TransferState::Canceled;
-                self.repay_priority(&t);
-                self.emit(&t);
-                return;
-            }
-            // 非暂停等待（200ms 粒度；不持 permit，不占并发额度）
-            if t.pause.load(Ordering::Relaxed) {
-                lock(&t.info).state = TransferState::Paused;
-                // 暂停期间不占运行优先账（否则其他运行中任务干等）；
-                // 恢复后过闸时 1→2 转回运行账
-                if t.priority
-                    .compare_exchange(2, 1, Ordering::Relaxed, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    self.priority_running.fetch_sub(1, Ordering::Relaxed);
-                    self.priority_waiting.fetch_add(1, Ordering::Relaxed);
-                }
-                self.emit(&t);
-                while t.pause.load(Ordering::Relaxed) && !t.cancel.load(Ordering::Relaxed) {
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                }
-                continue; // 回顶部：cancel 分支或重新竞争 permit
-            }
-            // 优先级闸（传输管理「优先下载」）：有持让行账的排队任务时普通任务
-            // 让行——200ms 粒度自旋，与暂停等待同手法（不持 permit、不占额度）。
-            // 让行期间被暂停/取消则退出自旋，交由下方二次确认/顶部分支处理。
-            while t.priority.load(Ordering::Relaxed) == 0
-                && self.priority_waiting.load(Ordering::Relaxed) > 0
-                && !t.pause.load(Ordering::Relaxed)
-                && !t.cancel.load(Ordering::Relaxed)
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
-            // 过闸：让行账(1) → 运行账(2)。失败重试环内账已是 2 → CAS 失败不动账；
-            // 普通任务账为 0 → 同样不动账
-            if t.priority
-                .compare_exchange(1, 2, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                self.priority_waiting.fetch_sub(1, Ordering::Relaxed);
-                self.priority_running.fetch_add(1, Ordering::Relaxed);
-            }
-            let permit = self.permits.acquire().await;
-            // acquire 等待期间可能被暂停/取消：二次确认，避免持 permit 进传输
-            if t.cancel.load(Ordering::Relaxed) || t.pause.load(Ordering::Relaxed) {
-                drop(permit);
-                continue; // 交由顶部 cancel/pause 分支
-            }
-            lock(&t.info).state = TransferState::Running;
-            self.emit(&t);
-            let result = match self.data.get().await {
-                Ok(client) => match direction {
-                    TransferDirection::Download => download_once(client, t.clone()).await,
-                    TransferDirection::Upload => upload_once(client, t.clone()).await,
-                },
-                Err(e) => Err(e),
-            };
-            // 执行单元结束（完成/中断/失败）：立即释放 permit，后续去向均不持有它
-            drop(permit);
-            match result {
-                Ok(()) => {
-                    lock(&t.info).state = TransferState::Done;
-                    self.repay_priority(&t);
-                    self.emit(&t);
-                    return;
-                }
-                Err(e) => {
-                    if t.cancel.load(Ordering::Relaxed) {
-                        continue;
-                    }
-                    // 暂停引发的断点中断不算失败重试：回顶部非暂停等待（无 permit）
-                    if t.pause.load(Ordering::Relaxed) {
-                        continue;
-                    }
-                    // 真实失败：标 data 代际可疑，下次取用先探活、死了则单飞重建（C8）
-                    self.data.record_error();
-                    let over = {
-                        let mut info = lock(&t.info);
-                        info.retries += 1;
-                        info.error = Some(e.to_string());
-                        info.retries > self.max_retries
-                    };
-                    if over {
-                        lock(&t.info).state = TransferState::Failed;
-                        self.repay_priority(&t);
-                        self.emit(&t);
-                        return;
-                    }
-                    self.emit(&t);
-                    // 重试退避：1s、2s（不持 permit）
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-            }
-        }
+        let mut ex = crate::executor::Executor::sftp(
+            direction,
+            &self.permits,
+            &self.data,
+            &t.pause,
+            &t.cancel,
+            None, // queue 的 TransferInner 无 Notify：200ms 自旋
+            self.max_retries,
+        );
+        let mut flow = QueueFlow {
+            queue: self,
+            t: t.clone(),
+        };
+        ex.run(&mut flow).await;
     }
 
     pub fn list(&self) -> Vec<TransferInfo> {
@@ -646,6 +560,108 @@ impl TransferQueue {
         for t in lock(&self.transfers).values() {
             if t.pause.swap(false, Ordering::Relaxed) {
                 lock(&t.info).state = TransferState::Running;
+            }
+        }
+    }
+}
+
+/// run_transfer 的编排差异面（executor::ExecFlow）：registry 常驻状态机 + emit +
+/// priority 让行账（「优先下载」）。
+struct QueueFlow<'a> {
+    queue: &'a TransferQueue,
+    t: Arc<TransferInner>,
+}
+
+impl QueueFlow<'_> {
+    /// cancel 终态：账-锁顺序（防泄漏）——终态先落 info.state（prioritize 持 info 锁
+    /// 读状态+加账，看到终态即拒），再还账——「还账后加账」交错不可能发生
+    fn cancel_terminal_inner(&mut self) {
+        lock(&self.t.info).state = TransferState::Canceled;
+        self.queue.repay_priority(&self.t);
+        self.queue.emit(&self.t);
+    }
+}
+
+impl crate::executor::ExecFlow for QueueFlow<'_> {
+    type Guard = ();
+
+    fn prepare(&mut self, _attempt: u32) -> (Arc<TransferInner>, ()) {
+        lock(&self.t.info).state = TransferState::Running;
+        self.queue.emit(&self.t);
+        (self.t.clone(), ())
+    }
+
+    fn cancel_terminal(&mut self) {
+        self.cancel_terminal_inner();
+    }
+
+    fn pause_edge(&mut self, entering: bool) {
+        if entering {
+            lock(&self.t.info).state = TransferState::Paused;
+            // 暂停期间不占运行优先账（否则其他运行中任务干等）；
+            // 恢复后过闸时 1→2 转回运行账
+            if self
+                .t
+                .priority
+                .compare_exchange(2, 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                self.queue.priority_running.fetch_sub(1, Ordering::Relaxed);
+                self.queue.priority_waiting.fetch_add(1, Ordering::Relaxed);
+            }
+            self.queue.emit(&self.t);
+        }
+    }
+
+    async fn pre_permit_gate(&mut self) {
+        // 优先级闸（「优先下载」）：有持让行账的排队任务时普通任务让行——200ms 粒度
+        // 自旋，不持 permit、不占额度。让行期间被暂停/取消则退出自旋，交由 executor
+        // 二次确认/顶部分支处理
+        while self.t.priority.load(Ordering::Relaxed) == 0
+            && self.queue.priority_waiting.load(Ordering::Relaxed) > 0
+            && !self.t.pause.load(Ordering::Relaxed)
+            && !self.t.cancel.load(Ordering::Relaxed)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        // 过闸：让行账(1) → 运行账(2)。失败重试环内账已是 2 → CAS 失败不动账；
+        // 普通任务账为 0 → 同样不动账
+        if self
+            .t
+            .priority
+            .compare_exchange(1, 2, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.queue.priority_waiting.fetch_sub(1, Ordering::Relaxed);
+            self.queue.priority_running.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn report(&mut self, r: crate::executor::AttemptReport, (): ()) {
+        match r.kind {
+            crate::executor::AttemptEnd::Done => {
+                lock(&self.t.info).state = TransferState::Done;
+                self.queue.repay_priority(&self.t);
+                self.queue.emit(&self.t);
+            }
+            crate::executor::AttemptEnd::Canceled => self.cancel_terminal_inner(),
+            crate::executor::AttemptEnd::Failed => {
+                {
+                    let mut info = lock(&self.t.info);
+                    info.retries += 1;
+                    info.error = r.error;
+                    info.state = TransferState::Failed;
+                }
+                self.queue.repay_priority(&self.t);
+                self.queue.emit(&self.t);
+            }
+            crate::executor::AttemptEnd::Retry => {
+                {
+                    let mut info = lock(&self.t.info);
+                    info.retries += 1;
+                    info.error = r.error;
+                }
+                self.queue.emit(&self.t);
             }
         }
     }

@@ -18,8 +18,8 @@ use serde_json::{json, Value};
 use tauri::ipc::Channel;
 
 use core_sftp::{
-    rename_candidate, DirEntry, DirectoryJobScheduler, EntryKind, JobRoot, JobSnapshot, JobSpec,
-    OnExists, SftpClient, SftpSlot, SubsystemSlot, TransferDirection, TransferQueue, TransferState,
+    DirEntry, DirectoryJobScheduler, EntryKind, JobRoot, JobSnapshot, JobSpec, OnExists,
+    SftpClient, SftpSlot, SubsystemSlot, TransferDirection, TransferQueue, TransferState,
 };
 use core_store::Store;
 
@@ -984,55 +984,37 @@ fn parse_on_exists(raw: Option<String>) -> Result<OnExists, String> {
     }
 }
 
-/// 远端目标冲突解析：Ok(None) = skip；Ok(Some((最终路径, 运行期模式))) = 入队
+/// 远端目标冲突解析：Ok(None) = skip；Ok(Some((最终路径, 运行期模式))) = 入队。
+/// 唯一实现在 core-sftp executor（卡 4）；此处注入 metadata slot 探测
+/// （单文件 enqueue 前时机不变，ADR-0001 决策 6）
 async fn resolve_remote_target(
     ctx: &SftpCtx,
     target: &str,
     policy: OnExists,
 ) -> Result<Option<(String, OnExists)>, String> {
-    // stat 探测是冲突解析的正常流程（失败=目标不存在，不记可疑）
-    let mc = ctx.metadata.get().await.map_err(|e| e.to_string())?;
-    if mc.stat(target).await.is_err() {
-        // 不存在（或不可 stat）：直接入队，运行期续传逻辑自负盈亏
-        return Ok(Some((target.to_string(), policy.runtime())));
-    }
-    match policy {
-        OnExists::Resume | OnExists::Overwrite => Ok(Some((target.to_string(), policy))),
-        OnExists::Skip => Ok(None),
-        OnExists::Rename => {
-            for n in 1..1000 {
-                let cand = rename_candidate(target, n);
-                if mc.stat(&cand).await.is_err() {
-                    return Ok(Some((cand, OnExists::Resume)));
-                }
+    let metadata = ctx.metadata.clone();
+    core_sftp::resolve_remote(
+        move |t| {
+            let metadata = metadata.clone();
+            async move {
+                // stat 探测是冲突解析的正常流程（失败=目标不存在，不记可疑）
+                let mc = metadata.get().await?;
+                Ok::<_, core_sftp::SftpError>(mc.stat(&t).await.is_ok())
             }
-            Err(format!("自动改名失败: {target} 的 name-N 候选均被占用"))
-        }
-    }
+        },
+        target,
+        policy,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
-/// 本地目标冲突解析（与远端同策略；存在性看 std::fs）
+/// 本地目标冲突解析（唯一实现在 core-sftp executor，卡 4）
 fn resolve_local_target(
     target: &Path,
     policy: OnExists,
 ) -> Result<Option<(PathBuf, OnExists)>, String> {
-    if !target.exists() {
-        return Ok(Some((target.to_path_buf(), policy.runtime())));
-    }
-    match policy {
-        OnExists::Resume | OnExists::Overwrite => Ok(Some((target.to_path_buf(), policy))),
-        OnExists::Skip => Ok(None),
-        OnExists::Rename => {
-            let s = target.to_string_lossy();
-            for n in 1..1000 {
-                let cand = rename_candidate(&s, n);
-                if !Path::new(&cand).exists() {
-                    return Ok(Some((PathBuf::from(cand), OnExists::Resume)));
-                }
-            }
-            Err(format!("自动改名失败: {} 的 name-N 候选均被占用", s))
-        }
-    }
+    core_sftp::resolve_local(target, policy).map_err(|e| e.to_string())
 }
 
 /// 上传：local 文件/目录 → remote 目标目录（remote 为目录路径，文件名取本地名）。

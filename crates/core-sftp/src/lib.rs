@@ -20,6 +20,8 @@ pub use job::{
 };
 pub use shellint::{add_integration, has_integration, remove_integration, SCRIPT, SCRIPT_REL};
 pub use slot::{SftpSlot, SubsystemSlot};
+mod executor;
+pub use executor::{resolve_local, resolve_remote};
 pub use transfer::{
     rename_candidate, OnExists, ProgressFn, TransferId, TransferInfo, TransferQueue, TransferState,
 };

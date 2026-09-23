@@ -12,13 +12,14 @@
 //! 单目录 listing 峰值；真正的流式 paged readdir 随 PR-11 metadata 通道落地。
 
 use std::collections::{HashMap, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::{mpsc, Notify, Semaphore};
 
-use crate::transfer::{download_once, upload_once, TransferInner};
+use crate::executor::{AttemptEnd, AttemptReport, ExecFlow, Executor};
+use crate::transfer::TransferInner;
 use crate::{
     EntryKind, OnExists, SftpError, SftpSlot, TransferDirection, TransferId, TransferInfo,
     TransferState,
@@ -56,8 +57,6 @@ impl Default for SchedulerCaps {
 const MAX_PATH: usize = 1024;
 /// 每 job 执行 worker 数（与 TransferQueue.permits 共享执行槽预算）
 const WORKERS: usize = 3;
-/// 单文件失败就地重试次数（对齐 TransferQueue.max_retries）
-const MAX_FILE_RETRIES: u32 = 2;
 /// 放置停滞时的保底轮询间隔（ready 容量释放无通知机制）
 const REPOLLS_MS: u64 = 50;
 
@@ -546,61 +545,6 @@ fn refresh_phase(job: &JobInner) {
     };
 }
 
-/// 冲突解析（与 app 层 resolve_remote_target/resolve_local_target 同语义，
-/// 移入 worker 逐文件执行；Ok(None) = skip）
-async fn resolve_remote(
-    data: &Arc<SftpSlot>,
-    target: &str,
-    policy: OnExists,
-) -> Result<Option<(String, OnExists)>, SftpError> {
-    let sftp = data.get().await?;
-    if sftp.stat(target).await.is_err() {
-        return Ok(Some((target.to_string(), policy.runtime())));
-    }
-    match policy {
-        OnExists::Resume | OnExists::Overwrite => Ok(Some((target.to_string(), policy))),
-        OnExists::Skip => Ok(None),
-        OnExists::Rename => {
-            for n in 1..1000 {
-                let cand = crate::rename_candidate(target, n);
-                if sftp.stat(&cand).await.is_err() {
-                    return Ok(Some((cand, OnExists::Resume)));
-                }
-            }
-            Err(SftpError::RemotePath {
-                path: target.to_string(),
-                reason: "自动改名失败: name-N 候选均被占用".into(),
-            })
-        }
-    }
-}
-
-fn resolve_local(
-    target: &Path,
-    policy: OnExists,
-) -> Result<Option<(PathBuf, OnExists)>, SftpError> {
-    if !target.exists() {
-        return Ok(Some((target.to_path_buf(), policy.runtime())));
-    }
-    match policy {
-        OnExists::Resume | OnExists::Overwrite => Ok(Some((target.to_path_buf(), policy))),
-        OnExists::Skip => Ok(None),
-        OnExists::Rename => {
-            let s = target.to_string_lossy();
-            for n in 1..1000 {
-                let cand = crate::rename_candidate(&s, n);
-                if !Path::new(&cand).exists() {
-                    return Ok(Some((PathBuf::from(cand), OnExists::Resume)));
-                }
-            }
-            Err(SftpError::LocalIo {
-                path: target.display().to_string(),
-                reason: "自动改名失败: name-N 候选均被占用".into(),
-            })
-        }
-    }
-}
-
 /// ScanCoordinator：frontier/held/ready 的唯一协调方（C2）
 struct Coordinator {
     sched: Arc<DirectoryJobScheduler>,
@@ -927,16 +871,32 @@ impl Worker {
         }
     }
 
+    /// 逐文件执行：冲突解析（执行时，data slot——ADR-0001 决策 6 现状）后交共享
+    /// 编排骨架（executor.rs，卡 4）；此处仅 job 侧差异面：transient TransferInner、
+    /// job 级信号传播、计数与终态报告。
     async fn run_task(&self, task: TransferTask) {
         // 冲突解析（逐文件；skip 计 skipped）
         let resolved = match self.job.direction {
             TransferDirection::Upload => {
-                resolve_remote(&self.sched.data, &task.remote, self.job.policy)
-                    .await
-                    .map(|o| o.map(|(remote, mode)| (task.local.clone(), remote, mode)))
+                let data = self.sched.data.clone();
+                crate::executor::resolve_remote(
+                    move |t| {
+                        let data = data.clone();
+                        async move {
+                            let sftp = data.get().await?;
+                            Ok::<_, SftpError>(sftp.stat(&t).await.is_ok())
+                        }
+                    },
+                    &task.remote,
+                    self.job.policy,
+                )
+                .await
+                .map(|o| o.map(|(remote, mode)| (task.local.clone(), remote, mode)))
             }
-            TransferDirection::Download => resolve_local(&task.local, self.job.policy)
-                .map(|o| o.map(|(local, mode)| (local, task.remote.clone(), mode))),
+            TransferDirection::Download => {
+                crate::executor::resolve_local(&task.local, self.job.policy)
+                    .map(|o| o.map(|(local, mode)| (local, task.remote.clone(), mode)))
+            }
         };
         let (local, remote, mode) = match resolved {
             Ok(Some(v)) => v,
@@ -954,102 +914,23 @@ impl Worker {
             }
         };
 
-        let mut attempt = 0u32;
-        loop {
-            self.wait_unpaused().await;
-            if self.job.cancel.load(Ordering::Relaxed) {
-                self.report(&task, 0, TransferState::Canceled, None);
-                return;
-            }
-            let permit = self.sched.permits.acquire().await;
-            if self.job.cancel.load(Ordering::Relaxed) || self.job.pause.load(Ordering::Relaxed) {
-                drop(permit);
-                continue;
-            }
-            let info = TransferInfo {
-                id: task.id.clone(),
-                direction: self.job.direction,
-                local: local.clone(),
-                remote: remote.clone(),
-                state: TransferState::Running,
-                bytes_done: 0,
-                bytes_total: task.size,
-                on_exists: mode,
-                priority: false,
-                retries: attempt,
-                error: None,
-            };
-            let t = TransferInner::new_transient(info);
-            // job 级 pause/cancel → transient 位传播（chunk 边界中断）
-            let watch = {
-                let job = self.job.clone();
-                let t = t.clone();
-                tokio::spawn(async move {
-                    loop {
-                        job.wake.notified().await;
-                        t.signal(
-                            job.pause.load(Ordering::Relaxed),
-                            job.cancel.load(Ordering::Relaxed),
-                        );
-                        if job.cancel.load(Ordering::Relaxed) {
-                            break;
-                        }
-                    }
-                })
-            };
-            let display = match self.job.direction {
-                TransferDirection::Upload => local.display().to_string(),
-                TransferDirection::Download => remote.clone(),
-            };
-            lock(&self.job.current).insert(self.idx, display);
-            self.job.active.fetch_add(1, Ordering::Relaxed);
-            let result = match self.sched.data.get().await {
-                Ok(client) => match self.job.direction {
-                    TransferDirection::Download => download_once(client, t.clone()).await,
-                    TransferDirection::Upload => upload_once(client, t.clone()).await,
-                },
-                Err(e) => Err(e),
-            };
-            self.job.active.fetch_sub(1, Ordering::Relaxed);
-            lock(&self.job.current).remove(&self.idx);
-            watch.abort();
-            drop(permit);
-            let bytes = t.final_bytes();
-
-            match result {
-                Ok(()) => {
-                    self.job.completed_files.fetch_add(1, Ordering::Relaxed);
-                    self.job.bytes_done.fetch_add(bytes, Ordering::Relaxed);
-                    self.report(&task, bytes, TransferState::Done, None);
-                    return;
-                }
-                Err(e) => {
-                    if self.job.cancel.load(Ordering::Relaxed) {
-                        self.job.bytes_done.fetch_add(bytes, Ordering::Relaxed);
-                        self.report(&task, bytes, TransferState::Canceled, Some(e.to_string()));
-                        return;
-                    }
-                    if self.job.pause.load(Ordering::Relaxed) {
-                        continue; // 暂停中断不算失败：等恢复后从断点重跑（不占 permit）
-                    }
-                    // 真实失败：标 data 代际可疑，下次取用先探活、死了则单飞重建（C8）
-                    self.sched.data.record_error();
-                    attempt += 1;
-                    if attempt > MAX_FILE_RETRIES {
-                        self.job.bytes_done.fetch_add(bytes, Ordering::Relaxed);
-                        self.job.record_failure(
-                            display_path(&self.job, &task),
-                            e.to_string(),
-                            self.sched.caps.failed_entries,
-                        );
-                        self.report(&task, bytes, TransferState::Failed, Some(e.to_string()));
-                        return;
-                    }
-                    // 重试退避 1s（不持 permit，对齐 run_transfer）
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-            }
-        }
+        let mut ex = Executor::sftp(
+            self.job.direction,
+            &self.sched.permits,
+            &self.sched.data,
+            &self.job.pause,
+            &self.job.cancel,
+            Some(&self.job.wake),
+            crate::executor::DEFAULT_MAX_RETRIES,
+        );
+        let mut flow = JobFlow {
+            worker: self,
+            task: &task,
+            local,
+            remote,
+            mode,
+        };
+        ex.run(&mut flow).await;
     }
 
     fn report(&self, task: &TransferTask, bytes: u64, state: TransferState, error: Option<String>) {
@@ -1063,6 +944,132 @@ impl Worker {
             state,
             error,
         });
+    }
+}
+
+/// run_task 的编排差异面（ExecFlow）：transient TransferInner（每 attempt 新建，
+/// 不驻留 registry——ADR-0001 两级模型）+ job 级 pause/cancel 信号传播 + 计数/报告。
+struct JobFlow<'a> {
+    worker: &'a Worker,
+    task: &'a TransferTask,
+    local: PathBuf,
+    remote: String,
+    mode: OnExists,
+}
+
+/// 本轮尝试的记账守卫：Drop 即归还（active/current 摘除 + watch 中断）
+struct JobAttemptGuard {
+    job: Arc<JobInner>,
+    idx: usize,
+    watch: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for JobAttemptGuard {
+    fn drop(&mut self) {
+        self.job.active.fetch_sub(1, Ordering::Relaxed);
+        lock(&self.job.current).remove(&self.idx);
+        if let Some(w) = self.watch.take() {
+            w.abort();
+        }
+    }
+}
+
+impl ExecFlow for JobFlow<'_> {
+    type Guard = JobAttemptGuard;
+
+    fn prepare(&mut self, attempt: u32) -> (Arc<TransferInner>, Self::Guard) {
+        let info = TransferInfo {
+            id: self.task.id.clone(),
+            direction: self.worker.job.direction,
+            local: self.local.clone(),
+            remote: self.remote.clone(),
+            state: TransferState::Running,
+            bytes_done: 0,
+            bytes_total: self.task.size,
+            on_exists: self.mode,
+            priority: false,
+            retries: attempt,
+            error: None,
+        };
+        let t = TransferInner::new_transient(info);
+        // job 级 pause/cancel → transient 位传播（chunk 边界中断）
+        let watch = {
+            let job = self.worker.job.clone();
+            let t = t.clone();
+            tokio::spawn(async move {
+                loop {
+                    job.wake.notified().await;
+                    t.signal(
+                        job.pause.load(Ordering::Relaxed),
+                        job.cancel.load(Ordering::Relaxed),
+                    );
+                    if job.cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                }
+            })
+        };
+        let display = match self.worker.job.direction {
+            TransferDirection::Upload => self.local.display().to_string(),
+            TransferDirection::Download => self.remote.clone(),
+        };
+        lock(&self.worker.job.current).insert(self.worker.idx, display);
+        self.worker.job.active.fetch_add(1, Ordering::Relaxed);
+        (
+            t,
+            JobAttemptGuard {
+                job: self.worker.job.clone(),
+                idx: self.worker.idx,
+                watch: Some(watch),
+            },
+        )
+    }
+
+    fn cancel_terminal(&mut self) {
+        self.worker
+            .report(self.task, 0, TransferState::Canceled, None);
+    }
+
+    fn report(&mut self, r: AttemptReport, guard: Self::Guard) {
+        drop(guard); // 先归还本轮记账，再计数/报告（对齐原内联顺序）
+        match r.kind {
+            AttemptEnd::Done => {
+                self.worker
+                    .job
+                    .completed_files
+                    .fetch_add(1, Ordering::Relaxed);
+                self.worker
+                    .job
+                    .bytes_done
+                    .fetch_add(r.bytes, Ordering::Relaxed);
+                self.worker
+                    .report(self.task, r.bytes, TransferState::Done, None);
+            }
+            AttemptEnd::Canceled => {
+                self.worker
+                    .job
+                    .bytes_done
+                    .fetch_add(r.bytes, Ordering::Relaxed);
+                self.worker
+                    .report(self.task, r.bytes, TransferState::Canceled, r.error);
+            }
+            AttemptEnd::Failed => {
+                self.worker
+                    .job
+                    .bytes_done
+                    .fetch_add(r.bytes, Ordering::Relaxed);
+                let error = r.error.unwrap_or_default();
+                self.worker.job.record_failure(
+                    display_path(&self.worker.job, self.task),
+                    error.clone(),
+                    self.worker.sched.caps.failed_entries,
+                );
+                self.worker
+                    .report(self.task, r.bytes, TransferState::Failed, Some(error));
+            }
+            // 非终态重试：job 不报告（attempt 记于下轮 transient info）
+            AttemptEnd::Retry => {}
+        }
     }
 }
 
