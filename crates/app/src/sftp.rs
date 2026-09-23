@@ -18,14 +18,14 @@ use serde_json::{json, Value};
 use tauri::ipc::Channel;
 
 use core_sftp::{
-    rename_candidate, DirEntry, DirectoryJobScheduler, EntryKind, FileTerminal, JobRoot,
-    JobSnapshot, JobSpec, OnExists, SftpClient, SftpSlot, SubsystemSlot, TransferDirection,
-    TransferQueue, TransferState,
+    rename_candidate, DirEntry, DirectoryJobScheduler, EntryKind, JobRoot, JobSnapshot, JobSpec,
+    OnExists, SftpClient, SftpSlot, SubsystemSlot, TransferDirection, TransferQueue, TransferState,
 };
 use core_store::Store;
 
 use crate::fs_limiter;
 use crate::sessions::SessionManagerState;
+use crate::transfer_ledger::{ClearScope, TerminalEntry, TransferLedger};
 
 static EDIT_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -77,6 +77,8 @@ type CtxSlot = SubsystemSlot<SftpCtx>;
 pub struct SftpManagerState {
     ctxs: Mutex<HashMap<String, Arc<CtxSlot>>>,
     rt: tokio::runtime::Handle,
+    /// 传输账本（ADR-0002）：transfers 表的唯一权威
+    ledger: TransferLedger,
 }
 
 impl SftpCtx {
@@ -196,8 +198,8 @@ impl SftpManagerState {
     pub(crate) fn rt(&self) -> tokio::runtime::Handle {
         self.rt.clone()
     }
-    /// 建 bulk-rt 线程（与 tunnel-rt 同构；设计 06 批量 runtime）
-    pub fn new() -> Arc<Self> {
+    /// 建 bulk-rt 线程（与 tunnel-rt 同构；设计 06 批量 runtime）+ 启动传输账本（ADR-0002）
+    pub fn new(store: Arc<Store>) -> Arc<Self> {
         let (tx, rx) = std::sync::mpsc::channel::<tokio::runtime::Handle>();
         std::thread::Builder::new()
             .name("bulk-rt".into())
@@ -216,13 +218,20 @@ impl SftpManagerState {
         let rt = rx
             .recv()
             .unwrap_or_else(|_| panic!("bulk runtime failed to start"));
+        let ledger = TransferLedger::start(store, &rt);
         let state = Arc::new(Self {
             ctxs: Mutex::new(HashMap::new()),
             rt,
+            ledger,
         });
         // PR-13：统一 TTL sweep（60s tick；5min 收 subsystem、10min 摘 ctx、超数 LRU）
         state.rt.clone().spawn(sweep_loop(state.clone()));
         state
+    }
+
+    /// 传输账本（ADR-0002）：transfers 表的唯一权威
+    pub(crate) fn ledger(&self) -> &TransferLedger {
+        &self.ledger
     }
 
     /// PR-0 可观测性：每会话上下文与传输队列快照
@@ -261,7 +270,12 @@ impl SftpManagerState {
                 })
             })
             .collect();
-        json!({ "contexts": ctxs.len(), "sessions": sessions })
+        json!({
+            "contexts": ctxs.len(),
+            "sessions": sessions,
+            // ADR-0002/边⑥：账本因队列满丢弃的文件级记录累计
+            "ledgerDropped": self.ledger.dropped_count(),
+        })
     }
 
     /// 各 ctx 执行槽预算快照（PR-17 perf_json governor 节数据源）
@@ -425,11 +439,11 @@ pub(crate) async fn ensure_ctx(
     }
     let ctx = slot.get().await.map_err(|e| e.to_string())?;
     ctx.touch();
-    // 传输生命周期回调（PR-13）：租约挂摘 + 终态/暂停落库。
+    // 传输生命周期回调（PR-13 + ADR-0002）：租约挂摘 + 终态/暂停经传输账本落库。
     // 每次 ensure 幂等重设（同一 ctx 同一闭包语义），替代旧逐命令设置。
     ctx.queue.set_progress_callback(transfer_lifecycle(
         Arc::downgrade(&ctx),
-        store.clone(),
+        state.ledger().clone(),
         session_id.to_string(),
     ));
     Ok(ctx)
@@ -444,16 +458,17 @@ fn new_ctx_slot(
 ) -> Arc<CtxSlot> {
     let rt = state.rt.clone();
     let store_f = store.clone();
+    let ledger_f = state.ledger().clone();
     let sid = session_id.to_string();
     let slot = SubsystemSlot::new(
         "sftp-ctx",
         rt.clone(),
         Arc::new(move || {
             let store = store_f.clone();
+            let ledger = ledger_f.clone();
             let sid = sid.clone();
-            let rt = rt.clone();
             Box::pin(async move {
-                build_ctx(&store, &sid, &rt)
+                build_ctx(&store, &sid, &ledger)
                     .await
                     .map_err(core_sftp::SftpError::Subsystem)
             })
@@ -478,7 +493,7 @@ fn new_ctx_slot(
 async fn build_ctx(
     store: &Arc<Store>,
     session_id: &str,
-    rt: &tokio::runtime::Handle,
+    ledger: &TransferLedger,
 ) -> Result<SftpCtx, String> {
     let spec = crate::sessions::resolve_session_spec(store, session_id).await?;
     if matches!(spec.auth, crate::terminal::AuthSpec::KeyboardInteractive)
@@ -526,12 +541,17 @@ async fn build_ctx(
         queue.permits_handle(),
         crate::fs_limiter::scan_permits(),
     );
-    // DirectoryJob 接线（ADR 0001 边 ⑤⑥）：writer 批量落库（fire-and-forget）+ job 终态 audit
-    let (wtx, wrx) = tokio::sync::mpsc::channel::<FileTerminal>(4096);
-    rt.spawn(history_writer(store.clone(), session_id.to_string(), wrx));
-    jobs.set_file_terminal_callback(Arc::new(move |rec| {
-        let _ = wtx.try_send(rec); // 满则丢弃文件级记录（红线：SQLite 慢不卡传输）
-    }));
+    // DirectoryJob 接线（ADR 0001 边⑤⑥ + ADR-0002）：逐文件终态经传输账本
+    // 有序落库（满即丢+计数；SQLite 慢不卡传输）+ job 终态 audit
+    {
+        let ledger = ledger.clone();
+        let sid = session_id.to_string();
+        jobs.set_file_terminal_callback(Arc::new(move |rec| {
+            if let Some(entry) = TerminalEntry::from_file_terminal(&sid, rec) {
+                ledger.on_terminal(entry);
+            }
+        }));
+    }
     {
         let store = store.clone();
         let sid = session_id.to_string();
@@ -902,12 +922,12 @@ pub async fn local_list(path: String) -> Result<Value, String> {
 
 // ---------- 传输 ----------
 
-/// 传输生命周期回调（PR-13）：租约挂摘（Queued/Running 挂、Paused/终态摘——
-/// 暂停转存后不阻止 ctx 回收）+ 终态与暂停落 transfers 表（暂停行是
+/// 传输生命周期回调（PR-13 + ADR-0002）：租约挂摘（Queued/Running 挂、Paused/终态摘——
+/// 暂停转存后不阻止 ctx 回收）+ 终态与暂停经传输账本落库（暂停行是
 /// ctx 被 TTL 回收后 resume 回退路径的凭据）。
 fn transfer_lifecycle(
     ctx_weak: std::sync::Weak<SftpCtx>,
-    store: Arc<Store>,
+    ledger: TransferLedger,
     session_id: String,
 ) -> core_sftp::ProgressFn {
     Arc::new(move |info| {
@@ -918,87 +938,10 @@ fn transfer_lifecycle(
                 Paused | Done | Failed | Canceled => ctx.release_transfer(&info.id),
             }
         }
-        if !matches!(info.state, Done | Failed | Canceled | Paused) {
-            return;
+        if let Some(entry) = TerminalEntry::from_info(&session_id, &info) {
+            ledger.on_terminal(entry);
         }
-        let store = store.clone();
-        let session_id = session_id.clone();
-        tauri::async_runtime::spawn(async move {
-            let _ = store
-                .transfers()
-                .upsert(&core_store::TransferRecord {
-                    id: info.id,
-                    session_id,
-                    direction: match info.direction {
-                        TransferDirection::Upload => "upload".into(),
-                        TransferDirection::Download => "download".into(),
-                    },
-                    local: info.local.to_string_lossy().to_string(),
-                    remote: info.remote,
-                    bytes_done: info.bytes_done,
-                    bytes_total: info.bytes_total,
-                    state: info.state.as_str().into(),
-                    error: info.error,
-                    updated_at: String::new(), // 写入侧由 SQLite 时钟生成
-                })
-                .await;
-        });
     })
-}
-
-/// SQLite history writer（ADR 0001 边 ⑥）：200ms/500 条批量 upsert 逐文件终态。
-/// 单任务独占写路径；回调侧 try_send，满即丢弃（红线：SQLite 慢不卡传输）。
-async fn history_writer(
-    store: Arc<Store>,
-    session_id: String,
-    mut rx: tokio::sync::mpsc::Receiver<FileTerminal>,
-) {
-    let mut buf: Vec<FileTerminal> = Vec::with_capacity(500);
-    loop {
-        buf.clear();
-        match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
-            Ok(Some(r)) => buf.push(r),
-            Ok(None) => break,  // 发送侧全 drop（ctx 销毁）
-            Err(_) => continue, // 聚合窗内无记录
-        }
-        while buf.len() < 500 {
-            match rx.try_recv() {
-                Ok(r) => buf.push(r),
-                Err(_) => break,
-            }
-        }
-        flush_history(&store, &session_id, &mut buf).await;
-    }
-    // 关闭前排空残留
-    while let Ok(r) = rx.try_recv() {
-        buf.push(r);
-    }
-    if !buf.is_empty() {
-        flush_history(&store, &session_id, &mut buf).await;
-    }
-}
-
-async fn flush_history(store: &Arc<Store>, session_id: &str, buf: &mut Vec<FileTerminal>) {
-    for rec in buf.drain(..) {
-        let _ = store
-            .transfers()
-            .upsert(&core_store::TransferRecord {
-                id: rec.id,
-                session_id: session_id.to_string(),
-                direction: match rec.direction {
-                    TransferDirection::Upload => "upload".into(),
-                    TransferDirection::Download => "download".into(),
-                },
-                local: rec.local.to_string_lossy().to_string(),
-                remote: rec.remote,
-                bytes_done: rec.bytes_done,
-                bytes_total: rec.bytes_total,
-                state: rec.state.as_str().into(),
-                error: rec.error,
-                updated_at: String::new(), // 写入侧由 SQLite 时钟生成
-            })
-            .await;
-    }
 }
 
 /// job 快照 → IPC 投影（rate 由订阅侧差分注入）
@@ -1336,12 +1279,7 @@ pub async fn transfer_list(
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
     let mut live: Vec<Value> = ctx.queue.list().iter().map(transfer_to_json).collect();
     // 历史（上次会话的终态记录）合并：live 已有的 id 以 live 为准
-    let history = sessions
-        .store
-        .transfers()
-        .for_session(&session_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    let history = state.ledger().session_rows(&session_id).await?;
     let live_ids: std::collections::HashSet<String> = live
         .iter()
         .filter_map(|v| v["id"].as_str().map(String::from))
@@ -1368,28 +1306,18 @@ pub async fn transfer_list(
 /// 全部会话的持久化传输历史（transfers 表，含时间；TransferCenter 历史记录区）
 #[tauri::command]
 pub async fn transfer_history(
-    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
 ) -> Result<Value, String> {
-    let records = sessions
-        .store
-        .transfers()
-        .recent(200)
-        .await
-        .map_err(|e| e.to_string())?;
+    let records = state.ledger().history(200).await?;
     Ok(json!({ "records": records }))
 }
 
 /// 清空全部传输历史记录
 #[tauri::command]
 pub async fn transfer_history_clear(
-    sessions: tauri::State<'_, Arc<SessionManagerState>>,
+    state: tauri::State<'_, Arc<SftpManagerState>>,
 ) -> Result<u64, String> {
-    sessions
-        .store
-        .transfers()
-        .clear_all()
-        .await
-        .map_err(|e| e.to_string())
+    state.ledger().clear_all().await
 }
 
 #[tauri::command]
@@ -1415,23 +1343,20 @@ pub async fn transfer_resume(
         Ok(()) => Ok(()),
         // 任务不在队列（ctx 被 TTL 回收）→ 暂停转存回退：落库凭据 + 目标
         // 状态校验后重入队（PR-13；校验失败明确报错，由用户选择覆盖/重传）
-        Err(_) => resume_from_stored(&ctx, &sessions.store, &session_id, &transfer_id).await,
+        Err(_) => resume_from_stored(&ctx, state.ledger(), &session_id, &transfer_id).await,
     }
 }
 
-/// 暂停转存回退：读 transfers 表 paused 行，校验目标未变后按断点重入队
+/// 暂停转存回退：经传输账本有序读 paused 行（必见已落队的落库），校验目标未变后按断点重入队
 async fn resume_from_stored(
     ctx: &Arc<SftpCtx>,
-    store: &Arc<Store>,
+    ledger: &TransferLedger,
     session_id: &str,
     transfer_id: &str,
 ) -> Result<(), String> {
-    let row = store
-        .transfers()
-        .get(transfer_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .filter(|r| r.session_id == session_id && r.state == "paused")
+    let row = ledger
+        .resumable(session_id, transfer_id)
+        .await?
         .ok_or_else(|| format!("传输不存在或不是可恢复的暂停任务: {transfer_id}"))?;
     let data = ctx.data.get().await.map_err(|e| e.to_string())?;
     match row.direction.as_str() {
@@ -1487,8 +1412,10 @@ async fn resume_from_stored(
         }
         other => return Err(format!("未知传输方向: {other}")),
     }
-    // 新任务接替：删除旧 paused 行（避免 transfer_list 出现重复条目）
-    let _ = store.transfers().delete(transfer_id).await;
+    // 新任务接替：有序删除旧 paused 行（排队中的落库不得反超，避免 transfer_list 重复/复活）
+    if let Err(e) = ledger.remove(transfer_id).await {
+        tracing::warn!(error = %e, "resume 接替后删除旧 paused 行失败");
+    }
     Ok(())
 }
 #[tauri::command]
@@ -1514,7 +1441,7 @@ pub async fn transfer_retry(
 }
 
 /// 移除单条终态传输记录（进行中拒绝）。
-/// 队列与 transfers 表同步删——只删内存，下次 transfer_list 合并历史即复活。
+/// 队列与 transfers 表经传输账本有序双删（ADR-0002）——排队中的终态落库不得反超删除。
 /// 连带清理：未完成的下载在本地留有残件（断点续传以目标文件本体为残件），
 /// 移除任务即删残件；已完成的下载与上传的本地源文件绝不动。
 #[tauri::command]
@@ -1525,7 +1452,9 @@ pub async fn transfer_remove(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<(), String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
+    let mut was_live = false;
     if let Some(t) = ctx.queue.get(&transfer_id) {
+        was_live = true;
         let partial = (t.direction == TransferDirection::Download
             && t.state != TransferState::Done)
             .then(|| t.local.clone());
@@ -1533,30 +1462,26 @@ pub async fn transfer_remove(
         if let Some(path) = partial {
             remove_partial_file(path).await;
         }
-    } else {
-        // 历史回放行（上次运行的终态记录，不在内存队列）：按库记录清理残件
-        let rec = sessions
-            .store
-            .transfers()
-            .get(&transfer_id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("传输不存在: {transfer_id}"))?;
-        if rec.direction == "download" && rec.state != "done" {
-            remove_partial_file(PathBuf::from(&rec.local)).await;
+    }
+    // 账本 remove 返回被删行：历史回放行（不在内存队列）按库记录清理残件
+    match state.ledger().remove(&transfer_id).await? {
+        Some(rec) => {
+            if !was_live && rec.direction == "download" && rec.state != "done" {
+                remove_partial_file(PathBuf::from(&rec.local)).await;
+            }
+        }
+        None => {
+            if !was_live {
+                return Err(format!("传输不存在: {transfer_id}"));
+            }
         }
     }
-    sessions
-        .store
-        .transfers()
-        .delete(&transfer_id)
-        .await
-        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 /// 批量清理终态传输：filter ∈ "done"|"failed"（failed 含 canceled），返回移除数。
-/// 队列与 transfers 表同步删（含历史回放行）——只清内存会在下次 transfer_list 复活。
+/// 队列与 transfers 表经传输账本有序双删（含历史回放行）——只清内存会在下次
+/// transfer_list 复活（ADR-0002）。
 #[tauri::command]
 pub async fn transfer_clear(
     session_id: String,
@@ -1565,14 +1490,17 @@ pub async fn transfer_clear(
     sessions: tauri::State<'_, Arc<SessionManagerState>>,
 ) -> Result<u32, String> {
     let ctx = ensure_ctx(&state, &sessions.store, &session_id).await?;
-    let pred: fn(core_sftp::TransferState) -> bool = match filter.as_str() {
-        "done" => |s| s == core_sftp::TransferState::Done,
-        "failed" => |s| {
-            matches!(
-                s,
-                core_sftp::TransferState::Failed | core_sftp::TransferState::Canceled
-            )
-        },
+    let (pred, scope): (fn(core_sftp::TransferState) -> bool, ClearScope) = match filter.as_str() {
+        "done" => (|s| s == core_sftp::TransferState::Done, ClearScope::Done),
+        "failed" => (
+            |s| {
+                matches!(
+                    s,
+                    core_sftp::TransferState::Failed | core_sftp::TransferState::Canceled
+                )
+            },
+            ClearScope::Failed,
+        ),
         _ => return Err(format!("未知清理过滤: {filter}（仅支持 done/failed）")),
     };
     let removed = ctx.queue.clear_where(pred);
@@ -1582,37 +1510,17 @@ pub async fn transfer_clear(
             remove_partial_file(t.local.clone()).await;
         }
     }
-    // DB 侧同步：队列移除的 + 历史回放行一并删库，否则下次 transfer_list 合并即复活
-    let db_hit = |s: &str| {
-        if filter == "done" {
-            s == "done"
-        } else {
-            s == "failed" || s == "canceled"
-        }
-    };
+    // 表侧：队列移除的 + 历史回放行一并经账本有序删库
+    let rows = state.ledger().clear_session(&session_id, scope).await?;
     let mut total = removed.len();
-    for r in sessions
-        .store
-        .transfers()
-        .for_session(&session_id)
-        .await
-        .map_err(|e| e.to_string())?
-    {
-        if !db_hit(&r.state) {
+    for r in rows {
+        if removed.iter().any(|t| t.id == r.id) {
             continue;
         }
-        if !removed.iter().any(|t| t.id == r.id) {
-            total += 1;
-            if r.direction == "download" && r.state != "done" {
-                remove_partial_file(PathBuf::from(&r.local)).await;
-            }
+        total += 1;
+        if r.direction == "download" && r.state != "done" {
+            remove_partial_file(PathBuf::from(&r.local)).await;
         }
-        sessions
-            .store
-            .transfers()
-            .delete(&r.id)
-            .await
-            .map_err(|e| e.to_string())?;
     }
     Ok(total as u32)
 }

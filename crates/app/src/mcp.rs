@@ -1404,8 +1404,8 @@ mod tests {
             l.local_addr().unwrap().port()
         };
         mgr.start(
-            store,
-            crate::sftp::SftpManagerState::new(),
+            store.clone(),
+            crate::sftp::SftpManagerState::new(store),
             crate::exec::ExecManagerState::new(tokio::runtime::Handle::current()),
             crate::mcp_terminal::McpTerminalState::new(),
             port,

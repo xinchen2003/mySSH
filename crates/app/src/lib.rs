@@ -17,6 +17,7 @@ mod sessions;
 mod settings;
 mod sftp;
 mod terminal;
+mod transfer_ledger;
 mod tunnels;
 
 use std::sync::Arc;
@@ -55,7 +56,7 @@ pub fn run() {
         mgr: core_tunnel::TunnelManager::new(),
         last: parking_lot::Mutex::new(std::collections::HashMap::new()),
     });
-    let sftp_state = sftp::SftpManagerState::new();
+    let sftp_state = sftp::SftpManagerState::new(session_state.store.clone());
     let exec_state = exec::ExecManagerState::new(sftp_state.rt());
     let monitor_state = monitor::MonitorState::new();
     let mcp_manager = mcp::McpManager::new();
