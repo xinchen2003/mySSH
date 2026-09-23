@@ -11,7 +11,7 @@ use core_ssh::{
 };
 use core_store::{Actor, AuthType, CredentialKind, Secret, SessionRecord, Store};
 
-use crate::terminal::AuthSpec;
+use crate::connect::AuthSpec;
 
 pub struct SessionManagerState {
     pub store: Arc<Store>,
@@ -329,7 +329,7 @@ async fn test_connect_inner(store: &Store, req: &TestConnectRequest) -> Result<u
     for hop_id in &req.jump_chain {
         let hop = Box::pin(resolve_spec_inner(store, hop_id, &mut visited)).await?;
         jump_chain.extend(hop.jump_chain);
-        jump_chain.push(crate::terminal::JumpHopSpec {
+        jump_chain.push(crate::connect::JumpHopSpec {
             host: hop.host,
             port: hop.port,
             user: hop.user,
@@ -340,8 +340,8 @@ async fn test_connect_inner(store: &Store, req: &TestConnectRequest) -> Result<u
         host: req.host.clone(),
         port: req.port,
         user: req.user.clone(),
-        auth: crate::terminal::auth_method_from(&auth),
-        jump_chain: crate::terminal::jump_chain_from(&jump_chain),
+        auth: crate::connect::auth_method_from(&auth),
+        jump_chain: crate::connect::jump_chain_from(&jump_chain),
         class: ConnClass::Bulk,
         window_size: 4 * 1024 * 1024,
         max_packet_size: 32768,
@@ -349,7 +349,7 @@ async fn test_connect_inner(store: &Store, req: &TestConnectRequest) -> Result<u
         // 测试连接无弹窗通路：未知密钥仅本次放行（不学习，正式连接仍会弹窗学入
         // known_hosts）；密钥变更仍 fail-closed 拒绝——那是中间人信号，不能静默放行
         host_key_check: HostKeyCheck::KnownHosts(KnownHostsPolicy {
-            path: crate::terminal::known_hosts_path(),
+            path: crate::connect::known_hosts_path(),
             prompter: Arc::new(|prompt: HostKeyPrompt| async move {
                 match prompt {
                     HostKeyPrompt::Unknown { .. } => HostKeyDecision::AcceptOnce,
@@ -515,13 +515,13 @@ pub async fn config_import(
 pub async fn resolve_session_spec(
     store: &Store,
     session_id: &str,
-) -> Result<crate::terminal::TermOpenSpec, String> {
+) -> Result<crate::connect::TermOpenSpec, String> {
     let mut visited = std::collections::HashSet::new();
     resolve_spec_inner(store, session_id, &mut visited).await
 }
 /// term_open 的解析结果：SSH 连接参数 或 本地 PTY 参数（批次十四 本地会话）
 pub enum ResolvedTarget {
-    Ssh(crate::terminal::TermOpenSpec),
+    Ssh(crate::connect::TermOpenSpec),
     Local(crate::local_pty::LocalShellSpec),
 }
 
@@ -557,7 +557,7 @@ async fn resolve_spec_inner(
     store: &Store,
     session_id: &str,
     visited: &mut std::collections::HashSet<String>,
-) -> Result<crate::terminal::TermOpenSpec, String> {
+) -> Result<crate::connect::TermOpenSpec, String> {
     if !visited.insert(session_id.to_string()) {
         return Err(format!("跳板链存在环：{session_id} 重复出现"));
     }
@@ -579,7 +579,7 @@ async fn resolve_spec_inner(
     for hop_id in &rec.jump_chain {
         let hop = Box::pin(resolve_spec_inner(store, hop_id, visited)).await?;
         jump_chain.extend(hop.jump_chain);
-        jump_chain.push(crate::terminal::JumpHopSpec {
+        jump_chain.push(crate::connect::JumpHopSpec {
             host: hop.host,
             port: hop.port,
             user: hop.user,
@@ -608,7 +608,7 @@ async fn resolve_spec_inner(
     } else {
         None
     };
-    Ok(crate::terminal::TermOpenSpec {
+    Ok(crate::connect::TermOpenSpec {
         host: rec.host.clone(),
         port: rec.port,
         user: rec.user.clone(),

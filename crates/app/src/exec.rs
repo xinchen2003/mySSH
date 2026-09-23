@@ -184,34 +184,10 @@ async fn build_exec_ctx(
     session_id: &str,
 ) -> Result<ExecCtx, String> {
     let spec = resolve_session_spec(store, session_id).await?;
-    // KI 闭环：后台 Exec Transport 不弹认证框——KI-only 会话明确报错
-    if matches!(spec.auth, crate::terminal::AuthSpec::KeyboardInteractive)
-        || spec
-            .jump_chain
-            .iter()
-            .any(|h| matches!(h.auth, crate::terminal::AuthSpec::KeyboardInteractive))
-    {
-        return Err(
-            "keyboard-interactive 不适用于后台 Exec 连接（监控/MCP exec；请改用密钥/agent）".into(),
-        );
-    }
-    let auth = crate::terminal::auth_method_from(&spec.auth);
-    let conn = core_ssh::SshConnection::connect(core_ssh::ConnectOptions {
-        host: spec.host.clone(),
-        port: spec.port,
-        user: spec.user.clone(),
-        auth,
-        jump_chain: crate::terminal::jump_chain_from(&spec.jump_chain),
-        // Bulk 语义：不占交互连接（与 SFTP/Tunnel 同池策略）
-        class: core_ssh::ConnClass::Bulk,
-        window_size: 4 * 1024 * 1024,
-        max_packet_size: 32768,
-        keepalive: core_ssh::KeepaliveConfig::default(),
-        host_key_check: crate::tunnels::tunnel_host_key_check(),
-        ki_prompter: None,
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    // 后台建连策略收口于 connect 模块（卡 5）：KI 拒绝/hostkey 严格/Bulk；控制流量 4MB 档
+    let conn = crate::connect::background(&spec, crate::connect::ConnectProfile::Control)
+        .await
+        .map_err(|e| format!("Exec 后台连接失败: {e}"))?;
     Ok(ExecCtx {
         conn: Arc::new(conn),
         monitor_permits: Arc::new(tokio::sync::Semaphore::new(MONITOR_PERMITS)),

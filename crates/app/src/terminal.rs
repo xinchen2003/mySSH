@@ -14,15 +14,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::ipc::{Channel, Response};
 use tokio::sync::{oneshot, Semaphore};
 use zeroize::Zeroizing;
 
 use core_ssh::{
-    AuthMethod, ConnClass, ConnectOptions, HostKeyCheck, HostKeyDecision, HostKeyPrompt,
-    KeepaliveConfig, KiChallenge, KnownHostsPolicy, PtyReader, PtyWriter, SshConnection,
+    ConnClass, ConnectOptions, HostKeyCheck, HostKeyDecision, HostKeyPrompt, KeepaliveConfig,
+    KiChallenge, KnownHostsPolicy, PtyReader, PtyWriter, SshConnection,
 };
 
 /// 输出聚合时间窗（规格书第 2 条）
@@ -144,60 +143,8 @@ impl CreditState {
     }
 }
 
-/// 前端传入的认证材料（secret 只在内存停留，Zeroizing 落 core-ssh）
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
-pub enum AuthSpec {
-    Password {
-        password: String,
-    },
-    /// keyPem：OpenSSH/PKCS8/PKCS5/PuTTY .ppk 均可
-    PublicKey {
-        key_pem: String,
-        passphrase: Option<String>,
-    },
-    KeyboardInteractive,
-    Agent,
-}
-
-/// 一跳跳板（已解析的认证材料；由 sessions.rs 从档案+保险库解析注入）
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JumpHopSpec {
-    pub host: String,
-    pub port: u16,
-    pub user: String,
-    pub auth: AuthSpec,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TermOpenSpec {
-    pub host: String,
-    pub port: u16,
-    pub user: String,
-    pub auth: AuthSpec,
-    /// ProxyJump 链（就近→最远）；空 = 直连
-    #[serde(default)]
-    pub jump_chain: Vec<JumpHopSpec>,
-    /// 终端类型，默认 xterm-256color
-    pub term: Option<String>,
-    /// 启动命令；None = 登录 shell
-    pub command: Option<String>,
-    /// 终端编码（encoding_rs 标签）；默认 utf-8 = 直通不转码
-    #[serde(default = "default_encoding")]
-    pub encoding: String,
-    /// 登录后切换用户（su）目标用户名；None/空 = 不切换（批次二十二）
-    #[serde(default)]
-    pub su_user: Option<String>,
-    /// su 密码（内存经手即弃；档案路径由 resolve 从保险库读出）
-    #[serde(default)]
-    pub su_password: Option<String>,
-    /// 登录宏：进 shell 后自动逐行执行的命令（多行文本）；None/空 = 不执行。
-    /// 语义：无 su 即发；有 su 则密码应答后发；配 command 的会话不执行；重连重放
-    #[serde(default)]
-    pub login_macro: Option<String>,
-}
+// 连接类型（AuthSpec/TermOpenSpec/JumpHopSpec）与建连 helper 已迁 connect.rs（卡 5）
+use crate::connect::{auth_method_from, jump_chain_from, known_hosts_path, TermOpenSpec};
 
 /// 后台 tab 环形缓冲上限（PR-17 二期资源表 term.ring.cap 行）
 const RING_CAP: usize = 1024 * 1024;
@@ -258,10 +205,6 @@ impl RingBuf {
     }
 }
 
-fn default_encoding() -> String {
-    "utf-8".into()
-}
-
 /// 会话编码生效值：term_open 显式入参优先，其次解析结果（档案/内联 spec），最后 utf-8
 fn effective_encoding(
     explicit: Option<&str>,
@@ -274,34 +217,6 @@ fn effective_encoding(
     crate::encoding::lookup(name)
 }
 
-/// AuthSpec → core-ssh 认证材料（Zeroizing 包裹秘密）
-pub(crate) fn auth_method_from(auth: &AuthSpec) -> AuthMethod {
-    match auth {
-        AuthSpec::Password { password } => AuthMethod::Password(Zeroizing::new(password.clone())),
-        AuthSpec::PublicKey {
-            key_pem,
-            passphrase,
-        } => AuthMethod::PublicKey {
-            key_pem: Zeroizing::new(key_pem.clone()),
-            passphrase: passphrase.clone().map(Zeroizing::new),
-        },
-        AuthSpec::KeyboardInteractive => AuthMethod::KeyboardInteractive,
-        AuthSpec::Agent => AuthMethod::Agent,
-    }
-}
-
-/// 跳板链 → core-ssh（KI 在跳板上同样弹窗——复用同一决策桥）
-pub(crate) fn jump_chain_from(chain: &[JumpHopSpec]) -> Vec<core_ssh::JumpHop> {
-    chain
-        .iter()
-        .map(|h| core_ssh::JumpHop {
-            host: h.host.clone(),
-            port: h.port,
-            user: h.user.clone(),
-            auth: auth_method_from(&h.auth),
-        })
-        .collect()
-}
 /// 读半抽象：SSH 通道 或 本地 PTY（批次十四 本地会话）
 enum AnyReader {
     Ssh(PtyReader),
@@ -515,14 +430,6 @@ static CONFIRM_SEQ: AtomicU64 = AtomicU64::new(1);
 
 fn next_id(prefix: &str, seq: &AtomicU64) -> String {
     format!("{prefix}{}", seq.fetch_add(1, Ordering::Relaxed))
-}
-
-pub(crate) fn known_hosts_path() -> std::path::PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("myssh")
-        .join("known_hosts")
 }
 
 // Tauri 命令的 State 参数不占真实调用签名；clippy 误伤，豁免

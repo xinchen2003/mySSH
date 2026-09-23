@@ -496,30 +496,10 @@ async fn build_ctx(
     ledger: &TransferLedger,
 ) -> Result<SftpCtx, String> {
     let spec = crate::sessions::resolve_session_spec(store, session_id).await?;
-    if matches!(spec.auth, crate::terminal::AuthSpec::KeyboardInteractive)
-        || spec
-            .jump_chain
-            .iter()
-            .any(|h| matches!(h.auth, crate::terminal::AuthSpec::KeyboardInteractive))
-    {
-        return Err("keyboard-interactive 不适用于 SFTP 后台连接（请改用密钥/agent）".into());
-    }
-    let auth = crate::terminal::auth_method_from(&spec.auth);
-    let conn = core_ssh::SshConnection::connect(core_ssh::ConnectOptions {
-        host: spec.host.clone(),
-        port: spec.port,
-        user: spec.user.clone(),
-        auth,
-        jump_chain: crate::terminal::jump_chain_from(&spec.jump_chain),
-        class: core_ssh::ConnClass::Bulk,
-        window_size: 16 * 1024 * 1024,
-        max_packet_size: 32768,
-        keepalive: core_ssh::KeepaliveConfig::default(),
-        host_key_check: crate::tunnels::tunnel_host_key_check(),
-        ki_prompter: None,
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    // 后台建连策略收口于 connect 模块（卡 5）：KI 拒绝/hostkey 严格/Bulk/window 分档
+    let conn = crate::connect::background(&spec, crate::connect::ConnectProfile::Throughput)
+        .await
+        .map_err(|e| e.to_string())?;
     // PR-11：同 Transport 两条 SFTP subsystem——metadata（浏览/元操作）
     // 与 data（传输数据面）各自独立代际，subsystem 级单飞重建（C8）
     let conn = Arc::new(conn);

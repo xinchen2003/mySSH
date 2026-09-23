@@ -11,7 +11,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::ipc::Channel;
 
-use core_ssh::{ConnClass, ConnectOptions, KeepaliveConfig};
 use core_store::{Store, StoreError};
 use core_tunnel::{DisconnectPolicy, TunnelKind, TunnelManager, TunnelSpec};
 
@@ -45,27 +44,15 @@ fn make_connect_fn(store: Arc<Store>, session_id: String) -> core_tunnel::Connec
             let spec = crate::sessions::resolve_session_spec(&store, &session_id)
                 .await
                 .map_err(core_ssh::SshError::Internal)?;
-            // 认证材料移出，host/port/user 留用；跳板链同理（KI 一律拒绝：
-            // 后台流量无交互上下文，跳板也一样）
-            if matches!(spec.auth, crate::terminal::AuthSpec::KeyboardInteractive)
-                || spec
-                    .jump_chain
-                    .iter()
-                    .any(|h| matches!(h.auth, crate::terminal::AuthSpec::KeyboardInteractive))
-            {
-                return Err(core_ssh::SshError::UnsupportedAuth(
-                    "keyboard-interactive（隧道请改用密钥/agent）",
-                ));
-            }
-            let auth = crate::terminal::auth_method_from(&spec.auth);
-            connect_for_tunnel(auth, &spec).await
+            // 后台建连策略收口于 connect 模块（卡 5）：KI 拒绝/hostkey 严格/Bulk/16MB 档
+            crate::connect::background(&spec, crate::connect::ConnectProfile::Throughput).await
         })
     })
 }
 
-/// 共享键（PR-15）：sessionId + 配置指纹（host/port/user/auth/jump 链；
-/// host-key 策略全局一致不入键）。Session 配置变更 → 指纹变 →
-/// 重启后新隧道进新组，旧组随 drain 与 lease 归零关闭。
+/// 共享键（PR-15）：sessionId + 结构化配置指纹（host/port/user + 认证方式判别式
+/// + jump 链逐跳拓扑；秘密永不入指纹——凭据轮换不拆组，重连经 resolve 取新凭据）。
+///   Session 配置变更 → 指纹变 → 重启后新隧道进新组，旧组随 drain 与 lease 归零关闭。
 async fn tunnel_group_key(store: &Arc<Store>, session_id: &str) -> Result<String, String> {
     let spec = crate::sessions::resolve_session_spec(store, session_id).await?;
     use std::hash::{Hash, Hasher};
@@ -73,42 +60,14 @@ async fn tunnel_group_key(store: &Arc<Store>, session_id: &str) -> Result<String
     spec.host.hash(&mut h);
     spec.port.hash(&mut h);
     spec.user.hash(&mut h);
-    format!("{:?}", spec.auth).hash(&mut h);
-    format!("{:?}", spec.jump_chain).hash(&mut h);
+    crate::connect::hash_auth(&mut h, &spec.auth);
+    for hop in &spec.jump_chain {
+        hop.host.hash(&mut h);
+        hop.port.hash(&mut h);
+        hop.user.hash(&mut h);
+        crate::connect::hash_auth(&mut h, &hop.auth);
+    }
     Ok(format!("{session_id}:{:016x}", h.finish()))
-}
-
-async fn connect_for_tunnel(
-    auth: core_ssh::AuthMethod,
-    spec: &crate::terminal::TermOpenSpec,
-) -> Result<core_ssh::SshConnection, core_ssh::SshError> {
-    // 隧道后台流量：known_hosts 严格校验但不弹窗——首连须在终端侧完成过（已信任）
-    // AcceptAll 绝不可用（安全模型第 3 条）；这里用拒绝未知主机的策略
-    core_ssh::SshConnection::connect(ConnectOptions {
-        host: spec.host.clone(),
-        port: spec.port,
-        user: spec.user.clone(),
-        auth,
-        jump_chain: crate::terminal::jump_chain_from(&spec.jump_chain),
-        class: ConnClass::Bulk,
-        // 窗口=16MB（与 spike 验证配置对齐）；07 文档 4MB 基线系 50ms RTT 推算，
-        // 2026-08-23 环境回归期间实测非瓶颈（见 10-risks），保守取验证值
-        window_size: 16 * 1024 * 1024,
-        max_packet_size: 32768,
-        keepalive: KeepaliveConfig::default(),
-        host_key_check: tunnel_host_key_check(),
-        ki_prompter: None,
-    })
-    .await
-}
-
-/// 隧道侧主机密钥策略：known_hosts 严格校验，未知/变更一律拒绝并走日志
-/// （后台流量无交互上下文；用户须先经终端侧完成首连确认——与 FinalShell 一致）
-pub(crate) fn tunnel_host_key_check() -> core_ssh::HostKeyCheck {
-    core_ssh::HostKeyCheck::KnownHosts(core_ssh::KnownHostsPolicy {
-        path: crate::terminal::known_hosts_path(),
-        prompter: Arc::new(|_prompt| async { core_ssh::HostKeyDecision::Reject }),
-    })
 }
 
 /// 隧道定义的持久化形态（与前端 TunnelForm + 标记位对齐）

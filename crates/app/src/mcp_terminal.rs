@@ -17,10 +17,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 
-use core_ssh::{
-    ConnClass, ConnectOptions, HostKeyCheck, HostKeyDecision, HostKeyPrompt, KeepaliveConfig,
-    KnownHostsPolicy, PtyChannel, PtyWriter, SshConnection,
-};
+use core_ssh::{PtyChannel, PtyWriter, SshConnection};
 use core_store::Store;
 
 /// 终端输出环形缓冲容量：超界丢最旧（输出要进模型上下文，必须有界）
@@ -134,17 +131,8 @@ async fn terminal_open(
             return Err("本地会话不支持 terminal_open（仅 SSH 会话）".into());
         }
     };
-    // KI 无应答通路：预拒（照 sftp.rs ensure_ctx）
-    if matches!(spec.auth, crate::terminal::AuthSpec::KeyboardInteractive)
-        || spec
-            .jump_chain
-            .iter()
-            .any(|h| matches!(h.auth, crate::terminal::AuthSpec::KeyboardInteractive))
-    {
-        return Err(
-            "keyboard-interactive 不适用于 MCP 终端（无应答通路，请改用密钥/agent）".into(),
-        );
-    }
+    // KI 无应答通路：预拒（策略收口于 connect 模块，卡 5）
+    crate::connect::reject_background_ki(&spec).map_err(|e| e.to_string())?;
     let host = spec.host.clone();
     let run = terminal_open_inner(spec);
     let (conn, pty) = match tokio::time::timeout(OPEN_TIMEOUT, run).await {
@@ -189,36 +177,20 @@ async fn terminal_open(
     Ok(json!({ "terminalId": id }).to_string())
 }
 
-/// 建连 + 开 PTY：host key fail-closed（照 ssh_exec_inner；无 UI 弹窗通路）
+/// 建连 + 开 PTY：策略收口于 connect 模块（卡 5）；hostkey 失败补 UI 首连提示
 async fn terminal_open_inner(
-    spec: crate::terminal::TermOpenSpec,
+    spec: crate::connect::TermOpenSpec,
 ) -> Result<(SshConnection, PtyChannel), String> {
-    let opts = ConnectOptions {
-        host: spec.host.clone(),
-        port: spec.port,
-        user: spec.user.clone(),
-        auth: crate::terminal::auth_method_from(&spec.auth),
-        jump_chain: crate::terminal::jump_chain_from(&spec.jump_chain),
-        // Bulk 语义：不占交互连接，与 ssh_exec/SFTP 一致
-        class: ConnClass::Bulk,
-        window_size: 4 * 1024 * 1024,
-        max_packet_size: 32768,
-        keepalive: KeepaliveConfig::default(),
-        // 已知主机直过；未知/变更 fail-closed 拒绝，提示先在 UI 首连确认指纹
-        host_key_check: HostKeyCheck::KnownHosts(KnownHostsPolicy {
-            path: crate::terminal::known_hosts_path(),
-            prompter: Arc::new(|_: HostKeyPrompt| async { HostKeyDecision::Reject }),
-        }),
-        ki_prompter: None,
-    };
-    let conn = SshConnection::connect(opts).await.map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("主机密钥") {
-            format!("{msg}（未知/变更的主机密钥：请先在 mySSH UI 中连接一次该会话以确认指纹）")
-        } else {
-            msg
-        }
-    })?;
+    let conn = crate::connect::background(&spec, crate::connect::ConnectProfile::Control)
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("主机密钥") {
+                format!("{msg}（未知/变更的主机密钥：请先在 mySSH UI 中连接一次该会话以确认指纹）")
+            } else {
+                msg
+            }
+        })?;
     let pty = conn
         .open_pty("xterm", 120, 32, None)
         .await
