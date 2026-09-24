@@ -22,6 +22,8 @@ const spec: TermOpenSpec = {
   port: 22,
   user: 'u',
   auth: { type: 'agent' },
+  jumpChain: [],
+  encoding: 'utf-8',
 };
 
 const rec: SessionRecord = {
@@ -31,6 +33,9 @@ const rec: SessionRecord = {
   port: 22,
   username: 'root',
   authType: 'password',
+  kind: 'ssh',
+  encoding: 'utf-8',
+  mcpPerms: {},
   jumpChain: [],
   groupPath: '生产/Web',
   tags: [],

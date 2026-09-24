@@ -567,21 +567,7 @@ async fn build_ctx(
 // ---------- 浏览与元操作 ----------
 
 pub(crate) fn entry_to_json(e: &DirEntry) -> Value {
-    json!({
-        "name": e.name,
-        "path": e.path,
-        "kind": match e.kind {
-            EntryKind::File => "file",
-            EntryKind::Dir => "dir",
-            EntryKind::Symlink => "symlink",
-            EntryKind::Other => "other",
-        },
-        "size": e.size,
-        "permissions": e.permissions,
-        "mtime": e.mtime,
-        "user": e.user,
-        "group": e.group,
-    })
+    crate::wire::json_of(&crate::wire::FileEntry::from_remote(e))
 }
 
 #[tauri::command]
@@ -855,13 +841,10 @@ pub async fn local_list(path: String) -> Result<Value, String> {
         for c in b'A'..=b'Z' {
             let d = format!("{}:/", c as char);
             if Path::new(&d).exists() {
-                drives.push(json!({
-                    "name": format!("{}:", c as char),
-                    "path": d,
-                    "kind": "dir",
-                    "size": 0,
-                    "mtime": null,
-                }));
+                drives.push(crate::wire::json_of(&crate::wire::FileEntry::drive(
+                    format!("{}:", c as char),
+                    d,
+                )));
             }
         }
         return Ok(json!({ "entries": drives, "path": "" }));
@@ -877,13 +860,15 @@ pub async fn local_list(path: String) -> Result<Value, String> {
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs());
-        entries.push(json!({
-            "name": e.file_name().to_string_lossy(),
-            "path": e.path().to_string_lossy().replace('\\', "/"),
-            "kind": if meta.is_dir() { "dir" } else if meta.is_symlink() { "symlink" } else { "file" },
-            "size": if meta.is_file() { meta.len() } else { 0 },
-            "mtime": mtime,
-        }));
+        let size = if meta.is_file() { meta.len() } else { 0 };
+        entries.push(crate::wire::json_of(&crate::wire::FileEntry::local(
+            e.file_name().to_string_lossy().into_owned(),
+            e.path().to_string_lossy().replace('\\', "/"),
+            meta.is_dir(),
+            meta.is_symlink(),
+            size,
+            mtime,
+        )));
     }
     // 目录在前，字典序
     entries.sort_by(|a, b| {
@@ -926,49 +911,11 @@ fn transfer_lifecycle(
 
 /// job 快照 → IPC 投影（rate 由订阅侧差分注入）
 fn job_to_json(j: &JobSnapshot, rate: u64) -> Value {
-    json!({
-        "id": j.id,
-        "direction": match j.direction {
-            TransferDirection::Upload => "upload",
-            TransferDirection::Download => "download",
-        },
-        "summary": j.summary,
-        "state": j.state.as_str(),
-        "paused": j.paused,
-        "scanDone": j.scan_done,
-        "discoveredFiles": j.discovered_files,
-        "discoveredBytes": j.discovered_bytes,
-        "completedFiles": j.completed_files,
-        "failedFiles": j.failed_files,
-        "skipped": j.skipped,
-        "bytesDone": j.bytes_done,
-        "error": j.error,
-        "current": j.current,
-        "failedEntries": j.failed_entries.iter().map(|e| json!({
-            "path": e.path,
-            "error": e.error,
-        })).collect::<Vec<_>>(),
-        "rate": rate,
-    })
+    crate::wire::json_of(&crate::wire::TransferJobView::from_snapshot(j, rate))
 }
 
 pub(crate) fn transfer_to_json(t: &core_sftp::TransferInfo) -> Value {
-    json!({
-        "id": t.id,
-        "direction": match t.direction {
-            TransferDirection::Upload => "upload",
-            TransferDirection::Download => "download",
-        },
-        "local": t.local.to_string_lossy(),
-        "remote": t.remote,
-        "state": t.state.as_str(),
-        "bytesDone": t.bytes_done,
-        "priority": t.priority,
-        "bytesTotal": t.bytes_total,
-        "onExists": t.on_exists.as_str(),
-        "retries": t.retries,
-        "error": t.error,
-    })
+    crate::wire::json_of(&crate::wire::TransferView::from_info(t))
 }
 
 /// 解析 onExists 参数（缺省 resume，保持既有续传行为）
@@ -1248,18 +1195,9 @@ pub async fn transfer_list(
         .collect();
     for h in history {
         if !live_ids.contains(&h.id) {
-            live.push(json!({
-                "id": h.id,
-                "direction": h.direction,
-                "local": h.local,
-                "remote": h.remote,
-                "state": h.state,
-                "bytesDone": h.bytes_done,
-                "bytesTotal": h.bytes_total,
-                "retries": 0,
-                "error": h.error,
-                "history": true,
-            }));
+            live.push(crate::wire::json_of(
+                &crate::wire::TransferView::from_record(&h),
+            ));
         }
     }
     Ok(json!({ "transfers": live }))
@@ -1651,8 +1589,9 @@ pub async fn transfer_subscribe(
             if let Some(ctx) = state.peek_ctx(&session_id) {
                 for t in ctx.queue.list() {
                     let rate = rate_of(rate_book, &format!("t:{}", t.id), now, t.bytes_done);
-                    let mut v = transfer_to_json(&t);
-                    v["rate"] = json!(rate);
+                    let mut view = crate::wire::TransferView::from_info(&t);
+                    view.rate = Some(rate);
+                    let v = crate::wire::json_of(&view);
                     cur.push((format!("t:{}", t.id), "transfer", v));
                 }
                 for j in ctx.jobs.list() {

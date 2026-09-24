@@ -17,6 +17,7 @@ function tv(id: string, state: TransferView['state'] = 'running'): TransferView 
     bytesDone: 10,
     bytesTotal: 100,
     retries: 0,
+    error: null,
   };
 }
 
@@ -34,8 +35,10 @@ function jv(id: string, state: TransferJobView['state'] = 'transferring'): Trans
     failedFiles: 0,
     skipped: 0,
     bytesDone: 500,
+    error: null,
     current: [],
     failedEntries: [],
+    rate: 0,
   };
 }
 

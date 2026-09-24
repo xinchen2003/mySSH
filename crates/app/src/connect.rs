@@ -20,8 +20,13 @@ use core_ssh::{
 // ---------- 连接类型（自 terminal.rs 迁入；serde 形状不变，前端契约不受影响） ----------
 
 /// 前端传入的认证材料（secret 只在内存停留，Zeroizing 落 core-ssh）
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
+#[derive(Debug, Clone, Deserialize, ts_rs::TS)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
+#[ts(export, export_to = "../../../app/ui/src/term/bindings/")]
 pub enum AuthSpec {
     Password {
         password: String,
@@ -29,6 +34,7 @@ pub enum AuthSpec {
     /// keyPem：OpenSSH/PKCS8/PKCS5/PuTTY .ppk 均可
     PublicKey {
         key_pem: String,
+        #[ts(optional = nullable)]
         passphrase: Option<String>,
     },
     KeyboardInteractive,
@@ -36,8 +42,9 @@ pub enum AuthSpec {
 }
 
 /// 一跳跳板（已解析的认证材料；由 sessions.rs 从档案+保险库解析注入）
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../app/ui/src/term/bindings/")]
 pub struct JumpHopSpec {
     pub host: String,
     pub port: u16,
@@ -45,8 +52,9 @@ pub struct JumpHopSpec {
     pub auth: AuthSpec,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../app/ui/src/term/bindings/")]
 pub struct TermOpenSpec {
     pub host: String,
     pub port: u16,
@@ -56,21 +64,26 @@ pub struct TermOpenSpec {
     #[serde(default)]
     pub jump_chain: Vec<JumpHopSpec>,
     /// 终端类型，默认 xterm-256color
+    #[ts(optional = nullable)]
     pub term: Option<String>,
     /// 启动命令；None = 登录 shell
+    #[ts(optional = nullable)]
     pub command: Option<String>,
     /// 终端编码（encoding_rs 标签）；默认 utf-8 = 直通不转码
     #[serde(default = "default_encoding")]
     pub encoding: String,
     /// 登录后切换用户（su）目标用户名；None/空 = 不切换（批次二十二）
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub su_user: Option<String>,
     /// su 密码（内存经手即弃；档案路径由 resolve 从保险库读出）
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub su_password: Option<String>,
     /// 登录宏：进 shell 后自动逐行执行的命令（多行文本）；None/空 = 不执行。
     /// 语义：无 su 即发；有 su 则密码应答后发；配 command 的会话不执行；重连重放
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub login_macro: Option<String>,
 }
 

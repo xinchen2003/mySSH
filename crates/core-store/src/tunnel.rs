@@ -5,18 +5,22 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::error::StoreError;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../app/ui/src/term/bindings/")]
 #[serde(rename_all = "camelCase")]
 pub struct TunnelRecord {
     pub id: String,
     pub session_id: String,
-    pub kind: String, // local|remote|dynamic
+    #[ts(type = "'local' | 'remote' | 'dynamic'")]
+    pub kind: String,
     /// 显示名（模板预填；可空 → 面板回退为绑定地址）
     #[serde(default)]
     pub name: String,
     pub bind_host: String,
     pub bind_port: u16,
+    #[ts(optional = nullable)]
     pub target_host: Option<String>,
+    #[ts(optional = nullable)]
     pub target_port: Option<u16>,
     /// 开机自启（app 启动即建立）
     pub autostart: bool,

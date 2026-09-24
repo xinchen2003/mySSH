@@ -12,7 +12,7 @@ import {
   tunnelDisplayName,
 } from '../state/tunnel-utils';
 import { useT, type MsgKey } from '../i18n';
-import type { AuthSpec, SessionRecord, TunnelDef } from '../term/types';
+import type { AuthSpec, SessionRecord, TestConnectRequest, TunnelDef } from '../term/types';
 
 type AuthKind = AuthSpec['type'];
 type EditorTab = 'basic' | 'tunnels' | 'mcp';
@@ -40,19 +40,7 @@ const MCP_PERM_GROUPS = [
   ['sftp_write', 'dialogs.mcpAllowSftpWrite'],
   ['sftp_transfer', 'dialogs.mcpAllowSftpTransfer'],
 ] as const;
-/** session_test_connect 请求（Rust TestConnectRequest，serde camelCase） */
-interface TestConnectRequest {
-  sessionId?: string;
-  host: string;
-  port: number;
-  user: string;
-  /** 与 SessionRecord.authType 相同的 serde 形式（'publickey' / 'keyboard-interactive'） */
-  authType: SessionRecord['authType'];
-  password?: string;
-  keyPath?: string;
-  passphrase?: string;
-  jumpChain?: string[];
-}
+// TestConnectRequest 唯一源头 = Rust（term/bindings，经 types.ts re-export）
 
 /** session_test_connect 返回（Ok 值，不 Err） */
 interface TestConnectResult {
@@ -168,6 +156,7 @@ function ConnectForm({
             : kind === 'keyboardInteractive'
               ? 'keyboard-interactive'
               : kind,
+        jumpChain: [],
       };
       // 编辑已有会话且密码留空时，后端按 sessionId 回退保险库
       if (initial) req.sessionId = initial.id;
@@ -210,8 +199,8 @@ function ConnectForm({
           workdir: workdir.trim() || null,
           jumpChain: [],
           groupPath: presetGroup ?? initial?.groupPath ?? '',
-          color,
           encoding,
+          mcpPerms,
           tags: initial?.tags ?? [],
           command: command.trim() || null,
           createdAt: initial?.createdAt ?? '',
@@ -233,7 +222,7 @@ function ConnectForm({
           const keyPem = await invoke<string>('read_private_key', { path: keyPath.trim() });
           auth = { type: 'publicKey', keyPem, passphrase: passphrase || null };
         }
-        connect({ host: host.trim(), port, user: user.trim(), auth, encoding });
+        connect({ host: host.trim(), port, user: user.trim(), auth, encoding, jumpChain: [] });
         return;
       }
 
@@ -241,6 +230,7 @@ function ConnectForm({
       const id = initial?.id ?? `s-${Date.now()}`;
       const record: SessionRecord = {
         id,
+        kind: 'ssh',
         name: name.trim() || `${user.trim()}@${host.trim()}`,
         host: host.trim(),
         port,

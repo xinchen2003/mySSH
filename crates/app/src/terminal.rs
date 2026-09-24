@@ -184,10 +184,9 @@ pub async fn term_open(
                     task,
                 },
             );
-            let _ = events.send(json!({
-                "v": 1, "type": "session_state", "tabId": tab_id, "state": "connected",
-                "kind": "local", "shell": shell,
-            }));
+            let _ = events.send(crate::wire::json_of(
+                &crate::wire::SessionStateFrame::connected_local(&tab_id, &shell),
+            ));
             return Ok(json!({ "tabId": tab_id }));
         }
     };
@@ -210,23 +209,27 @@ pub async fn term_open(
                 port,
                 key_type,
                 fingerprint,
-            } => json!({
-                "v": 1, "type": "hostkey_prompt", "confirmId": confirm_id,
-                "kind": "unknown", "host": host, "port": port,
-                "keyType": key_type, "fingerprint": fingerprint,
-            }),
+            } => crate::wire::json_of(&crate::wire::HostKeyPromptFrame::unknown(
+                &confirm_id,
+                host,
+                *port,
+                key_type,
+                fingerprint,
+            )),
             HostKeyPrompt::Changed {
                 host,
                 port,
                 key_type,
                 old_fingerprint,
                 new_fingerprint,
-            } => json!({
-                "v": 1, "type": "hostkey_prompt", "confirmId": confirm_id,
-                "kind": "changed", "host": host, "port": port,
-                "keyType": key_type, "oldFingerprint": old_fingerprint,
-                "newFingerprint": new_fingerprint,
-            }),
+            } => crate::wire::json_of(&crate::wire::HostKeyPromptFrame::changed(
+                &confirm_id,
+                host,
+                *port,
+                key_type,
+                old_fingerprint,
+                new_fingerprint,
+            )),
         };
         let _ = hk_events.send(frame);
         let (tx, rx) = oneshot::channel();
@@ -245,13 +248,10 @@ pub async fn term_open(
     let ki_mgr = mgr.clone();
     let ki_prompter = Arc::new(move |challenge: KiChallenge| {
         let confirm_id = next_id("ki", &CONFIRM_SEQ);
-        let _ = ki_events.send(json!({
-            "v": 1, "type": "ki_challenge", "confirmId": confirm_id,
-            "name": challenge.name, "instruction": challenge.instruction,
-            "prompts": challenge.prompts.iter()
-                .map(|p| json!({ "prompt": p.prompt, "echo": p.echo }))
-                .collect::<Vec<_>>(),
-        }));
+        let _ = ki_events.send(crate::wire::json_of(&crate::wire::KiChallengeFrame::new(
+            &confirm_id,
+            &challenge,
+        )));
         let (tx, rx) = oneshot::channel();
         ki_mgr.ki_confirms.lock().insert(confirm_id, tx);
         async move {
@@ -351,10 +351,9 @@ pub async fn term_open(
         },
     );
 
-    let _ = events.send(json!({
-        "v": 1, "type": "session_state", "tabId": tab_id, "state": "connected",
-        "host": spec.host, "port": spec.port, "user": spec.user,
-    }));
+    let _ = events.send(crate::wire::json_of(
+        &crate::wire::SessionStateFrame::connected(&tab_id, &spec.host, spec.port, &spec.user),
+    ));
     Ok(json!({ "tabId": tab_id }))
 }
 

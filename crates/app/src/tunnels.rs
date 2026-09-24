@@ -332,7 +332,7 @@ pub async fn start_session_tunnels(
             return;
         }
     };
-    let mut results: Vec<Value> = Vec::new();
+    let mut results: Vec<crate::wire::SessionTunnelResult> = Vec::new();
     for d in defs.into_iter().filter(|d| d.with_session) {
         let r = start_tunnel(
             &mgr,
@@ -360,20 +360,18 @@ pub async fn start_session_tunnels(
                         | core_tunnel::TunnelStatus::Reconnecting
                 )
         });
-        results.push(json!({
-            "id": d.id,
-            "name": d.name,
-            "bind": format!("{}:{}", d.bind_host, d.bind_port),
-            "ok": r.is_ok() || already,
-            "error": if already { None } else { r.err() },
-        }));
+        results.push(crate::wire::SessionTunnelResult {
+            id: d.id.clone(),
+            name: d.name.clone(),
+            bind: format!("{}:{}", d.bind_host, d.bind_port),
+            ok: r.is_ok() || already,
+            error: if already { None } else { r.err() },
+        });
     }
     if !results.is_empty() {
-        let _ = events.send(json!({
-            "v": 1, "type": "session_tunnels",
-            "sessionId": session_id,
-            "results": results,
-        }));
+        let _ = events.send(crate::wire::json_of(
+            &crate::wire::SessionTunnelsFrame::new(&session_id, results),
+        ));
     }
 }
 /// 会话断开（终端关闭/重连耗尽）：停止该会话 with_session 的运行中隧道。
@@ -511,30 +509,9 @@ fn info_to_json(st: &TunnelManagerState, t: &core_tunnel::TunnelInfo) -> Value {
             None => (0, 0),
         }
     };
-    json!({
-        "tunnelId": t.id,
-        "kind": t.kind,
-        "bind": t.bind,
-        "target": t.target,
-        "status": match t.status {
-            core_tunnel::TunnelStatus::Starting => "starting",
-            core_tunnel::TunnelStatus::Listening => "listening",
-            core_tunnel::TunnelStatus::Reconnecting => "reconnecting",
-            core_tunnel::TunnelStatus::Stopped => "stopped",
-            core_tunnel::TunnelStatus::Failed => "failed",
-        },
-        "activeConns": t.stats.active_conns,
-        "totalConns": t.stats.total_conns,
-        "bytesUp": t.stats.bytes_up,
-        "bytesDown": t.stats.bytes_down,
-        "rateUp": rate_up,
-        "rateDown": rate_down,
-        "errors": t.stats.errors,
-        "rejectedConns": t.stats.rejected_conns,
-        "reconnects": t.stats.reconnects,
-        "lastError": t.last_error,
-    })
+    crate::wire::json_of(&crate::wire::TunnelView::from_info(t, rate_up, rate_down))
 }
+
 /// 本地端口预检（§9.4）：创建/编辑本地或动态隧道前调用。
 /// - 占用者为本隧道管理器中的其他定义 → 报占用来源；为 exclude_tunnel_id 自身 → 视为可用；
 /// - 占用时为可用建议端口（向上探测至多 100 个）；绝不静默修改用户端口。

@@ -5,17 +5,26 @@ use sqlx::{Row, SqlitePool};
 
 use crate::error::StoreError;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../app/ui/src/term/bindings/",
+    rename = "TransferHistoryView"
+)]
 pub struct TransferRecord {
     pub id: String,
     pub session_id: String,
-    pub direction: String, // upload | download
+    #[ts(type = "'upload' | 'download'")]
+    pub direction: String,
     pub local: String,
     pub remote: String,
+    #[ts(type = "number")]
     pub bytes_done: u64,
+    #[ts(type = "number")]
     pub bytes_total: u64,
-    pub state: String, // queued|running|paused|done|failed|canceled
+    #[ts(type = "'queued' | 'running' | 'paused' | 'done' | 'failed' | 'canceled'")]
+    pub state: String,
     pub error: Option<String>,
     pub updated_at: String,
 }

@@ -43,6 +43,7 @@ const target: ConnectTarget = {
     user: 'u',
     auth: { type: 'password', password: 'p' },
     encoding: 'gbk',
+    jumpChain: [],
   },
 };
 

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tauri::ipc::Channel;
 
 use core_monitor::MonitorError;
@@ -58,7 +58,9 @@ pub async fn metrics_subscribe(
                 Ok(snap) => {
                     errs = 0;
                     if events
-                        .send(json!({ "kind": "snapshot", "data": snap }))
+                        .send(crate::wire::json_of(&crate::wire::MetricsEvent::Snapshot {
+                            data: snap,
+                        }))
                         .is_err()
                     {
                         break; // 前端退订/窗口销毁
@@ -67,10 +69,9 @@ pub async fn metrics_subscribe(
                 Err(e) => {
                     let fatal = matches!(e, MonitorError::NoProcfs);
                     errs += 1;
-                    let _ = events.send(json!({
-                        "kind": "error",
-                        "message": e.to_string(),
-                        "fatal": fatal,
+                    let _ = events.send(crate::wire::json_of(&crate::wire::MetricsEvent::Error {
+                        message: e.to_string(),
+                        fatal,
                     }));
                     if fatal || errs >= 3 || ctx.conn().is_closed() {
                         break;

@@ -260,17 +260,22 @@ pub async fn vault_status(
 }
 
 /// 连通性测试入参（秘密材料只在内存经手；authType 与 SessionRecord 同 serde 形式）
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../app/ui/src/term/bindings/")]
 pub struct TestConnectRequest {
     /// 关联会话（保险库回退 + 审计归属）；可空 = 表单草稿未保存
+    #[ts(optional = nullable)]
     pub session_id: Option<String>,
     pub host: String,
     pub port: u16,
     pub user: String,
     pub auth_type: AuthType,
+    #[ts(optional = nullable)]
     pub password: Option<String>,
+    #[ts(optional = nullable)]
     pub key_path: Option<String>,
+    #[ts(optional = nullable)]
     pub passphrase: Option<String>,
     /// 跳板会话 id 链（就近→最远）；空 = 直连
     #[serde(default)]

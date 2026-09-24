@@ -48,6 +48,8 @@ function QuickConnectForm({ onClose }: { onClose: () => void }) {
       port: p,
       user: user.trim(),
       auth: password ? { type: 'password', password } : { type: 'keyboardInteractive' },
+      jumpChain: [],
+      encoding: 'utf-8',
     });
     onClose();
   };

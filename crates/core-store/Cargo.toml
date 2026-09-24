@@ -15,6 +15,7 @@ tokio.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+ts-rs.workspace = true
 windows-dpapi = "0.2.0"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 # 配置导出加密（M2 收口）：Argon2id 派生 + AES-256-GCM（版本沿 lockfile 既有）

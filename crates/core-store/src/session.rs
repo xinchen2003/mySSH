@@ -4,7 +4,8 @@ use crate::error::StoreError;
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../app/ui/src/term/bindings/")]
 #[serde(rename_all = "kebab-case")]
 pub enum AuthType {
     Password,
@@ -36,7 +37,8 @@ impl AuthType {
     }
 }
 /// 会话类型：ssh = 远程 SSH；local = 本机 PTY（ConPTY），host/port/username/auth_type 存占位值
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ts_rs::TS)]
+#[ts(export, export_to = "../../../app/ui/src/term/bindings/")]
 #[serde(rename_all = "kebab-case")]
 pub enum SessionKind {
     #[default]
@@ -61,7 +63,8 @@ impl SessionKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../app/ui/src/term/bindings/")]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRecord {
     pub id: String,
@@ -74,12 +77,15 @@ pub struct SessionRecord {
     #[serde(rename = "username")]
     pub user: String,
     pub auth_type: AuthType,
+    #[ts(optional = nullable)]
     pub key_path: Option<String>,
     /// local：启动的 shell（powershell|pwsh|cmd 或自定义路径）；None = 自动（pwsh→powershell→cmd）
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub shell: Option<String>,
     /// local：启动目录；None = 用户主目录
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub workdir: Option<String>,
     /// ProxyJump 链：session id 数组（就近→最远）；空 = 直连
     #[serde(default)]
@@ -87,22 +93,27 @@ pub struct SessionRecord {
     pub group_path: String,
     /// 侧栏色点（hex，如 '#e5484d'）；None = 无色
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub color: Option<String>,
     /// 终端编码（encoding_rs 标签；'utf-8' = 直通不转码）。旧导出包络无此字段，默认 utf-8
     #[serde(default = "default_encoding")]
     pub encoding: String,
     /// 登录后切换用户（su）的目标用户名；None/空 = 不切换。密码存 credentials(kind=su_password)
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub su_user: Option<String>,
     /// 登录宏：进 shell 后自动逐行执行的命令序列（纯文本，非秘密）；None/空 = 不执行。
     /// 语义：无 su 即发；有 su 则密码应答后发；重连重放（.scratch/login-macro/spec.md）
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub login_macro: Option<String>,
     /// MCP 工具权限覆盖（稀疏映射，键 = 分组名 list_sessions/ssh_exec/sftp_read/
     /// sftp_write/sftp_transfer）；缺省空 = 全部跟随全局 mcp.allow.* 设置
     #[serde(default)]
+    #[ts(type = "Record<string, boolean>")]
     pub mcp_perms: std::collections::HashMap<String, bool>,
     pub tags: Vec<String>,
+    #[ts(optional = nullable)]
     pub command: Option<String>,
     pub created_at: String,
     pub updated_at: String,

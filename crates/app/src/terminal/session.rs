@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tauri::ipc::{Channel, Response};
 use zeroize::Zeroizing;
 
@@ -279,10 +279,9 @@ pub(super) async fn supervise(mut ctx: SuperviseCtx) {
                         });
                     }
                     Some(su) if su.password.is_none() => {
-                        let _ = ctx.events.send(json!({
-                            "v": 1, "type": "macro_skipped", "tabId": ctx.tab_id,
-                            "reason": "suManualPassword",
-                        }));
+                        let _ = ctx.events.send(crate::wire::json_of(
+                            &crate::wire::MacroSkippedFrame::su_manual_password(&ctx.tab_id),
+                        ));
                     }
                     Some(_) => {
                         macro_pending = Some(MacroPending {
@@ -316,10 +315,9 @@ pub(super) async fn supervise(mut ctx: SuperviseCtx) {
 
         // 本地 PTY：进程退出即终态 closed——exit 是用户意图，不做自动重开
         if matches!(ctx.backend, Backend::Local) {
-            let _ = ctx.events.send(json!({
-                "v": 1, "type": "session_state",
-                "tabId": ctx.tab_id, "state": "closed",
-            }));
+            let _ = ctx.events.send(crate::wire::json_of(
+                &crate::wire::SessionStateFrame::closed(&ctx.tab_id),
+            ));
             ctx.mgr.sessions.lock().remove(&ctx.tab_id);
             stop_session_tunnels_if_last(&ctx);
             return;
@@ -329,10 +327,9 @@ pub(super) async fn supervise(mut ctx: SuperviseCtx) {
             Some(pair) => pair,
             None => {
                 // 重连耗尽：终态 closed + 摘除表项（任务即表项持有者，自生自灭）
-                let _ = ctx.events.send(json!({
-                    "v": 1, "type": "session_state",
-                    "tabId": ctx.tab_id, "state": "closed",
-                }));
+                let _ = ctx.events.send(crate::wire::json_of(
+                    &crate::wire::SessionStateFrame::closed(&ctx.tab_id),
+                ));
                 ctx.mgr.sessions.lock().remove(&ctx.tab_id);
                 stop_session_tunnels_if_last(&ctx);
                 return;
@@ -348,10 +345,9 @@ pub(super) async fn supervise(mut ctx: SuperviseCtx) {
             }
         }
         ctx.writer = new_writer;
-        let _ = ctx.events.send(json!({
-            "v": 1, "type": "session_state",
-            "tabId": ctx.tab_id, "state": "connected", "reconnected": true,
-        }));
+        let _ = ctx.events.send(crate::wire::json_of(
+            &crate::wire::SessionStateFrame::reconnected(&ctx.tab_id),
+        ));
         ctx.reader = AnyReader::Ssh(reader);
     }
 }
@@ -370,10 +366,9 @@ async fn reconnect(ctx: &SuperviseCtx) -> Option<(PtyReader, PtyWriter)> {
             tracing::warn!(tab_id = %ctx.tab_id, attempts = max_attempts, "重连次数耗尽，会话关闭");
             return None;
         }
-        let _ = ctx.events.send(json!({
-            "v": 1, "type": "session_state",
-            "tabId": ctx.tab_id, "state": "reconnecting", "attempt": attempt,
-        }));
+        let _ = ctx.events.send(crate::wire::json_of(
+            &crate::wire::SessionStateFrame::reconnecting(&ctx.tab_id, attempt),
+        ));
         tracing::info!(tab_id = %ctx.tab_id, attempt, "会话意外断开，准备重连");
         tokio::time::sleep(reconnect_backoff(attempt)).await;
         if !ctx.mgr.sessions.lock().contains_key(&ctx.tab_id) {
