@@ -58,6 +58,7 @@ async fn main() {
             on_disconnect: DisconnectPolicy::Queue,
             stop_grace_timeout: core_tunnel::DEFAULT_STOP_GRACE_TIMEOUT,
             half_close_drain_timeout: core_tunnel::DEFAULT_HALF_CLOSE_DRAIN_TIMEOUT,
+            session_id: String::new(),
         },
         "bench".into(),
         connect,

@@ -8,6 +8,7 @@ mod exec;
 mod files;
 mod fs_limiter;
 mod governor;
+mod lifecycle;
 mod local_pty;
 mod logging;
 mod mcp;
@@ -53,6 +54,7 @@ pub fn run() {
         });
     let session_state = Arc::new(SessionManagerState {
         store: Arc::new(store),
+        events: lifecycle::SessionEvents::new(),
     });
     let tunnel_mgr_state = Arc::new(TunnelManagerState {
         mgr: core_tunnel::TunnelManager::new(),
@@ -63,6 +65,14 @@ pub fn run() {
     let monitor_state = monitor::MonitorState::new();
     let mcp_manager = mcp::McpManager::new();
     let mcp_terms = mcp_terminal::McpTerminalState::new();
+    // 会话变更失效扇出：命令只发事件，消费方在此登记（隧道/ctx 池）
+    lifecycle::wire(
+        &session_state.events,
+        session_state.store.clone(),
+        tunnel_mgr_state.mgr.clone(),
+        sftp_state.clone(),
+        exec_state.clone(),
+    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())

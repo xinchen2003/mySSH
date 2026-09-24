@@ -15,6 +15,8 @@ use crate::connect::AuthSpec;
 
 pub struct SessionManagerState {
     pub store: Arc<Store>,
+    /// 会话变更事件汇：命令只 publish，失效扇出在 lifecycle::wire 登记
+    pub events: crate::lifecycle::SessionEvents,
 }
 
 pub fn store_path() -> std::path::PathBuf {
@@ -42,9 +44,6 @@ pub async fn session_list(
 pub async fn session_upsert(
     record: SessionRecord,
     state: tauri::State<'_, Arc<SessionManagerState>>,
-    sftp_state: tauri::State<'_, Arc<crate::sftp::SftpManagerState>>,
-    exec_state: tauri::State<'_, Arc<crate::exec::ExecManagerState>>,
-    tunnels_state: tauri::State<'_, Arc<crate::tunnels::TunnelManagerState>>,
 ) -> Result<Value, String> {
     let rec = state
         .store
@@ -63,16 +62,9 @@ pub async fn session_upsert(
         )
         .await
         .map_err(|e| e.to_string())?;
-    // 配置变更使旧 SFTP ctx 组失效（PR-12）：下次 ensure_ctx 按新配置重建
-    sftp_state.drop_ctx(&rec.id);
-    exec_state.drop_ctx(&rec.id);
-    // 隧道组共享键含配置指纹（PR-15）：重启在跑隧道——旧组 drain 后关闭
-    crate::tunnels::restart_session_tunnels(
-        tunnels_state.mgr.clone(),
-        state.store.clone(),
-        &rec.id,
-    )
-    .await;
+    state
+        .events
+        .publish(crate::lifecycle::SessionChange::Upserted(rec.id.clone()));
     serde_json::to_value(rec).map_err(|e| e.to_string())
 }
 
@@ -80,26 +72,24 @@ pub async fn session_upsert(
 pub async fn session_delete(
     session_id: String,
     state: tauri::State<'_, Arc<SessionManagerState>>,
-    tunnels_state: tauri::State<'_, Arc<crate::tunnels::TunnelManagerState>>,
-    sftp_state: tauri::State<'_, Arc<crate::sftp::SftpManagerState>>,
-    exec_state: tauri::State<'_, Arc<crate::exec::ExecManagerState>>,
 ) -> Result<(), String> {
-    // 先停运行中隧道（定义还在库中可查），再删会话（FK 级联删定义）
-    crate::tunnels::stop_all_session_tunnels(
-        tunnels_state.mgr.clone(),
-        state.store.clone(),
-        session_id.clone(),
-    )
-    .await;
+    // 删除前事件：需读库定义的消费方在此停手（隧道定义随下方删除级联）
+    state
+        .events
+        .publish(crate::lifecycle::SessionChange::Deleting(vec![
+            session_id.clone()
+        ]));
     state
         .store
         .sessions()
         .delete(&session_id)
         .await
         .map_err(|e| e.to_string())?;
-    // 会话删除同步摘除 SFTP ctx（PR-12）
-    sftp_state.drop_ctx(&session_id);
-    exec_state.drop_ctx(&session_id);
+    state
+        .events
+        .publish(crate::lifecycle::SessionChange::Deleted(vec![
+            session_id.clone()
+        ]));
     state
         .store
         .audit()
@@ -136,36 +126,28 @@ pub async fn group_rename(
 }
 
 /// 分组删除：with_sessions=false 保留会话（直属移未分组、子分组上移父级）；
-/// true 删除子树全部会话（凭据与隧道由 FK 级联）
+/// true 删除子树全部会话（凭据与隧道定义由 FK 级联；运行中隧道/ctx 经事件扇出收编）
 #[tauri::command]
 pub async fn group_delete(
     path: String,
     with_sessions: bool,
     state: tauri::State<'_, Arc<SessionManagerState>>,
-    tunnels_state: tauri::State<'_, Arc<crate::tunnels::TunnelManagerState>>,
 ) -> Result<Value, String> {
-    // 级联删除前收集受影响会话，删库后停止其运行中隧道（理由同 session_delete）
+    // 删除范围由 store 给出（与 DELETE 同一 WHERE）；删前发 Deleting（定义仍可读）
     let doomed: Vec<String> = if with_sessions {
         state
             .store
             .sessions()
-            .list()
+            .group_session_ids(&path)
             .await
             .map_err(|e| e.to_string())?
-            .into_iter()
-            .filter(|s| s.group_path == path || s.group_path.starts_with(&format!("{path}/")))
-            .map(|s| s.id)
-            .collect()
     } else {
         Vec::new()
     };
-    for sid in doomed {
-        crate::tunnels::stop_all_session_tunnels(
-            tunnels_state.mgr.clone(),
-            state.store.clone(),
-            sid,
-        )
-        .await;
+    if !doomed.is_empty() {
+        state
+            .events
+            .publish(crate::lifecycle::SessionChange::Deleting(doomed.clone()));
     }
     let affected = state
         .store
@@ -173,6 +155,11 @@ pub async fn group_delete(
         .group_delete(&path, with_sessions)
         .await
         .map_err(|e| e.to_string())?;
+    if !doomed.is_empty() {
+        state
+            .events
+            .publish(crate::lifecycle::SessionChange::Deleted(doomed));
+    }
     state
         .store
         .audit()

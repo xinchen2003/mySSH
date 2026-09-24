@@ -107,6 +107,9 @@ pub struct TunnelSpec {
     pub stop_grace_timeout: Duration,
     /// 半关闭后排空上限：一侧 EOF 起算，对侧无响应到点释放该 relay
     pub half_close_drain_timeout: Duration,
+    /// 归属会话：运行条目自持会话绑定（生命周期扇出按它停隧道，不读库定义）；
+    /// 空串 = 独立隧道（测试/示例），不参与会话失效扇出
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +155,8 @@ pub struct TunnelInfo {
     pub stats: TunnelStats,
     /// 最近一次连接/运行错误文本（无错误为 None）
     pub last_error: Option<String>,
+    /// 归属会话（TunnelSpec.session_id 原样；空串 = 独立隧道）
+    pub session_id: String,
 }
 
 struct TunnelEntry {
@@ -169,6 +174,7 @@ struct TunnelEntry {
     kind_label: &'static str,
     bind: String,
     target: Option<String>,
+    session_id: String,
 }
 
 enum Slot {
@@ -287,6 +293,7 @@ impl TunnelManager {
             kind_label: spec.kind.label(),
             bind: bind_label,
             target: spec.target.as_ref().map(|(h, p)| format!("{h}:{p}")),
+            session_id: spec.session_id.clone(),
         });
 
         let group = self.acquire_group(&group_key, connect);
@@ -424,6 +431,7 @@ impl TunnelManager {
                     status,
                     stats: snapshot(&e.stats),
                     last_error: e.last_error.lock().clone(),
+                    session_id: e.session_id.clone(),
                 }
             })
             .collect()

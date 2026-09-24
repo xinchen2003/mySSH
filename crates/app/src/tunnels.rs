@@ -163,6 +163,7 @@ async fn start_tunnel(
             },
             stop_grace_timeout: core_tunnel::DEFAULT_STOP_GRACE_TIMEOUT,
             half_close_drain_timeout: core_tunnel::DEFAULT_HALF_CLOSE_DRAIN_TIMEOUT,
+            session_id: session_id.to_string(),
         },
         group_key,
         connect,
@@ -393,27 +394,6 @@ pub async fn stop_session_tunnels(
         match mgr.stop(&d.id).await {
             Ok(()) | Err(core_tunnel::TunnelError::NotFound(_)) => {}
             Err(e) => tracing::warn!(tunnel = %d.id, error = %e, "随会话隧道停止失败"),
-        }
-    }
-}
-/// 会话删除前调用：停止该会话全部运行中隧道（不论启动方式）。
-/// 必须在定义仍可读时调用——FK 级联后 for_session 已查不到。
-pub async fn stop_all_session_tunnels(
-    mgr: Arc<core_tunnel::TunnelManager>,
-    store: Arc<Store>,
-    session_id: String,
-) {
-    let defs = match store.tunnels().for_session(&session_id).await {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::warn!(error = %e, "隧道定义读取失败（删除前停止）");
-            return;
-        }
-    };
-    for d in defs {
-        match mgr.stop(&d.id).await {
-            Ok(()) | Err(core_tunnel::TunnelError::NotFound(_)) => {}
-            Err(e) => tracing::warn!(tunnel = %d.id, error = %e, "删除会话前停止隧道失败"),
         }
     }
 }

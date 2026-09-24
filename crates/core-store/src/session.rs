@@ -271,6 +271,25 @@ impl SessionRepo {
         Ok(direct.rows_affected() + children.rows_affected())
     }
 
+    /// 子树全部会话 id（直属 + 所有后代分组；与 group_delete 的 DELETE 同一 WHERE）。
+    /// with_sessions=true 的删除会带走它们——调用方在删前收集（FK 级联后查不到），
+    /// 删除范围知识留在 store 层，app 不再自拼路径匹配。
+    pub async fn group_session_ids(&self, path: &str) -> Result<Vec<String>, StoreError> {
+        validate_group_path(path)?;
+        let path_chars = path.chars().count() as i64;
+        let rows = sqlx::query(
+            "SELECT id FROM sessions
+             WHERE group_path = ?1
+                OR (substr(group_path, 1, ?2) = ?1 AND substr(group_path, ?2 + 1, 1) = '/')",
+        )
+        .bind(path)
+        .bind(path_chars)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows.into_iter().map(|r| r.get::<String, _>("id")).collect())
+    }
+
     /// 批量移动会话到目标分组（'' = 未分组）。事务执行；返回受影响行数。
     pub async fn move_to_group(&self, ids: &[String], group_path: &str) -> Result<u64, StoreError> {
         validate_group_path(group_path)?;

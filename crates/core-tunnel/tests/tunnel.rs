@@ -252,6 +252,7 @@ fn spec_with_timeouts(
         on_disconnect: DisconnectPolicy::Queue,
         stop_grace_timeout: stop_grace,
         half_close_drain_timeout: half_close_drain,
+        session_id: "t".into(),
     }
 }
 

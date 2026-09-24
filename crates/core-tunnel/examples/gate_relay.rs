@@ -203,6 +203,7 @@ async fn main() {
             on_disconnect: DisconnectPolicy::Queue,
             stop_grace_timeout: Duration::from_millis(500),
             half_close_drain_timeout: Duration::from_secs(5),
+            session_id: String::new(),
         },
         "gate".into(),
         connect,
