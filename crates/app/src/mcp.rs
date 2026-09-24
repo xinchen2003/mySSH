@@ -13,6 +13,9 @@
 //! sftp_write,sftp_transfer} 控制（terminal_* 归入 ssh_exec 组；缺省全开；
 //! tools/list 同步过滤，tools/call 命中禁用组返回 isError）。会话编辑器可逐组覆盖
 //!（sessions.mcp_perms 稀疏映射），会话级覆盖优先于全局。
+//! ssh_exec 命令经 core-policy 分类器判定（M0 readonly 档：只读白名单放行，黑名单/
+//! 无法静态判定一律拒绝——MCP 无人工确认通道；terminal_send 为交互字节流不在此列），
+//! 并按会话限速（设置键 mcp.rate_limit_per_minute，默认 60/分钟）；全部尝试落审计。
 //! 生命周期由 lib.rs 装配：setup 时按 mcp.enabled/mcp.port/mcp.token 启动，
 //! mcp_restart 命令供设置变更后重载。
 
@@ -31,6 +34,7 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
+use core_policy::{AccessLevel, PolicyEngine, RateLimiter, Verdict};
 use core_sftp::OnExists;
 use core_store::Store;
 
@@ -42,6 +46,8 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 /// stdout/stderr 各自的截断上限
 const OUTPUT_CAP: usize = 64 * 1024;
+/// 每会话每分钟 ssh_exec 命令数默认上限（设置键 mcp.rate_limit_per_minute）
+const DEFAULT_RATE_PER_MINUTE: u32 = 60;
 /// 停止时等待优雅退出的上限，超时后 abort
 const STOP_GRACE: Duration = Duration::from_secs(2);
 
@@ -53,6 +59,7 @@ struct McpConfig {
     port: u16,
     token: Option<String>,
     perms: McpPerms,
+    rate_per_minute: u32,
 }
 
 /// 工具分组权限（设置键 mcp.allow.*，缺省 = 允许：旧库无这些键时行为不变）。
@@ -162,6 +169,22 @@ fn parse_port_setting(raw: Option<&str>) -> u16 {
     }
 }
 
+/// 每会话每分钟 ssh_exec 命令数上限（0/越界回落默认；容忍 JSON 编码与裸文本）
+fn parse_rate_setting(raw: Option<&str>) -> u32 {
+    let n = match raw {
+        None => return DEFAULT_RATE_PER_MINUTE,
+        Some(raw) => match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Number(n)) => n.as_u64(),
+            Ok(Value::String(s)) => s.trim().parse::<u64>().ok(),
+            _ => raw.trim().parse::<u64>().ok(),
+        },
+    };
+    match n {
+        Some(v) if (1..=3600).contains(&v) => v as u32,
+        _ => DEFAULT_RATE_PER_MINUTE,
+    }
+}
+
 fn parse_token_setting(raw: Option<&str>) -> Option<String> {
     let raw = raw?;
     let token = match serde_json::from_str::<Value>(raw) {
@@ -175,7 +198,7 @@ fn parse_token_setting(raw: Option<&str>) -> Option<String> {
     }
 }
 
-/// 读 mcp.enabled / mcp.port / mcp.token 与 mcp.allow.* 权限键
+/// 读 mcp.enabled / mcp.port / mcp.token、mcp.allow.* 权限键与 mcp.rate_limit_per_minute
 async fn read_mcp_config(store: &Store) -> Result<McpConfig, String> {
     let settings = store.settings();
     let get = async |key: &str| settings.get(key).await.map_err(|e| e.to_string());
@@ -189,11 +212,13 @@ async fn read_mcp_config(store: &Store) -> Result<McpConfig, String> {
         sftp_write: parse_allow_setting(get("mcp.allow.sftp_write").await?.as_deref()),
         sftp_transfer: parse_allow_setting(get("mcp.allow.sftp_transfer").await?.as_deref()),
     };
+    let rate_per_minute = parse_rate_setting(get("mcp.rate_limit_per_minute").await?.as_deref());
     Ok(McpConfig {
         enabled: parse_bool_setting(enabled.as_deref()),
         port: parse_port_setting(port.as_deref()),
         token: parse_token_setting(token.as_deref()),
         perms,
+        rate_per_minute,
     })
 }
 
@@ -255,6 +280,7 @@ impl McpManager {
         port: u16,
         token: String,
         perms: McpPerms,
+        rate_per_minute: u32,
     ) -> Result<(), String> {
         self.stop().await;
         let state = Arc::new(ServerState {
@@ -264,6 +290,9 @@ impl McpManager {
             terms: terms.clone(),
             token: token.clone(),
             perms,
+            // 安全模型执行面（M0 只读档）：判定管线 + 每会话速率闸，随服务同生命周期
+            policy: PolicyEngine::new(),
+            rate: RateLimiter::new(rate_per_minute),
         });
         let router = Router::new()
             .route("/mcp", post(mcp_post))
@@ -358,7 +387,16 @@ pub async fn boot_from_settings(
     }
     let token = ensure_token(&store, cfg.token).await;
     if let Err(e) = mgr
-        .start(store, sftp, exec, terms, cfg.port, token, cfg.perms)
+        .start(
+            store,
+            sftp,
+            exec,
+            terms,
+            cfg.port,
+            token,
+            cfg.perms,
+            cfg.rate_per_minute,
+        )
         .await
     {
         tracing::error!(error = %e, "MCP 服务启动失败");
@@ -378,8 +416,17 @@ pub async fn restart_from_settings(
         let token = ensure_token(&store, cfg.token).await;
         // 绑定失败直接回报前端，同时把 token 记入状态便于排查
         mgr.inner.lock().token = token.clone();
-        mgr.start(store, sftp, exec, terms, cfg.port, token, cfg.perms)
-            .await?;
+        mgr.start(
+            store,
+            sftp,
+            exec,
+            terms,
+            cfg.port,
+            token,
+            cfg.perms,
+            cfg.rate_per_minute,
+        )
+        .await?;
     }
     Ok(mgr.status())
 }
@@ -419,6 +466,10 @@ struct ServerState {
     token: String,
     /// 工具分组权限（启动时快照；改设置后 mcp_restart 生效）
     perms: McpPerms,
+    /// 命令分类器（安全模型第 1/2 条；M0 用内置白/黑名单，用户编辑版 M6 接入）
+    policy: PolicyEngine,
+    /// 每会话每分钟命令数上限（安全模型第 6 条）
+    rate: RateLimiter,
 }
 
 /// POST /mcp 入口：鉴权 → JSON-RPC 解析 → 分发
@@ -572,7 +623,7 @@ fn tools_list(perms: &McpPerms) -> Value {
             },
             {
                 "name": "ssh_exec",
-                "description": "在已保存的 SSH 会话上执行一条 shell 命令，返回 stdout/stderr/exit code。仅 SSH 会话；本地会话会被拒绝。",
+                "description": "在已保存的 SSH 会话上执行一条 shell 命令，返回 stdout/stderr/exit code。仅 SSH 会话；本地会话会被拒绝。命令经安全策略分类：readonly 档仅只读白名单内命令放行，黑名单与无法静态判定者一律拒绝。",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -903,6 +954,38 @@ async fn ssh_exec_tool(st: &ServerState, args: &Value) -> Result<String, String>
         .unwrap_or(DEFAULT_TIMEOUT_MS)
         .clamp(1, MAX_TIMEOUT_MS);
 
+    // 安全模型第 6 条：每会话命令速率上限（拒绝也计数，防探测洪泛）
+    if let Err(e) = st.rate.check(session_id) {
+        mcp_audit(
+            st,
+            session_id,
+            "mcp_ssh_exec",
+            &json!({ "command": command, "result": "rate_limited" }),
+        )
+        .await;
+        return Err(format!("MCP 速率限制：{e}"));
+    }
+    // 安全模型第 1/2 条：M0 全部按 readonly 档判定——只读白名单内放行；
+    // 黑名单/无法静态判定须人工确认，MCP 无确认通道（M6 落地），fail-closed 拒绝。
+    // 门在会话解析之前：被拒绝的命令不触网、不建连。
+    let deny_reason = match st.policy.classify(command, AccessLevel::Readonly, false) {
+        Verdict::Allow => None,
+        Verdict::Deny => Some("命令超出只读白名单（当前为 readonly 档）"),
+        Verdict::RequireConfirmation => {
+            Some("命令命中全局黑名单或结构无法静态判定，需人工确认（MCP 确认通道未落地）")
+        }
+    };
+    if let Some(reason) = deny_reason {
+        mcp_audit(
+            st,
+            session_id,
+            "mcp_ssh_exec",
+            &json!({ "command": command, "result": "rejected", "reason": reason }),
+        )
+        .await;
+        return Err(format!("MCP 安全策略拒绝执行：{reason}"));
+    }
+
     let target = crate::sessions::resolve_session_target(store, session_id).await?;
     if matches!(target, crate::sessions::ResolvedTarget::Local(_)) {
         return Err("本地会话不支持 ssh_exec（仅 SSH 会话）".into());
@@ -918,6 +1001,21 @@ async fn ssh_exec_tool(st: &ServerState, args: &Value) -> Result<String, String>
     let result = tokio::time::timeout(Duration::from_millis(timeout_ms), run).await;
     let elapsed = started.elapsed().as_millis() as u64;
 
+    let (result_flag, detail) = match &result {
+        Ok(Ok(body)) => (
+            "ok",
+            json!({ "exitCode": body["exitCode"], "truncated": body["truncated"] }),
+        ),
+        Ok(Err(e)) => ("error", json!({ "error": e })),
+        Err(_) => ("timeout", json!({ "timeoutMs": timeout_ms })),
+    };
+    mcp_audit(
+        st,
+        session_id,
+        "mcp_ssh_exec",
+        &json!({ "command": command, "result": result_flag, "durationMs": elapsed, "detail": detail }),
+    )
+    .await;
     match result {
         Ok(Ok(mut body)) => {
             body["durationMs"] = json!(elapsed);
@@ -1394,6 +1492,61 @@ mod tests {
         assert_eq!(names.len(), 10);
     }
 
+    /// 策略门 E2E：拒绝路径不触网（门在会话解析之前），临时库即可
+    #[tokio::test]
+    async fn e2e_ssh_exec_policy_gate() {
+        let dir = std::env::temp_dir().join(format!("myssh-mcp-policy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Arc::new(Store::open(&dir.join("t.db")).await.expect("开库失败"));
+        let (mgr, url) = boot_mcp(store).await;
+
+        // 黑名单命中 → RequireConfirmation 在无确认通道下降级为拒绝
+        let (text, is_err) = call_text(
+            &url,
+            "ssh_exec",
+            json!({ "session_id": "nope", "command": "rm -rf /tmp/x" }),
+        )
+        .await;
+        assert!(is_err, "黑名单命令应被拒绝: {text}");
+        assert!(text.contains("安全策略"), "应带策略拒绝原因: {text}");
+
+        // 只读白名单外 → readonly 档拒绝
+        let (text, is_err) = call_text(
+            &url,
+            "ssh_exec",
+            json!({ "session_id": "nope", "command": "touch /tmp/x" }),
+        )
+        .await;
+        assert!(is_err, "白名单外命令应被拒绝: {text}");
+        assert!(text.contains("安全策略"), "应带策略拒绝原因: {text}");
+
+        // 白名单命令穿过策略门，落到会话解析报错——证明门未误杀
+        let (text, is_err) = call_text(
+            &url,
+            "ssh_exec",
+            json!({ "session_id": "nope", "command": "ls -la" }),
+        )
+        .await;
+        assert!(is_err, "不存在的会话仍应报错: {text}");
+        assert!(
+            !text.contains("安全策略"),
+            "白名单命令不应被策略门拦截: {text}"
+        );
+
+        mgr.stop().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rate_limit_setting_parse() {
+        assert_eq!(parse_rate_setting(None), DEFAULT_RATE_PER_MINUTE);
+        assert_eq!(parse_rate_setting(Some("30")), 30);
+        assert_eq!(parse_rate_setting(Some("\"45\"")), 45);
+        // 0 与越界回落默认
+        assert_eq!(parse_rate_setting(Some("0")), DEFAULT_RATE_PER_MINUTE);
+        assert_eq!(parse_rate_setting(Some("99999")), DEFAULT_RATE_PER_MINUTE);
+    }
+
     // ---- 轴一 1.3：MCP HTTP 面 E2E（真服务 + 真 JSON-RPC 往返） ----
 
     /// 起一台真实 MCP 服务（临时库 + 空闲端口）；调用方负责 mgr.stop()
@@ -1411,6 +1564,7 @@ mod tests {
             port,
             String::new(), // 测试不启用 token
             McpPerms::default(),
+            DEFAULT_RATE_PER_MINUTE,
         )
         .await
         .expect("MCP 服务启动失败");
