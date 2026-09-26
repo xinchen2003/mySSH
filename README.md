@@ -3,7 +3,7 @@
 English | [简体中文](README.zh-CN.md)
 
 [![CI](https://github.com/xinchen2003/mySSH/actions/workflows/ci.yml/badge.svg)](https://github.com/xinchen2003/mySSH/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.3.4-blue)](https://github.com/xinchen2003/mySSH/releases)
+[![Version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/xinchen2003/mySSH/releases)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)](https://github.com/xinchen2003/mySSH)
 
@@ -40,17 +40,18 @@ Built-in MCP server (Streamable HTTP, loopback-only + Bearer token); one-click a
 | Tool | Description |
 | --- | --- |
 | `list_sessions` | List saved session profiles (never includes credentials) |
-| `ssh_exec` | Run a shell command on a session, returns stdout/stderr/exit code |
+| `ssh_exec` | Run a shell command on a session, returns stdout/stderr/exit code. Commands pass the built-in policy classifier (M0 read-only tier: whitelist allowed, blacklisted/unverifiable refused), per-session rate-limited, all attempts audited |
 | `sftp_home` / `sftp_list` / `sftp_stat` / `sftp_read` | Remote browsing and file reads |
 | `sftp_write` / `sftp_mkdir` / `sftp_delete` / `sftp_rename` / `sftp_chmod` | Remote writes and meta ops (audited) |
 | `sftp_upload` / `sftp_download` | File transfer via the background transfer queue (shared with the UI transfer panel, **no size limit**; `wait_seconds` waits synchronously for completion) |
 | `sftp_transfer_list` | Poll transfer progress / state / errors |
 | `terminal_open` / `terminal_send` / `terminal_read` / `terminal_close` | Interactive terminals: open a live shell on a session, send input, read the screen buffer, close it — for REPLs, pagers and other stateful interactions `ssh_exec` can't drive (gated by the `ssh_exec` permission group) |
 
-**Permission model** (two layers, override wins):
+**Permission model** (three layers):
 
 1. Global defaults: Settings → MCP → Tool permissions — 5 group toggles (list_sessions / ssh_exec / SFTP read / SFTP write / SFTP transfer)
 2. Per-session overrides: session editor → MCP Permissions tab — each group is tri-state (inherit / allow / deny). Lock down `ssh_exec` on production, keep test boxes wide open
+3. Command policy (always on): `ssh_exec` commands are classified before execution — read-only whitelist allowed, blacklist / indirect shells / unparseable structures refused (fail-closed; no agent-driven confirmation channel yet); per-session rate limit via `mcp.rate_limit_per_minute` (default 60/min); every attempt lands in the audit log
 
 Config example (`.omp/mcp.json`, same shape for Claude Code):
 
